@@ -89,11 +89,15 @@ FloatingWindow {
     }
 
     function buildPickerMatches() {
-        const query = pickerInput.text.trim().toLocaleLowerCase()
-        const matches = agents.filter(agent => agent.name.toLocaleLowerCase().includes(query))
+        const words = pickerInput.text.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+        const matches = agents.filter(agent => {
+            const name = agent.name.toLocaleLowerCase()
+            return words.every(word => name.includes(word))
+        })
         matches.sort((a, b) => {
-            const ap = a.name.toLocaleLowerCase().startsWith(query) ? 0 : 1
-            const bp = b.name.toLocaleLowerCase().startsWith(query) ? 0 : 1
+            const firstWord = words[0] || ""
+            const ap = a.name.toLocaleLowerCase().startsWith(firstWord) ? 0 : 1
+            const bp = b.name.toLocaleLowerCase().startsWith(firstWord) ? 0 : 1
             return ap - bp || a.name.localeCompare(b.name)
         })
         return matches.slice(0, 12)
