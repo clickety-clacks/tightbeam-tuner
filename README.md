@@ -18,8 +18,8 @@ Tightbeam Tuner is a Quickshell desktop app for browsing an agent tree and openi
 | `Ctrl+Space` | Open the Spotlight picker |
 | `Ctrl+/` | Open the sidebar and focus its name filter |
 | `Ctrl+\` | Toggle the sidebar |
-| `Super+=` | Increase sidebar, picker, and Chat size |
-| `Super+-` | Decrease sidebar, picker, and Chat size |
+| `Ctrl+=` | Increase sidebar, picker, and Chat size |
+| `Ctrl+-` | Decrease sidebar, picker, and Chat size |
 
 ## Requirements
 

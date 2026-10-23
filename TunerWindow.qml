@@ -139,8 +139,8 @@ FloatingWindow {
     Shortcut { sequence: "Ctrl+Space"; context: Qt.WindowShortcut; onActivated: win.showPicker() }
     Shortcut { sequence: "Ctrl+/"; context: Qt.WindowShortcut; onActivated: win.showSidebarSearch() }
     Shortcut { sequence: "Ctrl+\\"; context: Qt.WindowShortcut; onActivated: win.sidebarOpen = !win.sidebarOpen }
-    Shortcut { sequence: "Meta+="; context: Qt.WindowShortcut; onActivated: win.changeTextScale(1) }
-    Shortcut { sequence: "Meta+-"; context: Qt.WindowShortcut; onActivated: win.changeTextScale(-1) }
+    Shortcut { sequence: "Ctrl+="; context: Qt.WindowShortcut; onActivated: win.changeTextScale(1) }
+    Shortcut { sequence: "Ctrl+-"; context: Qt.WindowShortcut; onActivated: win.changeTextScale(-1) }
 
     Process {
         id: rosterProcess
