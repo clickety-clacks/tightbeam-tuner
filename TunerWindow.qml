@@ -145,6 +145,12 @@ FloatingWindow {
         }
     }
 
+    function openExternalLink(url) {
+        const target = url.toString()
+        if (/^https?:\/\//i.test(target) && !Qt.openUrlExternally(target))
+            console.warn("Could not open link in the browser")
+    }
+
     Component.onCompleted: Qt.callLater(() => pickerInput.forceActiveFocus())
     onVisibleChanged: if (!visible) destroy()
 
@@ -360,6 +366,13 @@ FloatingWindow {
                 visible: !!win.selectedAgent
                 url: win.selectedAgent ? win.selectedAgent.url : "about:blank"
                 zoomFactor: win.textScale
+                onNavigationRequested: request => {
+                    if (request.navigationType === WebEngineNavigationRequest.LinkClickedNavigation) {
+                        request.reject()
+                        win.openExternalLink(request.url)
+                    }
+                }
+                onNewWindowRequested: request => win.openExternalLink(request.requestedUrl)
             }
 
             Rectangle {
