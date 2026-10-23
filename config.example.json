@@ -1,0 +1,5 @@
+{
+  "rosterCommand": ["tightbeam", "list", "--as-user", "YOUR_USER"],
+  "chatBase": "https://chat.example.test",
+  "gatewayOrigin": "https://gateway.example.test"
+}

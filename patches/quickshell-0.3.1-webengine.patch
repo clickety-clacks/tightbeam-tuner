@@ -1,0 +1,45 @@
+diff --git i/CMakeLists.txt w/CMakeLists.txt
+index dca78f7..75dbab7 100644
+--- i/CMakeLists.txt
++++ w/CMakeLists.txt
+@@ -110,7 +110,7 @@ if (NOT CMAKE_BUILD_TYPE)
+ 	set(CMAKE_BUILD_TYPE Debug)
+ endif()
+ 
+-set(QT_FPDEPS Gui Qml Quick QuickControls2 Widgets ShaderTools)
++set(QT_FPDEPS Gui Qml Quick QuickControls2 Widgets ShaderTools WebEngineQuick)
+ set(QT_PRIVDEPS QuickPrivate)
+ 
+ include(cmake/pch.cmake)
+diff --git i/src/launch/CMakeLists.txt w/src/launch/CMakeLists.txt
+index 4db11bf..b687e55 100644
+--- i/src/launch/CMakeLists.txt
++++ w/src/launch/CMakeLists.txt
+@@ -8,7 +8,7 @@ qt_add_library(quickshell-launch STATIC
+ )
+ 
+ target_link_libraries(quickshell-launch PRIVATE
+-	Qt::Quick Qt::Widgets CLI11::CLI11 quickshell-build
++	Qt::Quick Qt::Widgets Qt::WebEngineQuick CLI11::CLI11 quickshell-build
+ )
+ 
+ qs_add_pchset(launch
+diff --git i/src/launch/launch.cpp w/src/launch/launch.cpp
+index 71d9983..c3594dd 100644
+--- i/src/launch/launch.cpp
++++ w/src/launch/launch.cpp
+@@ -1,3 +1,4 @@
++#include <QtWebEngineQuick/qtwebenginequickglobal.h>
+ #include <qapplication.h>
+ #include <qcoreapplication.h>
+ #include <qcryptographichash.h>
+@@ -282,7 +283,8 @@ int launch(const LaunchArgs& args, char** argv, QCoreApplication* coreApplicatio
+ 	delete coreApplication;
+ 
+ 	QGuiApplication* app = nullptr;
+-	auto qArgC = 0;
++	QtWebEngineQuick::initialize();
++	auto qArgC = 1;
+ 
+ 	if (pragmas.useQApplication) {
+ 		app = new QApplication(qArgC, argv);
