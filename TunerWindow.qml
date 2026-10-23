@@ -7,7 +7,8 @@ import Quickshell.Io
 
 FloatingWindow {
     id: win
-    title: selectedAgent ? "Tightbeam Tuner — " + selectedAgent.name : "Tightbeam Tuner"
+    title: settingsOpen && settingsKnown ? "Tightbeam Tuner — Connection settings" :
+           selectedAgent ? "Tightbeam Tuner — " + selectedAgent.name : "Tightbeam Tuner"
     implicitWidth: 1180
     implicitHeight: 760
     minimumSize: Qt.size(640, 420)
@@ -23,9 +24,15 @@ FloatingWindow {
     property var collapsed: ({})
     property var selectedArchetypes: ({})
     property bool archetypesExpanded: false
-    property bool pickerOpen: true
+    property bool pickerOpen: false
     property int pickerIndex: 0
     property string rosterError: ""
+    property bool configured: false
+    property bool settingsOpen: true
+    property bool settingsKnown: false
+    property bool connecting: false
+    property var pendingSettings: ({})
+    property var currentSettings: ({})
     property real textScale: 1.0
     property var visibleRows: buildRows()
     property var archetypes: buildArchetypes()
@@ -106,11 +113,17 @@ FloatingWindow {
     function selectAgent(agent) {
         selectedAgent = agent
         pickerOpen = false
+        settingsOpen = false
         pickerInput.text = ""
         chat.forceActiveFocus()
     }
 
     function showPicker() {
+        if (!configured) {
+            openSettings()
+            return
+        }
+        settingsOpen = false
         pickerOpen = true
         pickerIndex = 0
         pickerInput.text = ""
@@ -118,6 +131,10 @@ FloatingWindow {
     }
 
     function showSidebarSearch() {
+        if (!configured) {
+            openSettings()
+            return
+        }
         sidebarOpen = true
         Qt.callLater(() => sidebarInput.forceActiveFocus())
     }
@@ -151,7 +168,57 @@ FloatingWindow {
             console.warn("Could not open link in the browser")
     }
 
-    Component.onCompleted: Qt.callLater(() => pickerInput.forceActiveFocus())
+    function openSettings() {
+        if (!settingsOpen && configured) {
+            settingsPane.chatBase = currentSettings.chatBase || ""
+            settingsPane.gatewayOrigin = currentSettings.gatewayOrigin || ""
+            settingsPane.cliCommand = currentSettings.cliCommand || "tightbeam"
+            settingsPane.rosterUser = currentSettings.rosterUser || ""
+            settingsPane.message = ""
+        }
+        pickerOpen = false
+        settingsOpen = true
+        settingsPane.focusFirst()
+    }
+
+    function toggleSettings() {
+        if (!settingsOpen || !configured || connecting) {
+            openSettings()
+        } else if (selectedAgent) {
+            settingsOpen = false
+            chat.forceActiveFocus()
+        } else {
+            showPicker()
+        }
+    }
+
+    function startRoster() {
+        connecting = true
+        settingsPane.saving = true
+        settingsPane.message = "Reading agents…"
+        rosterProcess.running = false
+        Qt.callLater(() => rosterProcess.running = true)
+    }
+
+    function saveSettings() {
+        if (settingsSave.running || connecting) return
+        pendingSettings = {
+            chatBase: settingsPane.chatBase,
+            gatewayOrigin: settingsPane.gatewayOrigin,
+            cliCommand: settingsPane.cliCommand,
+            rosterUser: settingsPane.rosterUser
+        }
+        settingsPane.saving = true
+        settingsPane.message = ""
+        settingsSave.running = true
+    }
+
+    function discoverGateway() {
+        if (settingsDiscover.running) return
+        settingsPane.message = "Checking Chat server…"
+        settingsDiscover.running = true
+    }
+
     onVisibleChanged: if (!visible) destroy()
 
     Shortcut { sequence: "Ctrl+N"; context: Qt.WindowShortcut; onActivated: win.newWindowRequested() }
@@ -160,6 +227,8 @@ FloatingWindow {
     Shortcut { sequence: "Ctrl+\\"; context: Qt.WindowShortcut; onActivated: win.sidebarOpen = !win.sidebarOpen }
     Shortcut { sequence: "Ctrl+="; context: Qt.WindowShortcut; onActivated: win.changeTextScale(1) }
     Shortcut { sequence: "Ctrl+-"; context: Qt.WindowShortcut; onActivated: win.changeTextScale(-1) }
+    Shortcut { sequence: "Ctrl+,"; context: Qt.WindowShortcut; onActivated: win.toggleSettings() }
+    Shortcut { sequence: "Ctrl+R"; context: Qt.WindowShortcut; onActivated: if (win.selectedAgent) chat.reload() }
 
     FileView {
         id: preferences
@@ -171,21 +240,137 @@ FloatingWindow {
     }
 
     Process {
+        id: settingsRead
+        command: ["python3", Quickshell.shellDir + "/scripts/settings.py", "show"]
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const data = JSON.parse(this.text)
+                    settingsPane.chatBase = data.chatBase || ""
+                    settingsPane.gatewayOrigin = data.gatewayOrigin || ""
+                    settingsPane.cliCommand = data.cliCommand || "tightbeam"
+                    settingsPane.rosterUser = data.rosterUser || ""
+                    win.configured = !!data.configured
+                    win.settingsKnown = true
+                    if (win.configured) {
+                        win.currentSettings = data
+                        win.settingsOpen = false
+                        win.startRoster()
+                    }
+                    else {
+                        settingsPane.message = data.error || "Enter your connection settings to start."
+                        win.openSettings()
+                    }
+                } catch (error) {
+                    win.settingsKnown = true
+                    settingsPane.message = "Could not read connection settings"
+                    win.openSettings()
+                }
+            }
+        }
+    }
+
+    Process {
+        id: settingsSave
+        command: ["python3", Quickshell.shellDir + "/scripts/settings.py", "save"]
+        stdinEnabled: true
+        onStarted: write(JSON.stringify(win.pendingSettings) + "\n")
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const data = JSON.parse(this.text)
+                    if (data.error) {
+                        settingsPane.message = data.error
+                        settingsPane.saving = false
+                    } else {
+                        win.configured = true
+                        const changed = data.chatBase !== win.currentSettings.chatBase ||
+                            data.gatewayOrigin !== win.currentSettings.gatewayOrigin ||
+                            data.cliCommand !== win.currentSettings.cliCommand ||
+                            data.rosterUser !== win.currentSettings.rosterUser
+                        win.currentSettings = data
+                        settingsPane.chatBase = data.chatBase
+                        settingsPane.gatewayOrigin = data.gatewayOrigin
+                        settingsPane.cliCommand = data.cliCommand
+                        settingsPane.rosterUser = data.rosterUser
+                        if (changed) {
+                            win.selectedAgent = null
+                            win.agents = []
+                            win.startRoster()
+                        } else {
+                            settingsPane.saving = false
+                            if (win.selectedAgent) {
+                                win.settingsOpen = false
+                                chat.forceActiveFocus()
+                            } else win.showPicker()
+                        }
+                    }
+                } catch (error) {
+                    settingsPane.message = "Could not save connection settings"
+                    settingsPane.saving = false
+                }
+            }
+        }
+    }
+
+    Process {
+        id: settingsDiscover
+        command: ["python3", Quickshell.shellDir + "/scripts/settings.py", "discover"]
+        stdinEnabled: true
+        onStarted: write(JSON.stringify({ chatBase: settingsPane.chatBase }) + "\n")
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const data = JSON.parse(this.text)
+                    if (data.error) settingsPane.message = data.error
+                    else {
+                        settingsPane.gatewayOrigin = data.gatewayOrigin
+                        if (!settingsPane.rosterUser && data.rosterUser)
+                            settingsPane.rosterUser = data.rosterUser
+                        settingsPane.message = ""
+                    }
+                } catch (error) {
+                    settingsPane.message = "Could not read Chat server settings"
+                }
+            }
+        }
+    }
+
+    Process {
         id: rosterProcess
         command: ["python3", Quickshell.shellDir + "/scripts/roster.py"]
-        running: true
+        running: false
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
                     const data = JSON.parse(this.text)
                     if (data.error) {
                         win.rosterError = data.error
+                        if (win.connecting) {
+                            win.connecting = false
+                            settingsPane.saving = false
+                            win.openSettings()
+                            settingsPane.message = data.error
+                        }
                     } else {
                         win.agents = data.agents
                         win.rosterError = ""
+                        if (win.connecting) {
+                            win.connecting = false
+                            settingsPane.saving = false
+                            settingsPane.message = ""
+                            win.showPicker()
+                        }
                     }
                 } catch (error) {
                     win.rosterError = "Could not read the agent roster"
+                    if (win.connecting) {
+                        win.connecting = false
+                        settingsPane.saving = false
+                        win.openSettings()
+                        settingsPane.message = win.rosterError
+                    }
                 }
             }
         }
@@ -195,7 +380,7 @@ FloatingWindow {
         interval: 30000
         repeat: true
         running: true
-        onTriggered: if (!rosterProcess.running) rosterProcess.running = true
+        onTriggered: if (win.configured && !rosterProcess.running) rosterProcess.running = true
     }
 
     Item {
@@ -377,17 +562,31 @@ FloatingWindow {
 
             Rectangle {
                 anchors.fill: parent
-                visible: !win.selectedAgent
+                visible: !win.selectedAgent && win.settingsKnown
                 color: "#11151c"
                 Text {
                     anchors.centerIn: parent
-                    text: win.rosterError ? win.rosterError : "Choose an agent to open Chat"
+                    text: win.rosterError ? win.rosterError :
+                          win.connecting ? "Reading agents…" : "Choose an agent to open Chat"
                     color: "#8ea2b8"; font.pixelSize: Math.round(16 * win.textScale)
                 }
             }
 
             Rectangle {
+                anchors.fill: parent
+                visible: !win.settingsKnown
+                color: "#111923"
+                Text {
+                    anchors.centerIn: parent
+                    text: "Loading connection settings…"
+                    color: "#aebed0"
+                    font.pixelSize: Math.round(15 * win.textScale)
+                }
+            }
+
+            Rectangle {
                 x: 12; y: 12; width: 34; height: 34
+                visible: !win.settingsOpen
                 radius: 8; color: "#263648"; border.color: "#4c6884"
                 Text { anchors.centerIn: parent; text: win.sidebarOpen ? "◀" : "☰"; color: "#eef4fc"; font.pixelSize: Math.round(16 * win.textScale) }
                 MouseArea { anchors.fill: parent; onClicked: win.sidebarOpen = !win.sidebarOpen }
@@ -473,6 +672,26 @@ FloatingWindow {
                         leftPadding: 10; topPadding: 9; bottomPadding: 9
                     }
                 }
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            visible: win.settingsOpen && win.settingsKnown
+            z: 20
+            color: "#b8000000"
+            MouseArea { anchors.fill: parent; onClicked: {} }
+
+            SettingsPane {
+                id: settingsPane
+                width: Math.min(parent.width - 36, 720)
+                height: Math.min(parent.height - 36, 630)
+                anchors.centerIn: parent
+                textScale: win.textScale
+                setupRequired: !win.configured
+                onSaveRequested: win.saveSettings()
+                onCloseRequested: win.toggleSettings()
+                onDiscoverRequested: win.discoverGateway()
             }
         }
     }

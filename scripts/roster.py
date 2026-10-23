@@ -2,36 +2,14 @@
 """Read the authorized Tightbeam roster and produce safe UI data."""
 
 import json
-import os
 import subprocess
 import sys
-from pathlib import Path
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import urlencode
 
-
-def origin(value: str, label: str) -> str:
-    parsed = urlsplit(value)
-    if (parsed.scheme not in ("http", "https") or not parsed.hostname
-            or parsed.username or parsed.password or parsed.query or parsed.fragment
-            or parsed.path not in ("", "/")):
-        raise ValueError(f"{label} must be an HTTP(S) origin without credentials or a path")
-    return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
-
-
-def load_config() -> dict:
-    config_path = Path(os.environ.get(
-        "TIGHTBEAM_TUNER_CONFIG",
-        Path.home() / ".config/tightbeam-tuner/config.json",
-    ))
-    config = json.loads(config_path.read_text())
-    command = config.get("rosterCommand")
-    if not isinstance(command, list) or not command or not all(
-        isinstance(part, str) and part for part in command
-    ):
-        raise ValueError("rosterCommand must be a nonempty array of command arguments")
-    config["chatBase"] = origin(config["chatBase"], "chatBase")
-    config["gatewayOrigin"] = origin(config["gatewayOrigin"], "gatewayOrigin")
-    return config
+try:
+    from .settings import load_config, origin
+except ImportError:  # Direct execution from the installed scripts directory.
+    from settings import load_config, origin
 
 
 def normalize(config: dict, roster: dict) -> dict:

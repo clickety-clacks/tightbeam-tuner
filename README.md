@@ -7,6 +7,8 @@ Tightbeam Tuner is a Quickshell desktop app for browsing an agent tree and openi
 - Lists active agents by display name under their current parent. Parent rows can collapse their descendants.
 - Opens the selected agent's existing Chat page in the right pane.
 - Opens links from Chat in the system browser.
+- Opens connection settings as a modal with `Ctrl+,`; a new installation opens there automatically.
+- Reloads the current Chat page with `Ctrl+R`.
 - Resizes or hides the sidebar. The button at the upper left of the chat pane toggles it.
 - Filters the sidebar by agent name. Matches inside collapsed branches remain visible with their ancestors.
 - Filters the sidebar by one or more archetypes. The Spotlight picker searches every active agent and matches all query words in any order.
@@ -21,26 +23,30 @@ Tightbeam Tuner is a Quickshell desktop app for browsing an agent tree and openi
 | `Ctrl+\` | Toggle the sidebar |
 | `Ctrl+=` | Increase sidebar, picker, and Chat size |
 | `Ctrl+-` | Decrease sidebar, picker, and Chat size |
+| `Ctrl+,` | Open or close connection settings |
+| `Ctrl+R` | Reload the current Chat page |
 
 ## Requirements
 
 - Quickshell 0.3.1 with Qt WebEngine initialization support. Stock Quickshell 0.3.1 crashes when `WebEngineView` is instantiated. This repo includes `patches/quickshell-0.3.1-webengine.patch`, which links Qt WebEngine Quick, initializes it before the GUI application, and supplies the program name Qt WebEngine needs. [Upstream WebView work](https://github.com/quickshell-mirror/quickshell/pull/351) is still open.
-- Qt 6 WebEngine QML module, Python 3, and an authorized `tightbeam list` CLI context.
+- Qt 6 WebEngine QML module, Python 3, and an authorized Tightbeam CLI installation.
 - Network access to the existing private Tightbeam Chat service and the selected gateway.
 
 ## Configure
 
-Copy `config.example.json` to `~/.config/tightbeam-tuner/config.json` and edit these values:
+On first launch, Tuner opens Connection settings. Open them again with `Ctrl+,`.
 
-- `rosterCommand`: an argument array that runs `tightbeam list --as-user <user>` in an authorized context. It may start with `ssh` when the CLI is on another machine. No shell expansion is performed.
-- `chatBase`: the origin of the already provisioned Chat service.
-- `gatewayOrigin`: the canonical origin of the gateway registered with that Chat service.
+- Enter the origin of a provisioned Chat service. If the gateway URL or Tightbeam user is blank when you save, Tuner fills it from the server's published defaults when available. **Find from Chat** previews those values; otherwise enter them manually.
+- Enter where the Tightbeam CLI is installed, such as `tightbeam` if it is on `PATH` or `/path/to/tightbeam`. Enter the user whose agents you want to browse. If the CLI runs on another host, use a prefix such as `ssh host /path/to/tightbeam`. Tuner splits this prefix into arguments, appends `list --as-user <user>`, and runs it without a shell.
+- Choose **Save and connect**. Tuner reads the roster before opening the agent picker. Connection errors remain visible in settings.
 
-The config file is local and must not contain credentials. Tuner passes the exact session key in Chat's `gateway` and `session` query parameters. Chat handles its own server-side connection.
+Chat currently opens one selected conversation and does not publish a browsable agent roster. Tuner uses the configured CLI for agent names, archetypes, and parent relationships. Set up CLI access separately. Do not enter passwords or tokens in Tuner.
+
+Settings are saved with mode `0600` at `$XDG_CONFIG_HOME/tightbeam-tuner/config.json` (normally `~/.config/tightbeam-tuner/config.json`). `config.example.json` shows the file format, and `TIGHTBEAM_TUNER_CONFIG` can select another path. Tuner passes the exact session key in Chat's `gateway` and `session` query parameters; Chat handles its own server-side connection.
 
 The last chosen text size is saved in `$XDG_STATE_HOME/tightbeam-tuner/preferences.json` (normally `~/.local/state/tightbeam-tuner/preferences.json`). New windows read it when they open.
 
-Run `quickshell -p /path/to/tightbeam-tuner` with the WebView-enabled Quickshell binary. The roster refreshes every 30 seconds. Set `TIGHTBEAM_TUNER_CONFIG` to use another config path.
+Run `quickshell -p /path/to/tightbeam-tuner` with the WebView-enabled Quickshell binary. The roster refreshes every 30 seconds.
 
 To build the compatible binary without replacing your desktop's Quickshell installation, check out the Quickshell `v0.3.1` tag in a separate directory, apply the included patch with `git apply`, and build it with CMake and Ninja. The build requires Qt WebEngine Quick and Quickshell's normal build dependencies. Run the resulting `build/src/quickshell` binary with `-p /path/to/tightbeam-tuner`.
 
