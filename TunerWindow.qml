@@ -26,6 +26,7 @@ FloatingWindow {
     property bool pickerOpen: true
     property int pickerIndex: 0
     property string rosterError: ""
+    property real textScale: 1.0
     property var visibleRows: buildRows()
     property var archetypes: buildArchetypes()
     property var pickerMatches: buildPickerMatches()
@@ -123,6 +124,10 @@ FloatingWindow {
         selectedArchetypes = next
     }
 
+    function changeTextScale(steps) {
+        textScale = Math.max(0.7, Math.min(2.0, Math.round((textScale + steps * 0.1) * 10) / 10))
+    }
+
     Component.onCompleted: Qt.callLater(() => pickerInput.forceActiveFocus())
     onVisibleChanged: if (!visible) destroy()
 
@@ -130,6 +135,8 @@ FloatingWindow {
     Shortcut { sequence: "Ctrl+Space"; context: Qt.WindowShortcut; onActivated: win.showPicker() }
     Shortcut { sequence: "Ctrl+/"; context: Qt.WindowShortcut; onActivated: win.showSidebarSearch() }
     Shortcut { sequence: "Ctrl+\\"; context: Qt.WindowShortcut; onActivated: win.sidebarOpen = !win.sidebarOpen }
+    Shortcut { sequence: "Meta+="; context: Qt.WindowShortcut; onActivated: win.changeTextScale(1) }
+    Shortcut { sequence: "Meta+-"; context: Qt.WindowShortcut; onActivated: win.changeTextScale(-1) }
 
     Process {
         id: rosterProcess
@@ -176,9 +183,9 @@ FloatingWindow {
 
                 RowLayout {
                     Layout.fillWidth: true
-                    Text { text: "AGENTS"; color: "#aebbd0"; font.pixelSize: 12; font.bold: true; font.letterSpacing: 1.5 }
+                    Text { text: "AGENTS"; color: "#aebbd0"; font.pixelSize: Math.round(12 * win.textScale); font.bold: true; font.letterSpacing: 1.5 }
                     Item { Layout.fillWidth: true }
-                    Text { text: String(win.visibleRows.length); color: "#7e91a8"; font.pixelSize: 12 }
+                    Text { text: String(win.visibleRows.length); color: "#7e91a8"; font.pixelSize: Math.round(12 * win.textScale) }
                 }
 
                 ListView {
@@ -192,21 +199,21 @@ FloatingWindow {
                         required property var modelData
                         readonly property var row: modelData
                         width: agentList.width
-                        height: 34
+                        height: Math.round(34 * win.textScale)
                         radius: 7
                         color: win.selectedAgent && win.selectedAgent.key === row.agent.key ? "#30465f" :
                                mouse.containsMouse ? "#253141" : "transparent"
 
                         Row {
                             anchors.fill: parent
-                            anchors.leftMargin: Math.min(row.depth, 8) * 14 + 4
+                                anchors.leftMargin: Math.min(row.depth, 8) * 14 * win.textScale + 4
                             spacing: 4
                             Rectangle {
-                                width: 20; height: 30; color: "transparent"
+                                width: 20 * win.textScale; height: 30 * win.textScale; color: "transparent"
                                 Text {
                                     anchors.centerIn: parent
                                     text: row.hasChildren ? (win.collapsed[row.agent.key] && !sidebarInput.text ? "▸" : "▾") : ""
-                                    color: "#91a5bd"; font.pixelSize: 15
+                                    color: "#91a5bd"; font.pixelSize: Math.round(15 * win.textScale)
                                 }
                                 MouseArea {
                                     anchors.fill: parent
@@ -220,18 +227,18 @@ FloatingWindow {
                             }
                             Text {
                                 width: Math.max(60, agentList.width - parent.anchors.leftMargin - 32)
-                                height: 30
+                                height: 30 * win.textScale
                                 verticalAlignment: Text.AlignVCenter
                                 elide: Text.ElideRight
                                 text: row.agent.name
                                 color: row.contextOnly ? "#8295ad" : "#e9eef5"
-                                font.pixelSize: 14
+                                font.pixelSize: Math.round(14 * win.textScale)
                             }
                         }
                         MouseArea {
                             id: mouse
                             anchors.fill: parent
-                            anchors.leftMargin: Math.min(row.depth, 8) * 14 + 28
+                            anchors.leftMargin: Math.min(row.depth, 8) * 14 * win.textScale + 28 * win.textScale
                             hoverEnabled: true
                             onClicked: win.selectAgent(row.agent)
                         }
@@ -245,6 +252,7 @@ FloatingWindow {
                     text: win.sidebarQuery
                     onTextChanged: win.sidebarQuery = text
                     color: "#eef4fc"
+                    font.pixelSize: Math.round(14 * win.textScale)
                     selectByMouse: true
                     background: Rectangle { radius: 7; color: "#101923"; border.color: sidebarInput.activeFocus ? "#79b7ec" : "#3b4b5f" }
                     Keys.onUpPressed: agentList.positionViewAtBeginning()
@@ -264,14 +272,15 @@ FloatingWindow {
                         anchors.margins: 6
                         spacing: 2
                         Rectangle {
-                            width: parent.width; height: 27; color: "transparent"
+                            width: parent.width; height: 27 * win.textScale; color: "transparent"
                             Text {
                                 anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
-                                text: "Archetypes"; color: "#afc0d4"; font.pixelSize: 12
+                                text: "Archetypes"; color: "#afc0d4"; font.pixelSize: Math.round(12 * win.textScale)
                             }
                             Text {
                                 anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                                 text: win.archetypesExpanded ? "▴" : "▾"; color: "#afc0d4"
+                                font.pixelSize: Math.round(12 * win.textScale)
                             }
                             MouseArea { anchors.fill: parent; onClicked: win.archetypesExpanded = !win.archetypesExpanded }
                         }
@@ -281,6 +290,7 @@ FloatingWindow {
                                 required property string modelData
                                 text: modelData
                                 width: archetypeColumn.width
+                                font.pixelSize: Math.round(12 * win.textScale)
                                 checked: !!win.selectedArchetypes[modelData]
                                 onClicked: win.toggleArchetype(modelData)
                             }
@@ -323,6 +333,7 @@ FloatingWindow {
                 anchors.fill: parent
                 visible: !!win.selectedAgent
                 url: win.selectedAgent ? win.selectedAgent.url : "about:blank"
+                zoomFactor: win.textScale
             }
 
             Rectangle {
@@ -332,14 +343,14 @@ FloatingWindow {
                 Text {
                     anchors.centerIn: parent
                     text: win.rosterError ? win.rosterError : "Choose an agent to open Chat"
-                    color: "#8ea2b8"; font.pixelSize: 16
+                    color: "#8ea2b8"; font.pixelSize: Math.round(16 * win.textScale)
                 }
             }
 
             Rectangle {
                 x: 12; y: 12; width: 34; height: 34
                 radius: 8; color: "#263648"; border.color: "#4c6884"
-                Text { anchors.centerIn: parent; text: win.sidebarOpen ? "◀" : "☰"; color: "#eef4fc"; font.pixelSize: 16 }
+                Text { anchors.centerIn: parent; text: win.sidebarOpen ? "◀" : "☰"; color: "#eef4fc"; font.pixelSize: Math.round(16 * win.textScale) }
                 MouseArea { anchors.fill: parent; onClicked: win.sidebarOpen = !win.sidebarOpen }
             }
         }
@@ -372,9 +383,9 @@ FloatingWindow {
                     TextField {
                         id: pickerInput
                         width: parent.width
-                        height: 46
+                        height: Math.round(46 * win.textScale)
                         placeholderText: "Find an agent…"
-                        color: "#f4f8ff"; font.pixelSize: 18
+                        color: "#f4f8ff"; font.pixelSize: Math.round(18 * win.textScale)
                         selectByMouse: true
                         background: Rectangle { radius: 8; color: "#111923" }
                         onTextChanged: win.pickerIndex = 0
@@ -401,7 +412,7 @@ FloatingWindow {
                             required property int index
                             required property var modelData
                             width: pickerColumn.width
-                            height: 36
+                            height: Math.round(36 * win.textScale)
                             radius: 7
                             color: index === win.pickerIndex ? "#36516c" : "transparent"
                             Text {
@@ -409,7 +420,7 @@ FloatingWindow {
                                 anchors.leftMargin: 12
                                 verticalAlignment: Text.AlignVCenter
                                 text: modelData.name
-                                color: "#eaf2fb"; font.pixelSize: 14
+                                color: "#eaf2fb"; font.pixelSize: Math.round(14 * win.textScale)
                                 elide: Text.ElideRight
                             }
                             MouseArea { anchors.fill: parent; onClicked: win.selectAgent(modelData) }
@@ -419,7 +430,7 @@ FloatingWindow {
                     Text {
                         visible: win.pickerMatches.length === 0
                         text: win.rosterError ? win.rosterError : "No matching agents"
-                        color: "#a9b7c7"; font.pixelSize: 13
+                        color: "#a9b7c7"; font.pixelSize: Math.round(13 * win.textScale)
                         leftPadding: 10; topPadding: 9; bottomPadding: 9
                     }
                 }
