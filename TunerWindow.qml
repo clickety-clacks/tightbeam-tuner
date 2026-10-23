@@ -129,7 +129,20 @@ FloatingWindow {
     }
 
     function changeTextScale(steps) {
-        textScale = Math.max(0.7, Math.min(2.0, Math.round((textScale + steps * 0.1) * 10) / 10))
+        const next = Math.max(0.7, Math.min(2.0, Math.round((textScale + steps * 0.1) * 10) / 10))
+        if (next === textScale) return
+        textScale = next
+        preferences.setText(JSON.stringify({ textScale: next }))
+    }
+
+    function restoreTextScale() {
+        try {
+            const saved = JSON.parse(preferences.text())
+            if (typeof saved.textScale === "number" && isFinite(saved.textScale))
+                textScale = Math.max(0.7, Math.min(2.0, Math.round(saved.textScale * 10) / 10))
+        } catch (error) {
+            // The default size applies until a preference has been saved.
+        }
     }
 
     Component.onCompleted: Qt.callLater(() => pickerInput.forceActiveFocus())
@@ -141,6 +154,15 @@ FloatingWindow {
     Shortcut { sequence: "Ctrl+\\"; context: Qt.WindowShortcut; onActivated: win.sidebarOpen = !win.sidebarOpen }
     Shortcut { sequence: "Ctrl+="; context: Qt.WindowShortcut; onActivated: win.changeTextScale(1) }
     Shortcut { sequence: "Ctrl+-"; context: Qt.WindowShortcut; onActivated: win.changeTextScale(-1) }
+
+    FileView {
+        id: preferences
+        path: Quickshell.statePath("preferences.json")
+        blockLoading: true
+        blockWrites: true
+        printErrors: false
+        onLoaded: win.restoreTextScale()
+    }
 
     Process {
         id: rosterProcess

@@ -10,7 +10,7 @@ Tightbeam Tuner is a Quickshell desktop app for browsing an agent tree and openi
 - Filters the sidebar by agent name. Matches inside collapsed branches remain visible with their ancestors.
 - Filters the sidebar by one or more archetypes. The Spotlight picker searches every active agent and matches all query words in any order.
 - Opens each window with an empty selection and a focused Spotlight picker. Every window has its own selection and UI state.
-- Adjusts text size independently in each window. The embedded Chat page uses WebEngine zoom.
+- Remembers the last chosen text size for later windows and launches. Open windows keep their own size. The embedded Chat page uses WebEngine zoom.
 
 | Shortcut | Action |
 | --- | --- |
@@ -36,6 +36,8 @@ Copy `config.example.json` to `~/.config/tightbeam-tuner/config.json` and edit t
 - `gatewayOrigin`: the canonical origin of the gateway registered with that Chat service.
 
 The config file is local and must not contain credentials. Tuner passes the exact session key in Chat's `gateway` and `session` query parameters. Chat handles its own server-side connection.
+
+The last chosen text size is saved in `$XDG_STATE_HOME/tightbeam-tuner/preferences.json` (normally `~/.local/state/tightbeam-tuner/preferences.json`). New windows read it when they open.
 
 Run `quickshell -p /path/to/tightbeam-tuner` with the WebView-enabled Quickshell binary. The roster refreshes every 30 seconds. Set `TIGHTBEAM_TUNER_CONFIG` to use another config path.
 

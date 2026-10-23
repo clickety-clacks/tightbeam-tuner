@@ -1,4 +1,5 @@
 //@ pragma AppId tightbeam-tuner
+//@ pragma StateDir $BASE/tightbeam-tuner
 import QtQuick
 import Quickshell
 
