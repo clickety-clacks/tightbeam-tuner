@@ -1,20 +1,6 @@
 import SwiftUI
 import WebKit
 
-private final class ChatViewportWebView: WKWebView {
-    var onLayout: ((ChatViewportWebView) -> Void)?
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        onLayout?(self)
-    }
-
-    override func safeAreaInsetsDidChange() {
-        super.safeAreaInsetsDidChange()
-        onLayout?(self)
-    }
-}
-
 /// Hosts Chat in a web view. The view controller carries extra bottom safe area for
 /// controls floating over the page, which Chat reads as `env(safe-area-inset-bottom)`.
 struct ChatWebView: UIViewControllerRepresentable {
@@ -22,21 +8,6 @@ struct ChatWebView: UIViewControllerRepresentable {
     let reloadToken: Int
     let bridge: ChatHostBridge
     var floatingBottomInset: CGFloat = 0
-
-    private static let sideInsets = #"""
-        const style = document.createElement('style');
-        style.textContent = `
-          html.tuner-side-insets .tb-chat-viewport {
-            padding-left: calc(clamp(.85rem, 4vw, 2.2rem) + max(env(safe-area-inset-left), var(--tuner-safe-left, 0px))) !important;
-            padding-right: calc(clamp(.85rem, 4vw, 2.2rem) + max(env(safe-area-inset-right), var(--tuner-safe-right, 0px))) !important;
-          }
-          html.tuner-side-insets .tb-chat-composer {
-            left: calc(clamp(.65rem, 3vw, 1.4rem) + max(env(safe-area-inset-left), var(--tuner-safe-left, 0px))) !important;
-            right: calc(clamp(.65rem, 3vw, 1.4rem) + max(env(safe-area-inset-right), var(--tuner-safe-right, 0px))) !important;
-          }
-        `;
-        document.head.appendChild(style);
-        """#
 
     static let pinchHandlerName = "tunerPinch"
 
@@ -72,11 +43,6 @@ struct ChatWebView: UIViewControllerRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.addUserScript(bridge.declarationScript)
         configuration.userContentController.add(bridge, name: ChatHostBridge.messageHandlerName)
-        configuration.userContentController.addUserScript(WKUserScript(
-            source: Self.sideInsets,
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
-        ))
         let zoomRange = Coordinator.zoomRange
         let pinchScript = "window.__tunerTextZoom = \(context.coordinator.savedZoom);\n" + Self.pinchScript
             .replacingOccurrences(of: "MIN_ZOOM", with: "\(zoomRange.lowerBound)")
@@ -87,10 +53,7 @@ struct ChatWebView: UIViewControllerRepresentable {
             forMainFrameOnly: true
         ))
         configuration.userContentController.add(context.coordinator, name: Self.pinchHandlerName)
-        let webView = ChatViewportWebView(frame: .zero, configuration: configuration)
-        webView.onLayout = { [weak coordinator = context.coordinator] webView in
-            coordinator?.updateLayout(webView)
-        }
+        let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         // Match Chat's page color so loading and overscroll show linen, not white.
         webView.isOpaque = false
@@ -114,7 +77,6 @@ struct ChatWebView: UIViewControllerRepresentable {
             controller.additionalSafeAreaInsets.bottom = floatingBottomInset
         }
         guard let webView = controller.view as? WKWebView else { return }
-        context.coordinator.updateLayout(webView)
         if context.coordinator.loadedURL != url {
             context.coordinator.loadedURL = url
             webView.load(URLRequest(url: url))
@@ -128,7 +90,6 @@ struct ChatWebView: UIViewControllerRepresentable {
         var loadedURL: URL?
         var reloadToken = 0
         weak var bridge: ChatHostBridge?
-        private var appliedLayout: (Bool, CGFloat, CGFloat)?
 
         // Text size set by pinching, shared by every chat and kept across launches.
         private static let zoomKey = "chatTextZoom"
@@ -146,20 +107,6 @@ struct ChatWebView: UIViewControllerRepresentable {
             UserDefaults.standard.set(zoom, forKey: Self.zoomKey)
         }
 
-        func updateLayout(_ webView: WKWebView, force: Bool = false) {
-            // Keep the transcript clear of any side bars the system reserves, in any orientation
-            // (landscape notch, or the vertical bar on a folded iPhone Duo in portrait).
-            guard webView.window != nil else { return }
-            let leading = max(0, webView.safeAreaInsets.left)
-            let trailing = max(0, webView.safeAreaInsets.right)
-            let inset = leading > 0 || trailing > 0
-            if !force, let appliedLayout,
-               appliedLayout.0 == inset && appliedLayout.1 == leading && appliedLayout.2 == trailing { return }
-            appliedLayout = (inset, leading, trailing)
-            let script = "document.documentElement.classList.toggle('tuner-side-insets', \(inset)); document.documentElement.style.setProperty('--tuner-safe-left', '\(Double(leading))px'); document.documentElement.style.setProperty('--tuner-safe-right', '\(Double(trailing))px')"
-            webView.evaluateJavaScript(script)
-        }
-
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             bridge?.pageStarted()
         }
@@ -173,7 +120,6 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            updateLayout(webView, force: true)
             // A reload starts from the size chosen when this view opened; reapply the latest.
             webView.evaluateJavaScript("window.__tunerSetTextZoom?.(\(savedZoom))")
         }
