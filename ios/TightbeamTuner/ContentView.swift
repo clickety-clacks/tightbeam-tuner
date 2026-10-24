@@ -70,6 +70,7 @@ private struct AgentChatView: View {
     let reloadToken: Int
     @Binding var draft: String
     @State private var bridge: ChatHostBridge
+    @State private var composerHeight: CGFloat = 0
 
     init(url: URL, reloadToken: Int, draft: Binding<String>) {
         self.url = url
@@ -79,11 +80,15 @@ private struct AgentChatView: View {
     }
 
     var body: some View {
-        ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge)
-            .ignoresSafeArea(.container, edges: bridge.hostComposerActive ? [.top, .horizontal] : .all)
+        // The page runs edge to edge under the floating composer. Its height joins the page's
+        // bottom safe area, so Chat keeps the newest message just above the glass.
+        ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
+                    floatingBottomInset: bridge.hostComposerActive ? composerHeight : 0)
+            .ignoresSafeArea(.container)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if bridge.hostComposerActive {
                     NativeChatComposer(draft: $draft, bridge: bridge)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
                 }
             }
     }

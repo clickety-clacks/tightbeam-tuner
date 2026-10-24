@@ -45,6 +45,8 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     private(set) var outgoing: Outgoing?
     /// True once Chat has hidden its composer in this page load (it stays hidden until the next page).
     private(set) var hostComposerActive = false
+    /// The agent's display name from Chat's latest `ready`.
+    private(set) var agentName: String?
 
     private let allowedOrigin: String
     weak var webView: WKWebView?
@@ -166,6 +168,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             guard (event["version"] as? Int) == 1, let lifetimeId,
                   let sessionKey = event["sessionKey"] as? String else { return }
             phase = .ready(lifetimeId: lifetimeId, sessionKey: sessionKey)
+            agentName = event["agentDisplayName"] as? String ?? agentName
             hostComposerActive = true
         case "unavailable":
             if let lifetimeId, case let .ready(current, _) = phase, current == lifetimeId {

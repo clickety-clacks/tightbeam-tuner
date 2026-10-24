@@ -15,10 +15,13 @@ private final class ChatViewportWebView: WKWebView {
     }
 }
 
-struct ChatWebView: UIViewRepresentable {
+/// Hosts Chat in a web view. The view controller carries extra bottom safe area for
+/// controls floating over the page, which Chat reads as `env(safe-area-inset-bottom)`.
+struct ChatWebView: UIViewControllerRepresentable {
     let url: URL
     let reloadToken: Int
     let bridge: ChatHostBridge
+    var floatingBottomInset: CGFloat = 0
 
     private static let landscapeInsets = #"""
         const style = document.createElement('style');
@@ -37,7 +40,7 @@ struct ChatWebView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeUIView(context: Context) -> WKWebView {
+    func makeUIViewController(context: Context) -> UIViewController {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.addUserScript(bridge.declarationScript)
         configuration.userContentController.add(bridge, name: ChatHostBridge.messageHandlerName)
@@ -58,10 +61,17 @@ struct ChatWebView: UIViewRepresentable {
         context.coordinator.bridge = bridge
         webView.load(URLRequest(url: url))
         context.coordinator.loadedURL = url
-        return webView
+        let controller = UIViewController()
+        controller.view = webView
+        controller.additionalSafeAreaInsets.bottom = floatingBottomInset
+        return controller
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {
+    func updateUIViewController(_ controller: UIViewController, context: Context) {
+        if controller.additionalSafeAreaInsets.bottom != floatingBottomInset {
+            controller.additionalSafeAreaInsets.bottom = floatingBottomInset
+        }
+        guard let webView = controller.view as? WKWebView else { return }
         context.coordinator.updateLayout(webView)
         if context.coordinator.loadedURL != url {
             context.coordinator.loadedURL = url
