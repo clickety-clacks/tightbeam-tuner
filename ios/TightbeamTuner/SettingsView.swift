@@ -119,7 +119,7 @@ struct SettingsView: View {
                 throw URLError(.badServerResponse)
             }
             let config = try JSONDecoder().decode(ChatDefaults.self, from: data)
-            guard draft.origin(config.gateway) != nil else { throw URLError(.badURL) }
+            guard draft.origin(config.gateway, allowHTTP: true) != nil else { throw URLError(.badURL) }
             draft.gateway = config.gateway
             discoveryError = nil
         } catch {

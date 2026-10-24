@@ -63,7 +63,7 @@ Open `ios/TightbeamTuner.xcodeproj` in Xcode 27.1 or later. The bundle identifie
 
 On first launch, enter:
 
-- The HTTPS Chat server and gateway origins. **Find gateway from Chat** reads the server's published default when available.
+- The HTTPS Chat server and its HTTP or HTTPS gateway origin. **Find gateway from Chat** reads the server's published default when available.
 - The SSH host, port, login, Tightbeam CLI path, and Tightbeam user. Tuner runs `<path> list --as-user <user>` over SSH to obtain the agent tree.
 - The server's public `ssh-ed25519` host key. Tuner pins this key and rejects a different one. Obtain and verify it with the server administrator before pasting it.
 

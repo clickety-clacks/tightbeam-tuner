@@ -41,6 +41,7 @@ targets:
         CURRENT_PROJECT_VERSION: '1'
         INFOPLIST_KEY_CFBundleShortVersionString: '1.0'
         INFOPLIST_KEY_CFBundleVersion: '1'
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: 'NO'
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
   TightbeamTunerTests:

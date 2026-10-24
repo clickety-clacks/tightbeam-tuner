@@ -19,4 +19,18 @@ final class ConnectionTests: XCTestCase {
         XCTAssertEqual(values.first { $0.name == "session" }?.value, agent.id)
         XCTAssertEqual(values.first { $0.name == "gateway" }?.value, connection.gateway)
     }
+
+    func testHTTPGatewayFromChatIsAcceptedButChatRequiresHTTPS() throws {
+        var connection = Connection()
+        connection.chatServer = "https://chat.example.test"
+        connection.gateway = "http://gateway.example.test:11373"
+        connection.sshHost = "server.example.test"
+        connection.sshUser = "user"
+        connection.sshHostKey = try SSHKeyStore.publicKeyLine()
+        connection.tightbeamUser = "user"
+        XCTAssertTrue(connection.isComplete)
+
+        connection.chatServer = "http://chat.example.test"
+        XCTAssertFalse(connection.isComplete)
+    }
 }

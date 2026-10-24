@@ -11,7 +11,7 @@ struct Connection: Codable, Equatable {
     var tightbeamUser = ""
 
     var isComplete: Bool {
-        origin(chatServer) != nil && origin(gateway) != nil
+        origin(chatServer) != nil && origin(gateway, allowHTTP: true) != nil
             && !sshHost.isEmpty && !sshHost.contains(where: \.isWhitespace)
             && (1...65535).contains(sshPort)
             && !sshUser.isEmpty && !sshUser.contains(where: \.isWhitespace)
@@ -20,8 +20,9 @@ struct Connection: Codable, Equatable {
             && SSHRoster.validHostKey(sshHostKey)
     }
 
-    func origin(_ value: String) -> URL? {
-        guard let url = URL(string: value), url.scheme == "https",
+    func origin(_ value: String, allowHTTP: Bool = false) -> URL? {
+        guard let url = URL(string: value),
+              url.scheme == "https" || (allowHTTP && url.scheme == "http"),
               url.host != nil, url.user == nil, url.password == nil,
               url.path.isEmpty || url.path == "/" else { return nil }
         guard url.query == nil, url.fragment == nil else { return nil }
