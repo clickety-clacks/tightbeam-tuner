@@ -210,6 +210,8 @@ private struct AgentSidebar: View {
         .nordicListStyle()
         .refreshable { await store.refresh() }
         .searchable(text: $query, placement: .sidebar, prompt: "Filter agents")
+        // Keep the archetype menu in the toolbar while searching.
+        .searchPresentationToolbarBehavior(.avoidHidingContent)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu("Filter archetypes", systemImage: "line.3.horizontal.decrease.circle") {
