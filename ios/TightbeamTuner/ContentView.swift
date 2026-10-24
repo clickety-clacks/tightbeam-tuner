@@ -4,14 +4,10 @@ struct ContentView: View {
     @State private var store = TunerStore()
     @State private var showingSettings = false
     @State private var reloadToken = 0
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @AppStorage("appearance") private var appearance = "system"
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility,
-                            preferredCompactColumn: $preferredCompactColumn) {
+        NavigationSplitView {
             AgentSidebar(store: store)
                 .navigationTitle("Agents")
                 .toolbar {
@@ -22,27 +18,14 @@ struct ContentView: View {
         } detail: {
             Group {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
-                    ZStack(alignment: .top) {
-                        ChatWebView(url: url, reloadToken: reloadToken)
-                            .id(agent.id)
-                            .ignoresSafeArea(.container, edges: .bottom)
-
-                        HStack {
-                            Button("Agents", systemImage: "sidebar.left") {
-                                if horizontalSizeClass == .compact {
-                                    preferredCompactColumn = .sidebar
-                                } else {
-                                    columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-                                }
+                    ChatWebView(url: url, reloadToken: reloadToken)
+                        .id(agent.id)
+                        .ignoresSafeArea(.container, edges: .bottom)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Reload Chat", systemImage: "arrow.clockwise") { reloadToken += 1 }
                             }
-                            Spacer()
-                            Button("Reload Chat", systemImage: "arrow.clockwise") { reloadToken += 1 }
                         }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.bordered)
-                        .padding(8)
-                    }
-                    .toolbar(.hidden, for: .navigationBar)
                 } else {
                     ContentUnavailableView("Choose an agent", systemImage: "bubble.left.and.bubble.right")
                 }
@@ -60,7 +43,6 @@ struct ContentView: View {
         .onChange(of: store.selectedID) { _, value in
             if let value, let agent = store.agents.first(where: { $0.id == value }) {
                 store.select(agent)
-                preferredCompactColumn = .detail
             }
         }
     }
