@@ -10,8 +10,8 @@ import WebKit
 @MainActor @Observable
 final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     // Names published in Chat's seam contract. They stay fixed within version 1.
-    static let declarationName = "tightbeamChatHost"
-    static let commandEntryName = "tightbeamChatHostCommand"
+    static let declarationName = "__TIGHTBEAM_CHAT_HOST__"
+    static let commandEntryName = "__TIGHTBEAM_CHAT_COMMAND__"
     static let messageHandlerName = "tunerChatHost"
 
     enum Phase: Equatable {
@@ -155,7 +155,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         guard message.frameInfo.isMainFrame, origin(of: message.frameInfo.securityOrigin) == allowedOrigin,
               let body = message.body as? String, let data = body.data(using: .utf8),
               let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = event["type"] as? String else { return }
+              let type = event["event"] as? String else { return }
         handle(type: type, event: event)
     }
 
