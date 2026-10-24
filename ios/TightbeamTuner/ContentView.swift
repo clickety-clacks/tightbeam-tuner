@@ -6,6 +6,19 @@ struct ContentView: View {
     @State private var reloadToken = 0
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @AppStorage("appearance") private var appearance = "system"
+    /// Native composer drafts per agent, restored on relaunch. Send state is not kept.
+    @SceneStorage("drafts") private var draftsData = Data()
+
+    private func draftBinding(for agentID: String) -> Binding<String> {
+        Binding(
+            get: { (try? JSONDecoder().decode([String: String].self, from: draftsData))?[agentID] ?? "" },
+            set: { value in
+                var drafts = (try? JSONDecoder().decode([String: String].self, from: draftsData)) ?? [:]
+                drafts[agentID] = value.isEmpty ? nil : value
+                draftsData = (try? JSONEncoder().encode(drafts)) ?? Data()
+            }
+        )
+    }
 
     var body: some View {
         NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
@@ -19,9 +32,8 @@ struct ContentView: View {
         } detail: {
             Group {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
-                    ChatWebView(url: url, reloadToken: reloadToken)
+                    AgentChatView(url: url, reloadToken: reloadToken, draft: draftBinding(for: agent.id))
                         .id(agent.id)
-                        .ignoresSafeArea(.container)
                         .toolbarBackground(.hidden, for: .navigationBar)
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
@@ -48,6 +60,32 @@ struct ContentView: View {
                 preferredCompactColumn = .detail
             }
         }
+    }
+}
+
+/// One agent's chat. Chat's own composer serves until Chat reports the seam ready,
+/// then Tuner's native composer takes over below the transcript.
+private struct AgentChatView: View {
+    let url: URL
+    let reloadToken: Int
+    @Binding var draft: String
+    @State private var bridge: ChatHostBridge
+
+    init(url: URL, reloadToken: Int, draft: Binding<String>) {
+        self.url = url
+        self.reloadToken = reloadToken
+        _draft = draft
+        _bridge = State(initialValue: ChatHostBridge(chatURL: url))
+    }
+
+    var body: some View {
+        ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge)
+            .ignoresSafeArea(.container, edges: bridge.hostComposerActive ? [.top, .horizontal] : .all)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if bridge.hostComposerActive {
+                    NativeChatComposer(draft: $draft, bridge: bridge)
+                }
+            }
     }
 }
 

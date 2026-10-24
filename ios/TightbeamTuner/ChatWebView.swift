@@ -18,6 +18,7 @@ private final class ChatViewportWebView: WKWebView {
 struct ChatWebView: UIViewRepresentable {
     let url: URL
     let reloadToken: Int
+    let bridge: ChatHostBridge
 
     private static let landscapeInsets = #"""
         const style = document.createElement('style');
@@ -38,6 +39,8 @@ struct ChatWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
+        configuration.userContentController.addUserScript(bridge.declarationScript)
+        configuration.userContentController.add(bridge, name: ChatHostBridge.messageHandlerName)
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.landscapeInsets,
             injectionTime: .atDocumentEnd,
@@ -51,6 +54,8 @@ struct ChatWebView: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
+        bridge.webView = webView
+        context.coordinator.bridge = bridge
         webView.load(URLRequest(url: url))
         context.coordinator.loadedURL = url
         return webView
@@ -70,6 +75,7 @@ struct ChatWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var loadedURL: URL?
         var reloadToken = 0
+        weak var bridge: ChatHostBridge?
         private var appliedLayout: (Bool, CGFloat, CGFloat)?
 
         func updateLayout(_ webView: WKWebView, force: Bool = false) {
@@ -82,6 +88,18 @@ struct ChatWebView: UIViewRepresentable {
             appliedLayout = (landscape, leading, trailing)
             let script = "document.documentElement.classList.toggle('tuner-landscape', \(landscape)); document.documentElement.style.setProperty('--tuner-safe-left', '\(Double(leading))px'); document.documentElement.style.setProperty('--tuner-safe-right', '\(Double(trailing))px')"
             webView.evaluateJavaScript(script)
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            bridge?.pageStarted()
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            bridge?.pageEnded()
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            bridge?.pageEnded()
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
