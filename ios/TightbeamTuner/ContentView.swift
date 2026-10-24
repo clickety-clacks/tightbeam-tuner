@@ -4,10 +4,11 @@ struct ContentView: View {
     @State private var store = TunerStore()
     @State private var showingSettings = false
     @State private var reloadToken = 0
+    @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @AppStorage("appearance") private var appearance = "system"
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
             AgentSidebar(store: store)
                 .navigationTitle("Agents")
                 .toolbar {
@@ -20,7 +21,8 @@ struct ContentView: View {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
                     ChatWebView(url: url, reloadToken: reloadToken)
                         .id(agent.id)
-                        .ignoresSafeArea(.container, edges: .bottom)
+                        .ignoresSafeArea(.container)
+                        .toolbarBackground(.hidden, for: .navigationBar)
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
                                 Button("Reload Chat", systemImage: "arrow.clockwise") { reloadToken += 1 }
@@ -43,6 +45,7 @@ struct ContentView: View {
         .onChange(of: store.selectedID) { _, value in
             if let value, let agent = store.agents.first(where: { $0.id == value }) {
                 store.select(agent)
+                preferredCompactColumn = .detail
             }
         }
     }

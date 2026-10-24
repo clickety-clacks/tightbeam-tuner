@@ -1,14 +1,52 @@
 import SwiftUI
 import WebKit
 
+private final class ChatViewportWebView: WKWebView {
+    var onLayout: ((ChatViewportWebView) -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayout?(self)
+    }
+
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        onLayout?(self)
+    }
+}
+
 struct ChatWebView: UIViewRepresentable {
     let url: URL
     let reloadToken: Int
 
+    private static let landscapeInsets = #"""
+        const style = document.createElement('style');
+        style.textContent = `
+          html.tuner-landscape .tb-chat-viewport {
+            padding-left: calc(clamp(.85rem, 4vw, 2.2rem) + max(env(safe-area-inset-left), var(--tuner-safe-left, 0px))) !important;
+            padding-right: calc(clamp(.85rem, 4vw, 2.2rem) + max(env(safe-area-inset-right), var(--tuner-safe-right, 0px))) !important;
+          }
+          html.tuner-landscape .tb-chat-composer {
+            left: calc(clamp(.65rem, 3vw, 1.4rem) + max(env(safe-area-inset-left), var(--tuner-safe-left, 0px))) !important;
+            right: calc(clamp(.65rem, 3vw, 1.4rem) + max(env(safe-area-inset-right), var(--tuner-safe-right, 0px))) !important;
+          }
+        `;
+        document.head.appendChild(style);
+        """#
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> WKWebView {
-        let webView = WKWebView()
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: Self.landscapeInsets,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
+        let webView = ChatViewportWebView(frame: .zero, configuration: configuration)
+        webView.onLayout = { [weak coordinator = context.coordinator] webView in
+            coordinator?.updateLayout(webView)
+        }
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -19,6 +57,7 @@ struct ChatWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.updateLayout(webView)
         if context.coordinator.loadedURL != url {
             context.coordinator.loadedURL = url
             webView.load(URLRequest(url: url))
@@ -31,6 +70,23 @@ struct ChatWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var loadedURL: URL?
         var reloadToken = 0
+        private var appliedLayout: (Bool, CGFloat, CGFloat)?
+
+        func updateLayout(_ webView: WKWebView, force: Bool = false) {
+            guard let orientation = webView.window?.windowScene?.interfaceOrientation else { return }
+            let landscape = orientation.isLandscape
+            let leading = landscape ? max(0, webView.safeAreaInsets.left) : 0
+            let trailing = landscape ? max(0, webView.safeAreaInsets.right) : 0
+            if !force, let appliedLayout,
+               appliedLayout.0 == landscape && appliedLayout.1 == leading && appliedLayout.2 == trailing { return }
+            appliedLayout = (landscape, leading, trailing)
+            let script = "document.documentElement.classList.toggle('tuner-landscape', \(landscape)); document.documentElement.style.setProperty('--tuner-safe-left', '\(Double(leading))px'); document.documentElement.style.setProperty('--tuner-safe-right', '\(Double(trailing))px')"
+            webView.evaluateJavaScript(script)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            updateLayout(webView, force: true)
+        }
 
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
             if action.navigationType == .linkActivated, let url = action.request.url {
