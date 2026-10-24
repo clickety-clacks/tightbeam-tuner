@@ -83,17 +83,19 @@ private struct AgentChatView: View {
     }
 
     var body: some View {
-        // The page runs edge to edge under the floating composer. Its height joins the page's
-        // bottom safe area, so Chat keeps the newest message just above the glass.
-        ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
-                    floatingBottomInset: bridge.hostComposerActive ? composerHeight : 0)
-            .ignoresSafeArea(.container)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if bridge.hostComposerActive {
-                    NativeChatComposer(draft: $draft, bridge: bridge)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
-                }
+        // The page runs edge to edge under the floating composer, including under a floating
+        // sidebar. The composer stays inside the safe area, so it centers in the detail column.
+        // Its height joins the page's bottom safe area, so Chat keeps the newest message just
+        // above the glass.
+        ZStack(alignment: .bottom) {
+            ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
+                        floatingBottomInset: bridge.hostComposerActive ? composerHeight : 0)
+                .ignoresSafeArea(.container)
+            if bridge.hostComposerActive {
+                NativeChatComposer(draft: $draft, bridge: bridge)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
+        }
     }
 }
 

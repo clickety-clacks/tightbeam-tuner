@@ -6,6 +6,9 @@ struct NativeChatComposer: View {
     @Binding var draft: String
     let bridge: ChatHostBridge
     @FocusState private var focused: Bool
+    /// A comfortable line of body text, about 70 characters, plus the send button.
+    /// Scales with Dynamic Type so the line length stays the same at any text size.
+    @ScaledMetric(relativeTo: .body) private var maxWidth: CGFloat = 640
 
     private var trimmed: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -30,7 +33,6 @@ struct NativeChatComposer: View {
                         .lineLimit(1...6)
                         .foregroundStyle(Color.nordicText)
                         .focused($focused)
-                        .submitLabel(.send)
                         .padding(.leading, 16)
                         .padding(.vertical, 11)
                         .accessibilityLabel("Message")
@@ -48,6 +50,7 @@ struct NativeChatComposer: View {
                 .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22, style: .continuous))
             }
         }
+        .frame(maxWidth: maxWidth)
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
         .animation(.default, value: notice)
