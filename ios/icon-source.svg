@@ -1,18 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#142b4a"/>
-      <stop offset="1" stop-color="#071421"/>
-    </linearGradient>
-    <linearGradient id="beam" x1="0" y1="0" x2="1" y2="0">
-      <stop stop-color="#4dd6f5"/>
-      <stop offset="1" stop-color="#8ca9ff"/>
-    </linearGradient>
+    <radialGradient id="night" cx="50%" cy="42%" r="75%">
+      <stop stop-color="#173e62"/>
+      <stop offset=".55" stop-color="#10283f"/>
+      <stop offset="1" stop-color="#07131f"/>
+    </radialGradient>
+    <radialGradient id="core">
+      <stop stop-color="#ffffff"/>
+      <stop offset=".63" stop-color="#e6fbff"/>
+      <stop offset="1" stop-color="#8de8fa"/>
+    </radialGradient>
   </defs>
-  <rect width="1024" height="1024" fill="url(#bg)"/>
-  <path d="M141 333H883" fill="none" stroke="#65c9f1" stroke-width="70" stroke-linecap="round"/>
-  <path d="M512 333V806" fill="none" stroke="#65c9f1" stroke-width="70" stroke-linecap="round"/>
-  <circle cx="512" cy="333" r="97" fill="#e8fbff"/>
-  <circle cx="512" cy="333" r="39" fill="#113453"/>
-  <path d="M205 520c-64-62-64-151 0-213M819 520c64-62 64-151 0-213" fill="none" stroke="#5dc8ef" stroke-width="31" stroke-linecap="round" opacity=".72"/>
+  <rect width="1024" height="1024" fill="url(#night)"/>
+  <circle cx="512" cy="512" r="410" fill="none" stroke="#5ba0ca" stroke-width="5" opacity=".18"/>
+  <circle cx="512" cy="512" r="355" fill="none" stroke="#8bd8fb" stroke-width="4" opacity=".13"/>
+  <path d="M164 594c-84-79-84-206 0-285M860 594c84-79 84-206 0-285" fill="none" stroke="#4cc2ee" stroke-width="35" stroke-linecap="round" opacity=".46"/>
+  <path d="M236 541c-48-45-48-116 0-161M788 541c48-45 48-116 0-161" fill="none" stroke="#79e4ff" stroke-width="33" stroke-linecap="round" opacity=".82"/>
+  <path d="M221 355H803" fill="none" stroke="#0b2b45" stroke-width="99" stroke-linecap="round"/>
+  <path d="M512 355V773" fill="none" stroke="#0b2b45" stroke-width="99" stroke-linecap="round"/>
+  <path d="M221 355H803" fill="none" stroke="#5ed5f3" stroke-width="63" stroke-linecap="round"/>
+  <path d="M512 355V773" fill="none" stroke="#5ed5f3" stroke-width="63" stroke-linecap="round"/>
+  <circle cx="512" cy="355" r="83" fill="url(#core)"/>
+  <circle cx="512" cy="355" r="28" fill="#123857"/>
+  <circle cx="512" cy="355" r="10" fill="#88eaff"/>
 </svg>
