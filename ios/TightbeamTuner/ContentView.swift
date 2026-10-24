@@ -159,27 +159,21 @@ private struct AgentSidebar: View {
             }
         }
         .refreshable { await store.refresh() }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Filter agents", text: $query)
-                    .textInputAutocapitalization(.never)
-                Menu {
+        .searchable(text: $query, placement: .sidebar, prompt: "Filter agents")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu("Filter archetypes", systemImage: "line.3.horizontal.decrease.circle") {
                     ForEach(archetypes, id: \.self) { archetype in
-                        Button {
-                            if selectedArchetypes.contains(archetype) { selectedArchetypes.remove(archetype) }
-                            else { selectedArchetypes.insert(archetype) }
-                        } label: {
-                            Label(archetype, systemImage: selectedArchetypes.contains(archetype) ? "checkmark.circle.fill" : "circle")
-                        }
+                        Toggle(archetype, isOn: Binding(
+                            get: { selectedArchetypes.contains(archetype) },
+                            set: { selected in
+                                if selected { selectedArchetypes.insert(archetype) }
+                                else { selectedArchetypes.remove(archetype) }
+                            }
+                        ))
                     }
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                        .accessibilityLabel("Filter archetypes")
                 }
             }
-            .padding(12)
-            .background(.regularMaterial)
         }
     }
 
