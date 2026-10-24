@@ -4,10 +4,14 @@ struct ContentView: View {
     @State private var store = TunerStore()
     @State private var showingSettings = false
     @State private var reloadToken = 0
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @AppStorage("appearance") private var appearance = "system"
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility,
+                            preferredCompactColumn: $preferredCompactColumn) {
             AgentSidebar(store: store)
                 .navigationTitle("Agents")
                 .toolbar {
@@ -18,15 +22,27 @@ struct ContentView: View {
         } detail: {
             Group {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
-                    ChatWebView(url: url, reloadToken: reloadToken)
-                        .id(agent.id)
-                        .navigationTitle(agent.name)
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button("Reload Chat", systemImage: "arrow.clockwise") { reloadToken += 1 }
+                    ZStack(alignment: .top) {
+                        ChatWebView(url: url, reloadToken: reloadToken)
+                            .id(agent.id)
+                            .ignoresSafeArea(.container, edges: .bottom)
+
+                        HStack {
+                            Button("Agents", systemImage: "sidebar.left") {
+                                if horizontalSizeClass == .compact {
+                                    preferredCompactColumn = .sidebar
+                                } else {
+                                    columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+                                }
                             }
+                            Spacer()
+                            Button("Reload Chat", systemImage: "arrow.clockwise") { reloadToken += 1 }
                         }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.bordered)
+                        .padding(8)
+                    }
+                    .toolbar(.hidden, for: .navigationBar)
                 } else {
                     ContentUnavailableView("Choose an agent", systemImage: "bubble.left.and.bubble.right")
                 }
@@ -44,6 +60,44 @@ struct ContentView: View {
         .onChange(of: store.selectedID) { _, value in
             if let value, let agent = store.agents.first(where: { $0.id == value }) {
                 store.select(agent)
+                preferredCompactColumn = .detail
+            }
+        }
+    }
+}
+
+private struct AgentNode: Identifiable {
+    let agent: Agent
+    let children: [AgentNode]
+    let contextOnly: Bool
+
+    var id: String { agent.id }
+}
+
+private struct AgentBranch: View {
+    let node: AgentNode
+    let filtering: Bool
+    @Binding var collapsed: Set<String>
+
+    var body: some View {
+        if node.children.isEmpty {
+            NavigationLink(value: node.id) {
+                Text(node.agent.name)
+                    .foregroundStyle(node.contextOnly ? .secondary : .primary)
+            }
+        } else {
+            DisclosureGroup(isExpanded: Binding(
+                get: { filtering || !collapsed.contains(node.id) },
+                set: { if $0 { collapsed.remove(node.id) } else { collapsed.insert(node.id) } }
+            )) {
+                ForEach(node.children) { child in
+                    AgentBranch(node: child, filtering: filtering, collapsed: $collapsed)
+                }
+            } label: {
+                NavigationLink(value: node.id) {
+                    Text(node.agent.name)
+                        .foregroundStyle(node.contextOnly ? .secondary : .primary)
+                }
             }
         }
     }
@@ -53,47 +107,58 @@ private struct AgentSidebar: View {
     @Bindable var store: TunerStore
     @State private var query = ""
     @State private var selectedArchetypes: Set<String> = []
-    @State private var expanded: Set<String> = []
+    @State private var collapsed: Set<String> = []
 
     private var words: [String] {
         query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
-    }
-
-    private var byID: [String: Agent] {
-        Dictionary(uniqueKeysWithValues: store.agents.map { ($0.id, $0) })
-    }
-
-    private var children: [String: [Agent]] {
-        Dictionary(grouping: store.agents.filter { $0.parent != nil && byID[$0.parent!] != nil }, by: { $0.parent! })
-            .mapValues { $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
-    }
-
-    private var roots: [Agent] {
-        store.agents.filter { $0.parent == nil || byID[$0.parent!] == nil }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     private var archetypes: [String] {
         Array(Set(store.agents.compactMap(\.archetype))).sorted()
     }
 
-    private func matches(_ agent: Agent) -> Bool {
+    private func matches(_ agent: Agent, words: [String]) -> Bool {
         (selectedArchetypes.isEmpty || selectedArchetypes.contains(agent.archetype ?? ""))
             && words.allSatisfy { agent.name.localizedCaseInsensitiveContains($0) }
     }
 
-    private func containsMatch(_ agent: Agent, visited: Set<String> = []) -> Bool {
-        guard !visited.contains(agent.id) else { return false }
-        if matches(agent) { return true }
-        let seen = visited.union([agent.id])
-        return (children[agent.id] ?? []).contains { containsMatch($0, visited: seen) }
+    private var visibleRoots: [AgentNode] {
+        let agents = store.agents
+        let ids = Set(agents.map(\.id))
+        let terms = words
+        let filtering = !terms.isEmpty || !selectedArchetypes.isEmpty
+        var children: [String: [Agent]] = [:]
+        var roots: [Agent] = []
+        for agent in agents {
+            if let parent = agent.parent, parent != agent.id, ids.contains(parent) {
+                children[parent, default: []].append(agent)
+            } else {
+                roots.append(agent)
+            }
+        }
+        let ordered: (Agent, Agent) -> Bool = {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+        roots.sort(by: ordered)
+        for key in Array(children.keys) { children[key]?.sort(by: ordered) }
+
+        var visited: Set<String> = []
+        func project(_ agent: Agent) -> AgentNode? {
+            guard visited.insert(agent.id).inserted else { return nil }
+            let descendants = (children[agent.id] ?? []).compactMap(project)
+            let ownMatch = matches(agent, words: terms)
+            guard !filtering || ownMatch || !descendants.isEmpty else { return nil }
+            return AgentNode(agent: agent, children: descendants,
+                             contextOnly: filtering && !ownMatch)
+        }
+        return roots.compactMap(project)
     }
 
     var body: some View {
         List(selection: $store.selectedID) {
             if !store.recentAgents.isEmpty {
                 Section("Recent") {
-                    ForEach(store.recentAgents.filter(matches)) { agent in
+                    ForEach(store.recentAgents.filter { matches($0, words: words) }) { agent in
                         NavigationLink(value: agent.id) {
                             Label(agent.name, systemImage: "clock")
                         }
@@ -101,8 +166,9 @@ private struct AgentSidebar: View {
                 }
             }
             Section("Agents") {
-                ForEach(roots.filter { containsMatch($0) }) { agent in
-                    branch(agent, visited: [])
+                ForEach(visibleRoots) { node in
+                    AgentBranch(node: node, filtering: !words.isEmpty || !selectedArchetypes.isEmpty,
+                                collapsed: $collapsed)
                 }
             }
             if store.isLoading { ProgressView("Loading agents…") }
@@ -135,29 +201,4 @@ private struct AgentSidebar: View {
         }
     }
 
-    private func branch(_ agent: Agent, visited: Set<String>) -> AnyView {
-        if !visited.contains(agent.id) {
-            let descendants = (children[agent.id] ?? []).filter { containsMatch($0) }
-            let seen = visited.union([agent.id])
-            if descendants.isEmpty {
-                return AnyView(NavigationLink(value: agent.id) {
-                    Text(agent.name)
-                        .foregroundStyle(matches(agent) ? .primary : .secondary)
-                })
-            } else {
-                return AnyView(DisclosureGroup(isExpanded: Binding(
-                    get: { !words.isEmpty || !selectedArchetypes.isEmpty || expanded.contains(agent.id) },
-                    set: { if $0 { expanded.insert(agent.id) } else { expanded.remove(agent.id) } }
-                )) {
-                    ForEach(descendants) { child in branch(child, visited: seen) }
-                } label: {
-                    NavigationLink(value: agent.id) {
-                        Text(agent.name)
-                            .foregroundStyle(matches(agent) ? .primary : .secondary)
-                    }
-                })
-            }
-        }
-        return AnyView(EmptyView())
-    }
 }
