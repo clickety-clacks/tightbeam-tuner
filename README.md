@@ -1,5 +1,7 @@
 # Tightbeam Tuner
 
+Tuner has desktop and native iOS/iPadOS apps. The mobile project is in [`ios/`](ios/).
+
 Tightbeam Tuner is a Quickshell desktop app for browsing an agent tree and opening the existing Tightbeam Chat in the same window. It uses a normal floating window, so it works under both Omarchy and Scottland.
 
 ## What it does
@@ -53,3 +55,17 @@ To build the compatible binary without replacing your desktop's Quickshell insta
 ## Development
 
 `scripts/roster.py` is the small CLI adapter. It reads active sessions, names, archetypes and parent keys, then constructs Chat URLs. The Quickshell interface is in `shell.qml` and `TunerWindow.qml`.
+
+## iPhone and iPad
+
+Open `ios/TightbeamTuner.xcodeproj` in Xcode 27.1 or later. The bundle identifier is `co.clicketyclacks.tightbeam-tuner`. The project can also be regenerated from `ios/project.yml` with XcodeGen. It targets iOS 18 or later and uses the iOS 27.1 SDK's adaptive navigation on iPhone Duo. The layout responds to available space as the device folds or resizes, with no device-specific dimensions or orientation checks. It also runs on iPad. Appearance follows the system by default; Settings can choose light or dark explicitly.
+
+On first launch, enter:
+
+- The HTTPS Chat server and gateway origins. **Find gateway from Chat** reads the server's published default when available.
+- The SSH host, port, login, Tightbeam CLI path, and Tightbeam user. Tuner runs `<path> list --as-user <user>` over SSH to obtain the agent tree.
+- The server's public `ssh-ed25519` host key. Tuner pins this key and rejects a different one. Obtain and verify it with the server administrator before pasting it.
+
+Tuner creates an Ed25519 client key in the device Keychain. Copy its public key from Settings and authorize it for the SSH login on the server. The private key stays on the device. The app does not ask for an SSH password. The SSH login must be able to run the configured Tightbeam CLI without an interactive prompt.
+
+The mobile sidebar puts the ten most recently selected active agents above the parent/child agent tree. Both sections can be filtered by name and archetype. Selecting an agent opens the existing Chat UI in an embedded WebKit view; links open in the system browser. Pull to refresh the roster, or use the reload button in Chat. There is no Spotlight picker on mobile.

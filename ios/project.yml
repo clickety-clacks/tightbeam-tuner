@@ -1,0 +1,49 @@
+name: TightbeamTuner
+options:
+  bundleIdPrefix: co.clicketyclacks
+packages:
+  Citadel:
+    url: https://github.com/orlandos-nl/Citadel.git
+    from: 0.12.1
+  Crypto:
+    url: https://github.com/apple/swift-crypto.git
+    from: 3.12.3
+  NIOSSH:
+    url: https://github.com/Wellz26/swift-nio-ssh.git
+    from: 0.3.4
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    IPHONEOS_DEPLOYMENT_TARGET: '18.0'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_CFBundleDisplayName: Tightbeam Tuner
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    SUPPORTS_MACCATALYST: NO
+targets:
+  TightbeamTuner:
+    type: application
+    platform: iOS
+    sources: [TightbeamTuner]
+    dependencies:
+      - package: Citadel
+      - package: Crypto
+        product: Crypto
+      - package: NIOSSH
+        product: NIOSSH
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.clicketyclacks.tightbeam-tuner
+        CODE_SIGN_STYLE: Automatic
+  TightbeamTunerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: TightbeamTuner
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.clicketyclacks.tightbeam-tuner.tests
+        GENERATE_INFOPLIST_FILE: YES
