@@ -19,6 +19,7 @@ struct NativeChatComposer: View {
                 if let notice {
                     Label(notice, systemImage: "exclamationmark.circle")
                         .font(.footnote)
+                        .foregroundStyle(Color.nordicText)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .glassEffect(.regular, in: .capsule)
@@ -27,6 +28,7 @@ struct NativeChatComposer: View {
                 HStack(alignment: .bottom, spacing: 4) {
                     TextField(bridge.agentName ?? "Message", text: $draft, axis: .vertical)
                         .lineLimit(1...6)
+                        .foregroundStyle(Color.nordicText)
                         .focused($focused)
                         .submitLabel(.send)
                         .padding(.leading, 16)
@@ -36,6 +38,8 @@ struct NativeChatComposer: View {
                     Button(sendTitle, systemImage: isRetry ? "arrow.clockwise" : "arrow.up", action: send)
                         .labelStyle(.iconOnly)
                         .fontWeight(.semibold)
+                        .foregroundStyle(Color.nordicOnAccent)
+                        .tint(Color(.accent))
                         .buttonStyle(.glassProminent)
                         .buttonBorderShape(.circle)
                         .disabled(!canSend)

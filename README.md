@@ -17,6 +17,7 @@ Tightbeam Tuner is a Quickshell desktop app for browsing an agent tree and openi
 - Opens each window with an empty selection and a focused Spotlight picker. Every window has its own selection and UI state.
 - Remembers the last chosen text size for later windows and launches. Open windows keep their own size. The embedded Chat page uses WebEngine zoom.
 - Follows the desktop's light or dark appearance for its sidebar, picker, and connection settings, including changes while the app is open.
+- Uses the Nordic palette shared with Tightbeam Chat and Harklight: linen off-white and off-black neutrals with a moss accent, on desktop and iOS.
 
 | Shortcut | Action |
 | --- | --- |
@@ -59,7 +60,7 @@ To build the compatible binary without replacing your desktop's Quickshell insta
 
 ## iPhone and iPad
 
-Open `ios/TightbeamTuner.xcodeproj` in Xcode 27.1 or later. The bundle identifier is `co.clicketyclacks.tightbeam-tuner`. The project can also be regenerated from `ios/project.yml` with XcodeGen. It targets iOS 18 or later and uses the iOS 27.1 SDK's adaptive navigation on iPhone Duo. The layout responds to available space as the device folds or resizes, with no device-specific dimensions or orientation checks. It also runs on iPad. Appearance follows the system by default; Settings can choose light or dark explicitly.
+Open `ios/TightbeamTuner.xcodeproj` in Xcode 27.1 or later. The bundle identifier is `co.clicketyclacks.tightbeam-tuner`. The project can also be regenerated from `ios/project.yml` with XcodeGen. It targets iOS 26 or later, for the system Liquid Glass controls, and uses the iOS 27.1 SDK's adaptive navigation on iPhone Duo. The layout responds to available space as the device folds or resizes, with no device-specific dimensions or orientation checks. It also runs on iPad. Appearance follows the system by default; Settings can choose light or dark explicitly.
 
 On first launch, enter:
 

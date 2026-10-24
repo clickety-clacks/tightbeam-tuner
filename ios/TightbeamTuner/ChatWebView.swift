@@ -54,6 +54,10 @@ struct ChatWebView: UIViewControllerRepresentable {
             coordinator?.updateLayout(webView)
         }
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        // Match Chat's page color so loading and overscroll show linen, not white.
+        webView.isOpaque = false
+        webView.backgroundColor = UIColor(resource: .nordicBackground)
+        webView.underPageBackgroundColor = UIColor(resource: .nordicBackground)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true

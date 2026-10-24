@@ -13,73 +13,77 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    TextField("Chat server URL", text: $draft.chatServer)
-                        .textContentType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
-                    TextField("Gateway URL", text: $draft.gateway)
-                        .textContentType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
-                    Button("Find gateway from Chat") {
-                        Task { await discover() }
+                Group {
+                    Section {
+                        TextField("Chat server URL", text: $draft.chatServer)
+                            .textContentType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
+                            .autocorrectionDisabled()
+                        TextField("Gateway URL", text: $draft.gateway)
+                            .textContentType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
+                            .autocorrectionDisabled()
+                        Button("Find gateway from Chat") {
+                            Task { await discover() }
+                        }
+                        .disabled(discovering || draft.origin(draft.chatServer) == nil)
+                    } header: {
+                        Text("Chat")
+                    } footer: {
+                        Text("Chat opens the selected conversation. The gateway is usually published at the Chat server's chat-config.json endpoint.")
                     }
-                    .disabled(discovering || draft.origin(draft.chatServer) == nil)
-                } header: {
-                    Text("Chat")
-                } footer: {
-                    Text("Chat opens the selected conversation. The gateway is usually published at the Chat server's chat-config.json endpoint.")
-                }
-                Section {
-                    TextField("SSH host", text: $draft.sshHost)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    TextField("SSH port", value: $draft.sshPort, format: .number)
-                        .keyboardType(.numberPad)
-                    TextField("SSH login", text: $draft.sshUser)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    TextField("Tightbeam CLI path", text: $draft.tightbeamPath)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    TextField("Tightbeam user", text: $draft.tightbeamUser)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    TextField("Server host key (ssh-ed25519 …)", text: $draft.sshHostKey, axis: .vertical)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .lineLimit(2...3)
-                } header: {
-                    Text("Agent list over SSH")
-                } footer: {
-                    Text("Paste the server's public ssh-ed25519 host key. Tuner verifies it on every connection, then runs the configured CLI with list --as-user. The SSH login needs permission to do that.")
-                }
-                Section {
-                    if publicKey.isEmpty {
-                        Text("Could not create a device key").foregroundStyle(.red)
-                    } else {
-                        Text(publicKey).font(.caption.monospaced()).textSelection(.enabled)
-                        Button("Copy public key") { UIPasteboard.general.string = publicKey }
+                    Section {
+                        TextField("SSH host", text: $draft.sshHost)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("SSH port", value: $draft.sshPort, format: .number)
+                            .keyboardType(.numberPad)
+                        TextField("SSH login", text: $draft.sshUser)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("Tightbeam CLI path", text: $draft.tightbeamPath)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("Tightbeam user", text: $draft.tightbeamUser)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("Server host key (ssh-ed25519 …)", text: $draft.sshHostKey, axis: .vertical)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .lineLimit(2...3)
+                    } header: {
+                        Text("Agent list over SSH")
+                    } footer: {
+                        Text("Paste the server's public ssh-ed25519 host key. Tuner verifies it on every connection, then runs the configured CLI with list --as-user. The SSH login needs permission to do that.")
                     }
-                } header: {
-                    Text("This device's SSH public key")
-                } footer: {
-                    Text("Add this public key to the SSH login's authorized_keys file on the server. The private key stays in this device's Keychain.")
-                }
-                if let discoveryError {
-                    Section { Text(discoveryError).foregroundStyle(.red) }
-                }
-                Section("Appearance") {
-                    Picker("Theme", selection: $appearance) {
-                        Text("System").tag("system")
-                        Text("Light").tag("light")
-                        Text("Dark").tag("dark")
+                    Section {
+                        if publicKey.isEmpty {
+                            Text("Could not create a device key").foregroundStyle(Color.nordicDanger)
+                        } else {
+                            Text(publicKey).font(.caption.monospaced()).textSelection(.enabled)
+                            Button("Copy public key") { UIPasteboard.general.string = publicKey }
+                        }
+                    } header: {
+                        Text("This device's SSH public key")
+                    } footer: {
+                        Text("Add this public key to the SSH login's authorized_keys file on the server. The private key stays in this device's Keychain.")
+                    }
+                    if let discoveryError {
+                        Section { Text(discoveryError).foregroundStyle(Color.nordicDanger) }
+                    }
+                    Section("Appearance") {
+                        Picker("Theme", selection: $appearance) {
+                            Text("System").tag("system")
+                            Text("Light").tag("light")
+                            Text("Dark").tag("dark")
+                        }
                     }
                 }
+                .listRowBackground(Color.nordicSurface)
             }
+            .nordicListStyle()
             .navigationTitle("Tightbeam Tuner")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

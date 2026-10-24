@@ -64,6 +64,7 @@ Rectangle {
                 placeholderText: "https://chat.example.com"
                 color: pane.theme.foreground
                 font.pixelSize: Math.round(14 * pane.textScale)
+                placeholderTextColor: pane.theme.placeholder
                 selectByMouse: true
                 background: Rectangle { radius: 7; color: pane.theme.field; border.color: chatInput.activeFocus ? pane.theme.focus : pane.theme.fieldBorder }
             }
@@ -72,7 +73,8 @@ Rectangle {
                 Layout.fillWidth: true
                 Text { text: "Gateway URL"; color: pane.theme.foreground; font.pixelSize: Math.round(13 * pane.textScale) }
                 Item { Layout.fillWidth: true }
-                Button {
+                TunerButton {
+                    theme: pane.theme
                     text: "Find from Chat"
                     font.pixelSize: Math.round(12 * pane.textScale)
                     onClicked: pane.discoverRequested()
@@ -84,6 +86,7 @@ Rectangle {
                 placeholderText: "https://gateway.example.com"
                 color: pane.theme.foreground
                 font.pixelSize: Math.round(14 * pane.textScale)
+                placeholderTextColor: pane.theme.placeholder
                 selectByMouse: true
                 background: Rectangle { radius: 7; color: pane.theme.field; border.color: gatewayInput.activeFocus ? pane.theme.focus : pane.theme.fieldBorder }
             }
@@ -95,6 +98,7 @@ Rectangle {
                 placeholderText: "tightbeam or /path/to/tightbeam"
                 color: pane.theme.foreground
                 font.pixelSize: Math.round(14 * pane.textScale)
+                placeholderTextColor: pane.theme.placeholder
                 selectByMouse: true
                 background: Rectangle { radius: 7; color: pane.theme.field; border.color: cliInput.activeFocus ? pane.theme.focus : pane.theme.fieldBorder }
             }
@@ -105,6 +109,7 @@ Rectangle {
                 placeholderText: "your-name"
                 color: pane.theme.foreground
                 font.pixelSize: Math.round(14 * pane.textScale)
+                placeholderTextColor: pane.theme.placeholder
                 selectByMouse: true
                 background: Rectangle { radius: 7; color: pane.theme.field; border.color: userInput.activeFocus ? pane.theme.focus : pane.theme.fieldBorder }
                 onAccepted: pane.saveRequested()
@@ -129,13 +134,16 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 10
-                Button {
+                TunerButton {
+                    theme: pane.theme
+                    prominent: true
                     text: pane.saving ? "Connecting…" : "Save and connect"
                     enabled: !pane.saving
                     font.pixelSize: Math.round(14 * pane.textScale)
                     onClicked: pane.saveRequested()
                 }
-                Button {
+                TunerButton {
+                    theme: pane.theme
                     visible: !pane.setupRequired
                     text: "Back to chat"
                     font.pixelSize: Math.round(14 * pane.textScale)

@@ -42,8 +42,11 @@ struct ContentView: View {
                         }
                 } else {
                     ContentUnavailableView("Choose an agent", systemImage: "bubble.left.and.bubble.right")
+                        .foregroundStyle(Color.nordicSecondaryText)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.nordicBackground)
         }
         .preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
         .sheet(isPresented: $showingSettings) {
@@ -204,6 +207,7 @@ private struct AgentSidebar: View {
                 ContentUnavailableView("Could not load agents", systemImage: "wifi.exclamationmark", description: Text(error))
             }
         }
+        .nordicListStyle()
         .refreshable { await store.refresh() }
         .searchable(text: $query, placement: .sidebar, prompt: "Filter agents")
         .toolbar {

@@ -468,6 +468,7 @@ FloatingWindow {
                     id: sidebarInput
                     Layout.fillWidth: true
                     placeholderText: "Filter agents"
+                    placeholderTextColor: colors.placeholder
                     text: win.sidebarQuery
                     onTextChanged: win.sidebarQuery = text
                     color: colors.foreground
@@ -599,7 +600,7 @@ FloatingWindow {
             anchors.fill: parent
             visible: win.pickerOpen
             z: 10
-            color: "#a8000000"
+            color: colors.scrim
             MouseArea { anchors.fill: parent; onClicked: if (win.selectedAgent) win.pickerOpen = false }
 
             Rectangle {
@@ -625,6 +626,7 @@ FloatingWindow {
                         width: parent.width
                         height: Math.round(46 * win.textScale)
                         placeholderText: "Find an agent…"
+                        placeholderTextColor: colors.placeholder
                         color: colors.foreground; font.pixelSize: Math.round(18 * win.textScale)
                         selectByMouse: true
                         background: Rectangle { radius: 8; color: colors.loading }
@@ -681,7 +683,7 @@ FloatingWindow {
             anchors.fill: parent
             visible: win.settingsOpen && win.settingsKnown
             z: 20
-            color: "#b8000000"
+            color: colors.scrim
             MouseArea { anchors.fill: parent; onClicked: {} }
 
             SettingsPane {
