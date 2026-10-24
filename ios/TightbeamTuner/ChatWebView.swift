@@ -23,14 +23,14 @@ struct ChatWebView: UIViewControllerRepresentable {
     let bridge: ChatHostBridge
     var floatingBottomInset: CGFloat = 0
 
-    private static let landscapeInsets = #"""
+    private static let sideInsets = #"""
         const style = document.createElement('style');
         style.textContent = `
-          html.tuner-landscape .tb-chat-viewport {
+          html.tuner-side-insets .tb-chat-viewport {
             padding-left: calc(clamp(.85rem, 4vw, 2.2rem) + max(env(safe-area-inset-left), var(--tuner-safe-left, 0px))) !important;
             padding-right: calc(clamp(.85rem, 4vw, 2.2rem) + max(env(safe-area-inset-right), var(--tuner-safe-right, 0px))) !important;
           }
-          html.tuner-landscape .tb-chat-composer {
+          html.tuner-side-insets .tb-chat-composer {
             left: calc(clamp(.65rem, 3vw, 1.4rem) + max(env(safe-area-inset-left), var(--tuner-safe-left, 0px))) !important;
             right: calc(clamp(.65rem, 3vw, 1.4rem) + max(env(safe-area-inset-right), var(--tuner-safe-right, 0px))) !important;
           }
@@ -45,7 +45,7 @@ struct ChatWebView: UIViewControllerRepresentable {
         configuration.userContentController.addUserScript(bridge.declarationScript)
         configuration.userContentController.add(bridge, name: ChatHostBridge.messageHandlerName)
         configuration.userContentController.addUserScript(WKUserScript(
-            source: Self.landscapeInsets,
+            source: Self.sideInsets,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         ))
@@ -89,14 +89,16 @@ struct ChatWebView: UIViewControllerRepresentable {
         private var appliedLayout: (Bool, CGFloat, CGFloat)?
 
         func updateLayout(_ webView: WKWebView, force: Bool = false) {
-            guard let orientation = webView.window?.windowScene?.interfaceOrientation else { return }
-            let landscape = orientation.isLandscape
-            let leading = landscape ? max(0, webView.safeAreaInsets.left) : 0
-            let trailing = landscape ? max(0, webView.safeAreaInsets.right) : 0
+            // Keep the transcript clear of any side bars the system reserves, in any orientation
+            // (landscape notch, or the vertical bar on a folded iPhone Duo in portrait).
+            guard webView.window != nil else { return }
+            let leading = max(0, webView.safeAreaInsets.left)
+            let trailing = max(0, webView.safeAreaInsets.right)
+            let inset = leading > 0 || trailing > 0
             if !force, let appliedLayout,
-               appliedLayout.0 == landscape && appliedLayout.1 == leading && appliedLayout.2 == trailing { return }
-            appliedLayout = (landscape, leading, trailing)
-            let script = "document.documentElement.classList.toggle('tuner-landscape', \(landscape)); document.documentElement.style.setProperty('--tuner-safe-left', '\(Double(leading))px'); document.documentElement.style.setProperty('--tuner-safe-right', '\(Double(trailing))px')"
+               appliedLayout.0 == inset && appliedLayout.1 == leading && appliedLayout.2 == trailing { return }
+            appliedLayout = (inset, leading, trailing)
+            let script = "document.documentElement.classList.toggle('tuner-side-insets', \(inset)); document.documentElement.style.setProperty('--tuner-safe-left', '\(Double(leading))px'); document.documentElement.style.setProperty('--tuner-safe-right', '\(Double(trailing))px')"
             webView.evaluateJavaScript(script)
         }
 
