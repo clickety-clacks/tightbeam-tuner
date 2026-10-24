@@ -12,7 +12,9 @@ FloatingWindow {
     implicitWidth: 1180
     implicitHeight: 760
     minimumSize: Qt.size(640, 420)
-    color: "#11151c"
+    color: colors.window
+
+    TunerPalette { id: colors }
 
     signal newWindowRequested()
 
@@ -391,7 +393,7 @@ FloatingWindow {
             visible: win.sidebarOpen
             width: win.sidebarOpen ? win.sidebarWidth : 0
             height: parent.height
-            color: "#19212c"
+            color: colors.sidebar
 
             ColumnLayout {
                 anchors.fill: parent
@@ -400,9 +402,9 @@ FloatingWindow {
 
                 RowLayout {
                     Layout.fillWidth: true
-                    Text { text: "AGENTS"; color: "#aebbd0"; font.pixelSize: Math.round(12 * win.textScale); font.bold: true; font.letterSpacing: 1.5 }
+                    Text { text: "AGENTS"; color: colors.heading; font.pixelSize: Math.round(12 * win.textScale); font.bold: true; font.letterSpacing: 1.5 }
                     Item { Layout.fillWidth: true }
-                    Text { text: String(win.visibleRows.length); color: "#7e91a8"; font.pixelSize: Math.round(12 * win.textScale) }
+                    Text { text: String(win.visibleRows.length); color: colors.faint; font.pixelSize: Math.round(12 * win.textScale) }
                 }
 
                 ListView {
@@ -418,8 +420,8 @@ FloatingWindow {
                         width: agentList.width
                         height: Math.round(34 * win.textScale)
                         radius: 7
-                        color: win.selectedAgent && win.selectedAgent.key === row.agent.key ? "#30465f" :
-                               mouse.containsMouse ? "#253141" : "transparent"
+                        color: win.selectedAgent && win.selectedAgent.key === row.agent.key ? colors.selection :
+                               mouse.containsMouse ? colors.hover : "transparent"
 
                         Row {
                             anchors.fill: parent
@@ -430,7 +432,7 @@ FloatingWindow {
                                 Text {
                                     anchors.centerIn: parent
                                     text: row.hasChildren ? (win.collapsed[row.agent.key] && !sidebarInput.text ? "▸" : "▾") : ""
-                                    color: "#91a5bd"; font.pixelSize: Math.round(15 * win.textScale)
+                                    color: colors.muted; font.pixelSize: Math.round(15 * win.textScale)
                                 }
                                 MouseArea {
                                     anchors.fill: parent
@@ -448,7 +450,7 @@ FloatingWindow {
                                 verticalAlignment: Text.AlignVCenter
                                 elide: Text.ElideRight
                                 text: row.agent.name
-                                color: row.contextOnly ? "#8295ad" : "#e9eef5"
+                                color: row.contextOnly ? colors.muted : colors.foreground
                                 font.pixelSize: Math.round(14 * win.textScale)
                             }
                         }
@@ -468,10 +470,10 @@ FloatingWindow {
                     placeholderText: "Filter agents"
                     text: win.sidebarQuery
                     onTextChanged: win.sidebarQuery = text
-                    color: "#eef4fc"
+                    color: colors.foreground
                     font.pixelSize: Math.round(14 * win.textScale)
                     selectByMouse: true
-                    background: Rectangle { radius: 7; color: "#101923"; border.color: sidebarInput.activeFocus ? "#79b7ec" : "#3b4b5f" }
+                    background: Rectangle { radius: 7; color: colors.inset; border.color: sidebarInput.activeFocus ? colors.focus : colors.border }
                     Keys.onUpPressed: agentList.positionViewAtBeginning()
                 }
 
@@ -479,8 +481,8 @@ FloatingWindow {
                     Layout.fillWidth: true
                     implicitHeight: archetypeColumn.implicitHeight + 12
                     radius: 7
-                    color: "#101923"
-                    border.color: "#3b4b5f"
+                    color: colors.inset
+                    border.color: colors.border
                     Column {
                         id: archetypeColumn
                         anchors.left: parent.left
@@ -492,11 +494,11 @@ FloatingWindow {
                             width: parent.width; height: 27 * win.textScale; color: "transparent"
                             Text {
                                 anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
-                                text: "Archetypes"; color: "#afc0d4"; font.pixelSize: Math.round(12 * win.textScale)
+                                text: "Archetypes"; color: colors.secondary; font.pixelSize: Math.round(12 * win.textScale)
                             }
                             Text {
                                 anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                text: win.archetypesExpanded ? "▴" : "▾"; color: "#afc0d4"
+                                text: win.archetypesExpanded ? "▴" : "▾"; color: colors.secondary
                                 font.pixelSize: Math.round(12 * win.textScale)
                             }
                             MouseArea { anchors.fill: parent; onClicked: win.archetypesExpanded = !win.archetypesExpanded }
@@ -523,7 +525,7 @@ FloatingWindow {
             x: sidebar.width
             width: 6
             height: parent.height
-            color: drag.containsMouse ? "#6593b9" : "#2e3c4c"
+            color: drag.containsMouse ? colors.dividerHover : colors.divider
             MouseArea {
                 id: drag
                 anchors.fill: parent
@@ -563,23 +565,23 @@ FloatingWindow {
             Rectangle {
                 anchors.fill: parent
                 visible: !win.selectedAgent && win.settingsKnown
-                color: "#11151c"
+                color: colors.window
                 Text {
                     anchors.centerIn: parent
                     text: win.rosterError ? win.rosterError :
                           win.connecting ? "Reading agents…" : "Choose an agent to open Chat"
-                    color: "#8ea2b8"; font.pixelSize: Math.round(16 * win.textScale)
+                    color: colors.muted; font.pixelSize: Math.round(16 * win.textScale)
                 }
             }
 
             Rectangle {
                 anchors.fill: parent
                 visible: !win.settingsKnown
-                color: "#111923"
+                color: colors.loading
                 Text {
                     anchors.centerIn: parent
                     text: "Loading connection settings…"
-                    color: "#aebed0"
+                    color: colors.secondary
                     font.pixelSize: Math.round(15 * win.textScale)
                 }
             }
@@ -587,8 +589,8 @@ FloatingWindow {
             Rectangle {
                 x: 12; y: 12; width: 34; height: 34
                 visible: !win.settingsOpen
-                radius: 8; color: "#263648"; border.color: "#4c6884"
-                Text { anchors.centerIn: parent; text: win.sidebarOpen ? "◀" : "☰"; color: "#eef4fc"; font.pixelSize: Math.round(16 * win.textScale) }
+                radius: 8; color: colors.button; border.color: colors.buttonBorder
+                Text { anchors.centerIn: parent; text: win.sidebarOpen ? "◀" : "☰"; color: colors.foreground; font.pixelSize: Math.round(16 * win.textScale) }
                 MouseArea { anchors.fill: parent; onClicked: win.sidebarOpen = !win.sidebarOpen }
             }
         }
@@ -606,8 +608,8 @@ FloatingWindow {
                 anchors.horizontalCenter: parent.horizontalCenter
                 y: Math.min(110, parent.height * 0.16)
                 radius: 14
-                color: "#1d2733"
-                border.color: "#63809d"
+                color: colors.surface
+                border.color: colors.strongBorder
                 clip: true
 
                 Column {
@@ -623,9 +625,9 @@ FloatingWindow {
                         width: parent.width
                         height: Math.round(46 * win.textScale)
                         placeholderText: "Find an agent…"
-                        color: "#f4f8ff"; font.pixelSize: Math.round(18 * win.textScale)
+                        color: colors.foreground; font.pixelSize: Math.round(18 * win.textScale)
                         selectByMouse: true
-                        background: Rectangle { radius: 8; color: "#111923" }
+                        background: Rectangle { radius: 8; color: colors.loading }
                         onTextChanged: win.pickerIndex = 0
                         Keys.onPressed: event => {
                             if (event.key === Qt.Key_Down) {
@@ -652,13 +654,13 @@ FloatingWindow {
                             width: pickerColumn.width
                             height: Math.round(36 * win.textScale)
                             radius: 7
-                            color: index === win.pickerIndex ? "#36516c" : "transparent"
+                            color: index === win.pickerIndex ? colors.pickerSelection : "transparent"
                             Text {
                                 anchors.fill: parent
                                 anchors.leftMargin: 12
                                 verticalAlignment: Text.AlignVCenter
                                 text: modelData.name
-                                color: "#eaf2fb"; font.pixelSize: Math.round(14 * win.textScale)
+                                color: colors.foreground; font.pixelSize: Math.round(14 * win.textScale)
                                 elide: Text.ElideRight
                             }
                             MouseArea { anchors.fill: parent; onClicked: win.selectAgent(modelData) }
@@ -668,7 +670,7 @@ FloatingWindow {
                     Text {
                         visible: win.pickerMatches.length === 0
                         text: win.rosterError ? win.rosterError : "No matching agents"
-                        color: "#a9b7c7"; font.pixelSize: Math.round(13 * win.textScale)
+                        color: colors.secondary; font.pixelSize: Math.round(13 * win.textScale)
                         leftPadding: 10; topPadding: 9; bottomPadding: 9
                     }
                 }
@@ -688,6 +690,7 @@ FloatingWindow {
                 height: Math.min(parent.height - 36, 630)
                 anchors.centerIn: parent
                 textScale: win.textScale
+                theme: colors
                 setupRequired: !win.configured
                 onSaveRequested: win.saveSettings()
                 onCloseRequested: win.toggleSettings()

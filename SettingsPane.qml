@@ -4,11 +4,12 @@ import QtQuick.Layouts
 
 Rectangle {
     id: pane
-    color: "#111923"
+    color: pane.theme.loading
     radius: 14
-    border.color: "#63809d"
+    border.color: pane.theme.strongBorder
 
     property real textScale: 1.0
+    property var theme
     property bool setupRequired: false
     property bool saving: false
     property string message: ""
@@ -44,7 +45,7 @@ Rectangle {
             Text {
                 Layout.fillWidth: true
                 text: pane.setupRequired ? "Connect Tightbeam Tuner" : "Connection settings"
-                color: "#eef4fc"
+                color: pane.theme.foreground
                 font.pixelSize: Math.round(26 * pane.textScale)
                 font.bold: true
             }
@@ -52,24 +53,24 @@ Rectangle {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 text: "Enter your Chat server URL, gateway, and the Tightbeam CLI used to list agents."
-                color: "#aebed0"
+                color: pane.theme.secondary
                 font.pixelSize: Math.round(14 * pane.textScale)
             }
 
-            Text { text: "Chat server URL"; color: "#dce7f4"; font.pixelSize: Math.round(13 * pane.textScale) }
+            Text { text: "Chat server URL"; color: pane.theme.foreground; font.pixelSize: Math.round(13 * pane.textScale) }
             TextField {
                 id: chatInput
                 Layout.fillWidth: true
                 placeholderText: "https://chat.example.com"
-                color: "#f3f7fd"
+                color: pane.theme.foreground
                 font.pixelSize: Math.round(14 * pane.textScale)
                 selectByMouse: true
-                background: Rectangle { radius: 7; color: "#192634"; border.color: chatInput.activeFocus ? "#79b7ec" : "#42576d" }
+                background: Rectangle { radius: 7; color: pane.theme.field; border.color: chatInput.activeFocus ? pane.theme.focus : pane.theme.fieldBorder }
             }
 
             RowLayout {
                 Layout.fillWidth: true
-                Text { text: "Gateway URL"; color: "#dce7f4"; font.pixelSize: Math.round(13 * pane.textScale) }
+                Text { text: "Gateway URL"; color: pane.theme.foreground; font.pixelSize: Math.round(13 * pane.textScale) }
                 Item { Layout.fillWidth: true }
                 Button {
                     text: "Find from Chat"
@@ -81,38 +82,38 @@ Rectangle {
                 id: gatewayInput
                 Layout.fillWidth: true
                 placeholderText: "https://gateway.example.com"
-                color: "#f3f7fd"
+                color: pane.theme.foreground
                 font.pixelSize: Math.round(14 * pane.textScale)
                 selectByMouse: true
-                background: Rectangle { radius: 7; color: "#192634"; border.color: gatewayInput.activeFocus ? "#79b7ec" : "#42576d" }
+                background: Rectangle { radius: 7; color: pane.theme.field; border.color: gatewayInput.activeFocus ? pane.theme.focus : pane.theme.fieldBorder }
             }
 
-            Text { text: "Tightbeam CLI location"; color: "#dce7f4"; font.pixelSize: Math.round(13 * pane.textScale) }
+            Text { text: "Tightbeam CLI location"; color: pane.theme.foreground; font.pixelSize: Math.round(13 * pane.textScale) }
             TextField {
                 id: cliInput
                 Layout.fillWidth: true
                 placeholderText: "tightbeam or /path/to/tightbeam"
-                color: "#f3f7fd"
+                color: pane.theme.foreground
                 font.pixelSize: Math.round(14 * pane.textScale)
                 selectByMouse: true
-                background: Rectangle { radius: 7; color: "#192634"; border.color: cliInput.activeFocus ? "#79b7ec" : "#42576d" }
+                background: Rectangle { radius: 7; color: pane.theme.field; border.color: cliInput.activeFocus ? pane.theme.focus : pane.theme.fieldBorder }
             }
-            Text { text: "Tightbeam user"; color: "#dce7f4"; font.pixelSize: Math.round(13 * pane.textScale) }
+            Text { text: "Tightbeam user"; color: pane.theme.foreground; font.pixelSize: Math.round(13 * pane.textScale) }
             TextField {
                 id: userInput
                 Layout.fillWidth: true
                 placeholderText: "your-name"
-                color: "#f3f7fd"
+                color: pane.theme.foreground
                 font.pixelSize: Math.round(14 * pane.textScale)
                 selectByMouse: true
-                background: Rectangle { radius: 7; color: "#192634"; border.color: userInput.activeFocus ? "#79b7ec" : "#42576d" }
+                background: Rectangle { radius: 7; color: pane.theme.field; border.color: userInput.activeFocus ? pane.theme.focus : pane.theme.fieldBorder }
                 onAccepted: pane.saveRequested()
             }
             Text {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 text: "Tuner runs the CLI to read the agent tree. For a remote installation, use a prefix like ssh host /path/to/tightbeam. Do not enter passwords or tokens."
-                color: "#8297ad"
+                color: pane.theme.muted
                 font.pixelSize: Math.round(12 * pane.textScale)
             }
 
@@ -121,7 +122,7 @@ Rectangle {
                 visible: pane.message.length > 0
                 wrapMode: Text.WordWrap
                 text: pane.message
-                color: "#f0ad9d"
+                color: pane.theme.error
                 font.pixelSize: Math.round(13 * pane.textScale)
             }
 

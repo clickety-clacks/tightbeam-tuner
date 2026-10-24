@@ -16,6 +16,7 @@ Tightbeam Tuner is a Quickshell desktop app for browsing an agent tree and openi
 - Filters the sidebar by one or more archetypes. The Spotlight picker searches every active agent and matches all query words in any order.
 - Opens each window with an empty selection and a focused Spotlight picker. Every window has its own selection and UI state.
 - Remembers the last chosen text size for later windows and launches. Open windows keep their own size. The embedded Chat page uses WebEngine zoom.
+- Follows the desktop's light or dark appearance for its sidebar, picker, and connection settings, including changes while the app is open.
 
 | Shortcut | Action |
 | --- | --- |
