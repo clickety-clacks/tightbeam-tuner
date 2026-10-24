@@ -38,6 +38,34 @@ struct ChatWebView: UIViewControllerRepresentable {
         document.head.appendChild(style);
         """#
 
+    static let pinchHandlerName = "tunerPinch"
+
+    // WebKit claims pinches before a native gesture recognizer can see them, so the page handles
+    // its own pinch gestures. Pinching sets the text size, the same setting Safari's text size
+    // control uses, so text reflows instead of the page magnifying. The app keeps the result.
+    private static let pinchScript = #"""
+        (() => {
+          const viewport = document.querySelector('meta[name=viewport]');
+          if (viewport && !/user-scalable/.test(viewport.content)) viewport.content += ', maximum-scale=1, user-scalable=no';
+          let zoom = Number(window.__tunerTextZoom) || 1;
+          let start = zoom;
+          const apply = () => { document.documentElement.style.webkitTextSizeAdjust = Math.round(zoom * 100) + '%'; };
+          window.__tunerSetTextZoom = (value) => { zoom = value; apply(); };
+          apply();
+          document.addEventListener('gesturestart', (event) => { event.preventDefault(); start = zoom; }, { passive: false });
+          document.addEventListener('gesturechange', (event) => {
+            event.preventDefault();
+            // Step in 5% increments so text reflows only when its size visibly changes.
+            const next = Math.min(Math.max(Math.round(start * event.scale * 20) / 20, MIN_ZOOM), MAX_ZOOM);
+            if (next !== zoom) { zoom = next; apply(); }
+          }, { passive: false });
+          document.addEventListener('gestureend', (event) => {
+            event.preventDefault();
+            window.webkit.messageHandlers.tunerPinch.postMessage({ zoom });
+          }, { passive: false });
+        })();
+        """#
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIViewController(context: Context) -> UIViewController {
@@ -49,6 +77,16 @@ struct ChatWebView: UIViewControllerRepresentable {
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         ))
+        let zoomRange = Coordinator.zoomRange
+        let pinchScript = "window.__tunerTextZoom = \(context.coordinator.savedZoom);\n" + Self.pinchScript
+            .replacingOccurrences(of: "MIN_ZOOM", with: "\(zoomRange.lowerBound)")
+            .replacingOccurrences(of: "MAX_ZOOM", with: "\(zoomRange.upperBound)")
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: pinchScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
+        configuration.userContentController.add(context.coordinator, name: Self.pinchHandlerName)
         let webView = ChatViewportWebView(frame: .zero, configuration: configuration)
         webView.onLayout = { [weak coordinator = context.coordinator] webView in
             coordinator?.updateLayout(webView)
@@ -86,11 +124,27 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var loadedURL: URL?
         var reloadToken = 0
         weak var bridge: ChatHostBridge?
         private var appliedLayout: (Bool, CGFloat, CGFloat)?
+
+        // Text size set by pinching, shared by every chat and kept across launches.
+        private static let zoomKey = "chatTextZoom"
+        static let zoomRange: ClosedRange<Double> = 0.7...2.0
+
+        var savedZoom: Double {
+            let value = UserDefaults.standard.double(forKey: Self.zoomKey)
+            return value > 0 ? min(max(value, Self.zoomRange.lowerBound), Self.zoomRange.upperBound) : 1
+        }
+
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard let body = message.body as? [String: Any],
+                  let zoom = (body["zoom"] as? NSNumber)?.doubleValue,
+                  Self.zoomRange.contains(zoom) else { return }
+            UserDefaults.standard.set(zoom, forKey: Self.zoomKey)
+        }
 
         func updateLayout(_ webView: WKWebView, force: Bool = false) {
             // Keep the transcript clear of any side bars the system reserves, in any orientation
@@ -120,6 +174,8 @@ struct ChatWebView: UIViewControllerRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             updateLayout(webView, force: true)
+            // A reload starts from the size chosen when this view opened; reapply the latest.
+            webView.evaluateJavaScript("window.__tunerSetTextZoom?.(\(savedZoom))")
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
