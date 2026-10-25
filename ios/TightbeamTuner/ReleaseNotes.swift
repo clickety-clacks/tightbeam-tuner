@@ -5,6 +5,12 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 21, date: "October 25, 2026", items: [
+            .init(symbol: "arrow.up.circle", title: "Send button fits the field again",
+                  detail: "The send button sits evenly inside the field's rounded end, as it did before the connection dot."),
+            .init(symbol: "keyboard", title: "Keyboard stays while you read",
+                  detail: "Tapping the conversation or Latest messages no longer puts the keyboard away while you type."),
+        ]),
         ReleaseNote(version: "1.0", build: 20, date: "October 25, 2026", items: [
             .init(symbol: "circle.fill", title: "Connection dot",
                   detail: "The message field shows Chat's connection dot at its left again. Tap it for connection details."),

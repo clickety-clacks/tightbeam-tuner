@@ -45,6 +45,8 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     private(set) var outgoing: Outgoing?
     /// True once Chat has hidden its composer in this page load (it stays hidden until the next page).
     private(set) var hostComposerActive = false
+    /// True while Tuner's message field has the keyboard. The page then leaves focus with it.
+    @ObservationIgnored var nativeComposerFocused = false
     /// The agent's display name from Chat's latest `ready`.
     private(set) var agentName: String?
     /// The gateway from Chat's latest `ready`.

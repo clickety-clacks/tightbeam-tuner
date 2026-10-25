@@ -11,6 +11,12 @@ struct NativeChatComposer: View {
     /// Scales with Dynamic Type so the line length stays the same at any text size.
     @ScaledMetric(relativeTo: .body) private var maxWidth: CGFloat = 640
 
+    // The field's ends are concentric with the send button: corner radius = button radius + gap.
+    // One line of text is exactly two corner radii tall, so each end is a half circle.
+    private static let gap: CGFloat = 5
+    private static let buttonSize: CGFloat = 34
+    private static let cornerRadius = buttonSize / 2 + gap
+
     private var trimmed: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var canSend: Bool {
@@ -37,11 +43,11 @@ struct NativeChatComposer: View {
                         Circle()
                             .fill(bridge.connection.color)
                             .frame(width: 11.5, height: 11.5)
-                            .frame(width: 38, height: 38)
+                            .frame(width: Self.buttonSize, height: Self.buttonSize)
                             .contentShape(.circle)
                     }
                     .buttonStyle(.plain)
-                    .padding(5)
+                    .padding(Self.gap)
                     .accessibilityLabel("Connection status: \(bridge.connection.label). Show details")
                     .popover(isPresented: $showingStatus) {
                         ConnectionDetails(bridge: bridge)
@@ -56,23 +62,30 @@ struct NativeChatComposer: View {
                         .padding(.vertical, 11)
                         .accessibilityLabel("Message")
 
-                    Button(sendTitle, systemImage: isRetry ? "arrow.clockwise" : "arrow.up", action: send)
-                        .labelStyle(.iconOnly)
+                    Button(action: send) {
+                        Image(systemName: isRetry ? "arrow.clockwise" : "arrow.up")
+                            .frame(width: 20, height: 20)
+                    }
+                        .accessibilityLabel(sendTitle)
                         .fontWeight(.semibold)
                         .foregroundStyle(Color.nordicOnAccent)
                         .tint(Color(.accent))
                         .buttonStyle(.glassProminent)
                         .buttonBorderShape(.circle)
+                        // The glass style pads wider than tall and centers its circle in that
+                        // width; pin the layout to the circle so the gap is the same on every side.
+                        .frame(width: Self.buttonSize, height: Self.buttonSize)
                         .disabled(!canSend)
-                        .padding(5)
+                        .padding(Self.gap)
                 }
-                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22, style: .continuous))
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: Self.cornerRadius, style: .continuous))
             }
         }
         .frame(maxWidth: maxWidth)
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
         .animation(.default, value: notice)
+        .onChange(of: focused, initial: true) { _, focused in bridge.nativeComposerFocused = focused }
         .onChange(of: bridge.outgoing) { _, outgoing in
             guard let outgoing else { return }
             switch outgoing.status {

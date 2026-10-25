@@ -67,7 +67,8 @@ struct ChatWebView: UIViewControllerRepresentable {
             forMainFrameOnly: true
         ))
         configuration.userContentController.add(context.coordinator, name: Self.pinchHandlerName)
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = ChatPageView(frame: .zero, configuration: configuration)
+        webView.bridge = bridge
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         // Match Chat's page color so loading and overscroll show linen, not white.
         webView.isOpaque = false
@@ -158,3 +159,15 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
     }
 }
+
+/// The Chat page. Tapping a web page normally takes the keyboard from whatever field had it.
+/// While Tuner's message field is typing, a tap on the conversation (or on Latest messages)
+/// leaves the keyboard with it, as in Messages.
+private final class ChatPageView: WKWebView {
+    weak var bridge: ChatHostBridge?
+
+    override func becomeFirstResponder() -> Bool {
+        bridge?.nativeComposerFocused == true ? false : super.becomeFirstResponder()
+    }
+}
+
