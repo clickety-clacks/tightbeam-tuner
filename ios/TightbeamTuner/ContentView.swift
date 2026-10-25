@@ -4,6 +4,7 @@ struct ContentView: View {
     @State private var store = TunerStore()
     @State private var showingSettings = false
     @State private var reloadToken = 0
+    @State private var whatsNew: [ReleaseNote] = []
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @AppStorage("appearance") private var appearance = "system"
     /// Native composer drafts per agent, restored on relaunch. Send state is not kept.
@@ -53,7 +54,12 @@ struct ContentView: View {
             SettingsView(store: store, showing: $showingSettings)
                 .interactiveDismissDisabled(!store.connection.isComplete)
         }
+        .sheet(isPresented: Binding(get: { !whatsNew.isEmpty }, set: { if !$0 { whatsNew = [] } })) {
+            WhatsNewView(notes: whatsNew)
+        }
         .task {
+            // A first install goes to setup instead of release notes.
+            whatsNew = ReleaseNotes.takeUnseen(firstInstall: !store.connection.isComplete)
             if store.connection.isComplete { await store.refresh() }
             else { showingSettings = true }
         }

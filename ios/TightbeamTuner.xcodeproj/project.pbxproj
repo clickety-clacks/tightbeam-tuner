@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		09450AF22E32E08A35B1B364 /* ChatWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D03D0E09B76E27FDCF1396B1 /* ChatWebView.swift */; };
 		E304117A6F383C249DDD9495 /* NativeChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45877BD23DE38EED29D8875A /* NativeChatComposer.swift */; };
+		7FB5AAFE3AF6850EA1B7E99C /* ReleaseNotes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF3D4BC72B500DAFB236E42C /* ReleaseNotes.swift */; };
 		AE683EBBAB16C85A79AFCBD2 /* NordicStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D04F5ED9AD04993093DD323 /* NordicStyle.swift */; };
 		286DEDE27310962FC0535D76 /* ChatHostBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB8A728276A12764A6A3636 /* ChatHostBridge.swift */; };
 		19741202E7C1549C5598796F /* Connection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F356E541109E44BB67E5912B /* Connection.swift */; };
@@ -45,6 +46,7 @@
 		D0290CD0850842496E03BFF8 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		D03D0E09B76E27FDCF1396B1 /* ChatWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWebView.swift; sourceTree = "<group>"; };
 		45877BD23DE38EED29D8875A /* NativeChatComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatComposer.swift; sourceTree = "<group>"; };
+		FF3D4BC72B500DAFB236E42C /* ReleaseNotes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseNotes.swift; sourceTree = "<group>"; };
 		4D04F5ED9AD04993093DD323 /* NordicStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NordicStyle.swift; sourceTree = "<group>"; };
 		BBB8A728276A12764A6A3636 /* ChatHostBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHostBridge.swift; sourceTree = "<group>"; };
 		E849A636E74EE986F0D51A87 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -98,6 +100,7 @@
 				E849A636E74EE986F0D51A87 /* Assets.xcassets */,
 				D03D0E09B76E27FDCF1396B1 /* ChatWebView.swift */,
 				45877BD23DE38EED29D8875A /* NativeChatComposer.swift */,
+				FF3D4BC72B500DAFB236E42C /* ReleaseNotes.swift */,
 				4D04F5ED9AD04993093DD323 /* NordicStyle.swift */,
 				BBB8A728276A12764A6A3636 /* ChatHostBridge.swift */,
 				F356E541109E44BB67E5912B /* Connection.swift */,
@@ -217,6 +220,7 @@
 				A7F0BFDA21CBCC92D23EB748 /* Agent.swift in Sources */,
 				09450AF22E32E08A35B1B364 /* ChatWebView.swift in Sources */,
 				E304117A6F383C249DDD9495 /* NativeChatComposer.swift in Sources */,
+				7FB5AAFE3AF6850EA1B7E99C /* ReleaseNotes.swift in Sources */,
 				AE683EBBAB16C85A79AFCBD2 /* NordicStyle.swift in Sources */,
 				286DEDE27310962FC0535D76 /* ChatHostBridge.swift in Sources */,
 				19741202E7C1549C5598796F /* Connection.swift in Sources */,

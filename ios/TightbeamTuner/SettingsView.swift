@@ -80,6 +80,10 @@ struct SettingsView: View {
                             Text("Dark").tag("dark")
                         }
                     }
+                    Section("About") {
+                        LabeledContent("Version", value: ReleaseNotes.currentVersion)
+                        NavigationLink("Release Notes") { ReleaseNotesView() }
+                    }
                 }
                 .listRowBackground(Color.nordicSurface)
             }
