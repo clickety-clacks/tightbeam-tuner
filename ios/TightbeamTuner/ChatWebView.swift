@@ -167,7 +167,11 @@ private final class ChatPageView: WKWebView {
     weak var bridge: ChatHostBridge?
 
     override func becomeFirstResponder() -> Bool {
-        bridge?.nativeComposerFocused == true ? false : super.becomeFirstResponder()
+        // When Chat's own composer is in use, the page takes the keyboard as usual.
+        guard let bridge, bridge.hostComposerActive, bridge.nativeComposerFocused else {
+            return super.becomeFirstResponder()
+        }
+        return false
     }
 }
 

@@ -86,6 +86,7 @@ struct NativeChatComposer: View {
         .padding(.bottom, 8)
         .animation(.default, value: notice)
         .onChange(of: focused, initial: true) { _, focused in bridge.nativeComposerFocused = focused }
+        .onDisappear { bridge.nativeComposerFocused = false }
         .onChange(of: bridge.outgoing) { _, outgoing in
             guard let outgoing else { return }
             switch outgoing.status {
