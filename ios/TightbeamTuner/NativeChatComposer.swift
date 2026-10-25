@@ -6,6 +6,7 @@ struct NativeChatComposer: View {
     @Binding var draft: String
     let bridge: ChatHostBridge
     @FocusState private var focused: Bool
+    @State private var showingStatus = false
     /// A comfortable line of body text, about 70 characters, plus the send button.
     /// Scales with Dynamic Type so the line length stays the same at any text size.
     @ScaledMetric(relativeTo: .body) private var maxWidth: CGFloat = 640
@@ -28,12 +29,30 @@ struct NativeChatComposer: View {
                         .glassEffect(.regular, in: .capsule)
                         .transition(.opacity)
                 }
-                HStack(alignment: .bottom, spacing: 4) {
+                HStack(alignment: .bottom, spacing: 0) {
+                    // Connection status, the same dot Chat's own composer shows at its left.
+                    Button {
+                        showingStatus = true
+                    } label: {
+                        Circle()
+                            .fill(bridge.connection.color)
+                            .frame(width: 11.5, height: 11.5)
+                            .frame(width: 38, height: 38)
+                            .contentShape(.circle)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(5)
+                    .accessibilityLabel("Connection status: \(bridge.connection.label). Show details")
+                    .popover(isPresented: $showingStatus) {
+                        ConnectionDetails(bridge: bridge)
+                            .presentationCompactAdaptation(.popover)
+                    }
+
                     TextField(bridge.agentName ?? "Message", text: $draft, axis: .vertical)
                         .lineLimit(1...6)
                         .foregroundStyle(Color.nordicText)
                         .focused($focused)
-                        .padding(.leading, 16)
+                        .padding(.trailing, 4)
                         .padding(.vertical, 11)
                         .accessibilityLabel("Message")
 
@@ -90,5 +109,47 @@ struct NativeChatComposer: View {
         let text = draft
         draft = ""
         bridge.send(text)
+    }
+}
+
+extension ChatHostBridge.Connection {
+    /// Chat's status colors: moss when connected, ochre while connecting, red when it cannot connect.
+    var color: Color {
+        switch self {
+        case .connected: .nordicOk
+        case .connecting, .reconnecting: .nordicCaution
+        case .disconnected, .unsupported, .unauthorized: .nordicDanger
+        }
+    }
+}
+
+/// The details Chat's status popup shows, as far as Chat shares them with Tuner.
+private struct ConnectionDetails: View {
+    let bridge: ChatHostBridge
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label {
+                Text(bridge.connection.label).font(.headline)
+            } icon: {
+                Circle().fill(bridge.connection.color).frame(width: 11.5, height: 11.5)
+            }
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                row("Gateway", bridge.gatewayOrigin)
+                row("Session", bridge.sessionKey)
+                row("Agent", bridge.agentName)
+            }
+            .font(.subheadline)
+        }
+        .foregroundStyle(Color.nordicText)
+        .padding()
+        .frame(idealWidth: 320)
+    }
+
+    private func row(_ name: String, _ value: String?) -> some View {
+        GridRow {
+            Text(name).foregroundStyle(Color.nordicSecondaryText)
+            Text(value ?? "Unavailable").textSelection(.enabled)
+        }
     }
 }

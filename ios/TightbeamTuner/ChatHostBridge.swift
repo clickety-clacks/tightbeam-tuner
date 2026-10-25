@@ -47,6 +47,46 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     private(set) var hostComposerActive = false
     /// The agent's display name from Chat's latest `ready`.
     private(set) var agentName: String?
+    /// The gateway from Chat's latest `ready`.
+    private(set) var gatewayOrigin: String?
+    /// Why Chat last reported the conversation unavailable (`connecting`, `reconnecting`, ...).
+    private(set) var unavailableReason: String?
+
+    /// Chat's connection state, as its own composer's status dot shows it.
+    enum Connection {
+        case connecting, connected, reconnecting, disconnected, unsupported, unauthorized
+
+        var label: String {
+            switch self {
+            case .connecting: "Connecting"
+            case .connected: "Connected"
+            case .reconnecting: "Reconnecting; conversation may be out of date"
+            case .disconnected: "Disconnected"
+            case .unsupported: "This conversation is not supported"
+            case .unauthorized: "Access to this conversation is unavailable"
+            }
+        }
+    }
+
+    var connection: Connection {
+        switch phase {
+        case .waiting: return .connecting
+        case .ready: return .connected
+        case .unavailable:
+            switch unavailableReason {
+            case "connecting": return .connecting
+            case "disconnected", "lifetime-ended": return .disconnected
+            case "unsupported": return .unsupported
+            case "unauthorized": return .unauthorized
+            default: return .reconnecting
+            }
+        }
+    }
+
+    var sessionKey: String? {
+        if case let .ready(_, key) = phase { return key }
+        return nil
+    }
 
     private let allowedOrigin: String
     weak var webView: WKWebView?
@@ -169,13 +209,19 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
                   let sessionKey = event["sessionKey"] as? String else { return }
             phase = .ready(lifetimeId: lifetimeId, sessionKey: sessionKey)
             agentName = event["agentDisplayName"] as? String ?? agentName
+            gatewayOrigin = event["gatewayOrigin"] as? String ?? gatewayOrigin
+            unavailableReason = nil
             hostComposerActive = true
         case "unavailable":
             if let lifetimeId, case let .ready(current, _) = phase, current == lifetimeId {
+                unavailableReason = event["reason"] as? String
                 phase = .unavailable(lifetimeId: lifetimeId)
             }
         case "lifetime-ended":
-            if hostComposerActive, let lifetimeId { phase = .unavailable(lifetimeId: lifetimeId) }
+            if hostComposerActive, let lifetimeId {
+                unavailableReason = "lifetime-ended"
+                phase = .unavailable(lifetimeId: lifetimeId)
+            }
         case "declined":
             phase = .waiting
             hostComposerActive = false

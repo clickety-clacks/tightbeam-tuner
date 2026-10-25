@@ -11,6 +11,7 @@ struct ChatWebView: UIViewControllerRepresentable {
 
     static let pinchHandlerName = "tunerPinch"
 
+    // Page gestures: pinch for text size, and swipe down to put the keyboard away.
     // WebKit claims pinches before a native gesture recognizer can see them, so the page handles
     // its own pinch gestures. Pinching sets the text size, the same setting Safari's text size
     // control uses, so text reflows instead of the page magnifying. The app keeps the result.
@@ -34,6 +35,19 @@ struct ChatWebView: UIViewControllerRepresentable {
             event.preventDefault();
             window.webkit.messageHandlers.tunerPinch.postMessage({ zoom });
           }, { passive: false });
+          // Swiping down on the conversation puts the keyboard away, as in Messages.
+          let touchY = null;
+          document.addEventListener('touchstart', (event) => {
+            touchY = event.touches.length === 1 ? event.touches[0].clientY : null;
+          }, { passive: true });
+          document.addEventListener('touchmove', (event) => {
+            if (touchY === null || event.touches.length !== 1) return;
+            if (event.touches[0].clientY - touchY < 24) return;
+            touchY = null;
+            const active = document.activeElement;
+            if (active && /^(TEXTAREA|INPUT)$/.test(active.tagName)) active.blur();
+            window.webkit.messageHandlers.tunerPinch.postMessage({ dismissKeyboard: true });
+          }, { passive: true });
         })();
         """#
 
@@ -101,6 +115,10 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            if let body = message.body as? [String: Any], body["dismissKeyboard"] as? Bool == true {
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                return
+            }
             guard let body = message.body as? [String: Any],
                   let zoom = (body["zoom"] as? NSNumber)?.doubleValue,
                   Self.zoomRange.contains(zoom) else { return }

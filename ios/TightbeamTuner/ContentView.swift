@@ -6,6 +6,10 @@ struct ContentView: View {
     @State private var reloadToken = 0
     @State private var whatsNew: [ReleaseNote] = []
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    /// In portrait on a wide screen the agent list floats over the chat instead of beside it.
+    @State private var portrait = false
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage("appearance") private var appearance = "system"
     /// Native composer drafts per agent, restored on relaunch. Send state is not kept.
     @SceneStorage("drafts") private var draftsData = Data()
@@ -22,7 +26,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
+        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
             AgentSidebar(store: store)
                 .navigationTitle("Agents")
                 .toolbar {
@@ -67,7 +71,20 @@ struct ContentView: View {
             if let value, let agent = store.agents.first(where: { $0.id == value }) {
                 store.select(agent)
                 preferredCompactColumn = .detail
+                // A floating agent list closes once an agent is chosen, like a popover.
+                if horizontalSizeClass == .regular && portrait { columnVisibility = .detailOnly }
             }
+        }
+        .onChange(of: columnVisibility) { _, visibility in
+            // Opening the agent list puts the keyboard away, so the list is not half covered.
+            if visibility != .detailOnly {
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            }
+        }
+        .onGeometryChange(for: Bool.self) { $0.size.height > $0.size.width } action: { isPortrait in
+            portrait = isPortrait
+            // Side by side again in landscape: bring the list back if it was closed in portrait.
+            if !isPortrait && columnVisibility == .detailOnly { columnVisibility = .automatic }
         }
     }
 }
