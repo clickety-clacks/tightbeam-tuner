@@ -5,6 +5,10 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 23, date: "October 25, 2026", items: [
+            .init(symbol: "arrow.down.to.line", title: "The newest message stays in view",
+                  detail: "At the bottom of a conversation, the newest message moves up above the keyboard and the message field instead of hiding behind them. Conversations also open at the newest message."),
+        ]),
         ReleaseNote(version: "1.0", build: 22, date: "October 25, 2026", items: [
             .init(symbol: "keyboard", title: "Chat's own message field keeps the keyboard",
                   detail: "When Chat shows its own message field instead of Tuner's, tapping it always brings up the keyboard."),

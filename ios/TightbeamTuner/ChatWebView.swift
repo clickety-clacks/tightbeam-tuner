@@ -48,6 +48,56 @@ struct ChatWebView: UIViewControllerRepresentable {
             if (active && /^(TEXTAREA|INPUT)$/.test(active.tagName)) active.blur();
             window.webkit.messageHandlers.tunerPinch.postMessage({ dismissKeyboard: true });
           }, { passive: true });
+          // A conversation scrolled to the bottom stays there when the page's room changes: the
+          // keyboard, the message field's height, or new content. Only real scrolling moves it off.
+          let scroller = null;
+          let atBottom = false;
+          // Chat opens at the newest message; until the reader touches it, keep it there while
+          // the page settles (content loading, the message field arriving).
+          let touched = false;
+          document.addEventListener('touchstart', () => { touched = true; }, { capture: true, passive: true });
+          let lastHeight = 0;
+          const gap = (el) => el.scrollHeight - el.scrollTop - el.clientHeight;
+          const pin = () => { if (scroller) scroller.scrollTop = scroller.scrollHeight; };
+          // A size change (keyboard, message field, new content) keeps a bottom reader at the bottom.
+          const sizeChanged = () => {
+            if (!scroller) return;
+            if (atBottom) pin();
+            lastHeight = scroller.clientHeight;
+          };
+          const sizes = new ResizeObserver(sizeChanged);
+          const children = new MutationObserver(() => { for (const child of scroller.children) sizes.observe(child); });
+          const adopt = (el) => {
+            if (el === scroller) return;
+            scroller = el;
+            atBottom = !touched || gap(el) <= 64;
+            if (atBottom) pin();
+            lastHeight = el.clientHeight;
+            sizes.disconnect();
+            children.disconnect();
+            sizes.observe(el);
+            for (const child of el.children) sizes.observe(child);
+            children.observe(el, { childList: true });
+          };
+          const findScroller = () => {
+            let best = null;
+            for (const el of document.querySelectorAll('*')) {
+              if (el.scrollHeight <= el.clientHeight + 2 || !/(auto|scroll)/.test(getComputedStyle(el).overflowY)) continue;
+              if (!best || el.clientHeight > best.clientHeight) best = el;
+            }
+            return best;
+          };
+          const look = () => { if (!scroller) { const el = findScroller(); if (el) adopt(el); } return scroller; };
+          const looking = setInterval(() => { if (look()) clearInterval(looking); }, 100);
+          document.addEventListener('scroll', (event) => {
+            const el = event.target;
+            if (!(el instanceof Element) || el.clientHeight < innerHeight / 2) return;
+            adopt(el);
+            // A scroll that comes with a size change is layout, not the reader moving.
+            if (el.clientHeight !== lastHeight || !touched) return;
+            atBottom = gap(el) <= 64;
+          }, { capture: true, passive: true });
+          window.__tunerKeepBottom = () => { if (look() && atBottom) requestAnimationFrame(pin); };
         })();
         """#
 
@@ -88,10 +138,11 @@ struct ChatWebView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: UIViewController, context: Context) {
+        guard let webView = controller.view as? WKWebView else { return }
         if controller.additionalSafeAreaInsets.bottom != floatingBottomInset {
             controller.additionalSafeAreaInsets.bottom = floatingBottomInset
+            webView.evaluateJavaScript("window.__tunerKeepBottom?.()")
         }
-        guard let webView = controller.view as? WKWebView else { return }
         if context.coordinator.loadedURL != url {
             context.coordinator.loadedURL = url
             webView.load(URLRequest(url: url))
