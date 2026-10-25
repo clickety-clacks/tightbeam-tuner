@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var connecting = false
     @State private var publicKey = ""
     @AppStorage("appearance") private var appearance = "system"
+    @AppStorage("maxRecents") private var maxRecents = 10
 
     var body: some View {
         NavigationStack {
@@ -79,6 +80,15 @@ struct SettingsView: View {
                             Text("Light").tag("light")
                             Text("Dark").tag("dark")
                         }
+                    }
+                    Section {
+                        Stepper(value: $maxRecents, in: 0...TunerStore.storedRecents) {
+                            LabeledContent("Recent agents", value: maxRecents == 0 ? "Off" : "\(maxRecents)")
+                        }
+                    } header: {
+                        Text("Agent list")
+                    } footer: {
+                        Text("How many recently opened agents appear above the agent tree.")
                     }
                     Section("About") {
                         LabeledContent("Version", value: ReleaseNotes.currentVersion)

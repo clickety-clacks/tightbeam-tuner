@@ -5,6 +5,12 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 19, date: "October 24, 2026", items: [
+            .init(symbol: "clock", title: "Choose how many recents",
+                  detail: "Settings sets how many recently opened agents appear in the list, from none up to 50."),
+            .init(symbol: "tag", title: "Archetype under each agent",
+                  detail: "Every agent in the list shows its archetype below its name."),
+        ]),
         ReleaseNote(version: "1.0", build: 18, date: "October 24, 2026", items: [
             .init(symbol: "sparkles", title: "Release notes",
                   detail: "After an update, Tuner shows what changed, once. Every release's notes stay in Settings under Release Notes."),

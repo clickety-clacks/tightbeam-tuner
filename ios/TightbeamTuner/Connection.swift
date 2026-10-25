@@ -64,9 +64,13 @@ final class TunerStore {
     }
 
     var selectedAgent: Agent? { agents.first { $0.id == selectedID } }
+    /// Recent agents that are still active, newest first.
     var recentAgents: [Agent] {
         recentIDs.compactMap { id in agents.first { $0.id == id } }
     }
+
+    /// Kept beyond the visible limit, so raising the limit in Settings brings older ones back.
+    static let storedRecents = 50
 
     func save(_ value: Connection) {
         connection = value
@@ -80,7 +84,7 @@ final class TunerStore {
         selectedID = agent.id
         recentIDs.removeAll { $0 == agent.id }
         recentIDs.insert(agent.id, at: 0)
-        recentIDs = Array(recentIDs.prefix(10))
+        recentIDs = Array(recentIDs.prefix(Self.storedRecents))
         UserDefaults.standard.set(recentIDs, forKey: Keys.recent)
     }
 

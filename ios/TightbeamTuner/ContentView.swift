@@ -113,6 +113,30 @@ private struct AgentNode: Identifiable {
     var id: String { agent.id }
 }
 
+/// An agent's name with its archetype as a caption below.
+private struct AgentRowLabel: View {
+    let agent: Agent
+    var contextOnly = false
+    var symbol: String?
+
+    var body: some View {
+        let text = VStack(alignment: .leading, spacing: 1) {
+            Text(agent.name)
+                .foregroundStyle(contextOnly ? Color.nordicSecondaryText : Color.nordicText)
+            if let archetype = agent.archetype, !archetype.isEmpty {
+                Text(archetype)
+                    .font(.caption)
+                    .foregroundStyle(Color.nordicSecondaryText)
+            }
+        }
+        if let symbol {
+            Label { text } icon: { Image(systemName: symbol) }
+        } else {
+            text
+        }
+    }
+}
+
 private struct AgentBranch: View {
     let node: AgentNode
     let filtering: Bool
@@ -121,8 +145,7 @@ private struct AgentBranch: View {
     var body: some View {
         if node.children.isEmpty {
             NavigationLink(value: node.id) {
-                Text(node.agent.name)
-                    .foregroundStyle(node.contextOnly ? .secondary : .primary)
+                AgentRowLabel(agent: node.agent, contextOnly: node.contextOnly)
             }
         } else {
             DisclosureGroup(isExpanded: Binding(
@@ -134,8 +157,7 @@ private struct AgentBranch: View {
                 }
             } label: {
                 NavigationLink(value: node.id) {
-                    Text(node.agent.name)
-                        .foregroundStyle(node.contextOnly ? .secondary : .primary)
+                    AgentRowLabel(agent: node.agent, contextOnly: node.contextOnly)
                 }
             }
         }
@@ -147,6 +169,7 @@ private struct AgentSidebar: View {
     @State private var query = ""
     @State private var selectedArchetypes: Set<String> = []
     @State private var collapsed: Set<String> = []
+    @AppStorage("maxRecents") private var maxRecents = 10
 
     private var words: [String] {
         query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
@@ -195,11 +218,12 @@ private struct AgentSidebar: View {
 
     var body: some View {
         List(selection: $store.selectedID) {
-            if !store.recentAgents.isEmpty {
+            let recents = store.recentAgents.prefix(maxRecents)
+            if !recents.isEmpty {
                 Section("Recent") {
-                    ForEach(store.recentAgents.filter { matches($0, words: words) }) { agent in
+                    ForEach(recents.filter { matches($0, words: words) }) { agent in
                         NavigationLink(value: agent.id) {
-                            Label(agent.name, systemImage: "clock")
+                            AgentRowLabel(agent: agent, symbol: "clock")
                         }
                     }
                 }
