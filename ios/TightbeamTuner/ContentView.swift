@@ -11,8 +11,9 @@ struct ContentView: View {
     @State private var portrait = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage("appearance") private var appearance = "system"
-    /// Native composer drafts per agent, restored on relaunch. Send state is not kept.
-    @SceneStorage("drafts") private var draftsData = Data()
+    /// Native composer drafts per agent. Kept in app defaults, not scene storage, so a draft
+    /// survives a force-quit or iOS ending Tuner in the background. Send state is not kept.
+    @AppStorage("composerDrafts") private var draftsData = Data()
 
     private func draftBinding(for agentID: String) -> Binding<String> {
         Binding(
