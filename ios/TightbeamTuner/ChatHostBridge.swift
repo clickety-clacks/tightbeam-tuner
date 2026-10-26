@@ -132,6 +132,11 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         outgoing?.status == .sending
     }
 
+    /// Starts Chat over on the same conversation, as Chat's own Reconnect does.
+    func reconnect() {
+        webView?.reload()
+    }
+
     // MARK: Page lifetime (host rule 2)
 
     /// A new main-frame page committed: wait for that page's `ready` before showing the native composer.

@@ -50,7 +50,7 @@ struct NativeChatComposer: View {
                     .padding(Self.gap)
                     .accessibilityLabel("Connection status: \(bridge.connection.label). Show details")
                     .popover(isPresented: $showingStatus) {
-                        ConnectionDetails(bridge: bridge)
+                        ConnectionDetails(bridge: bridge) { showingStatus = false }
                             .presentationCompactAdaptation(.popover)
                     }
 
@@ -112,7 +112,6 @@ struct NativeChatComposer: View {
     private var sendTitle: String { isRetry ? "Retry" : "Send" }
 
     private var notice: String? {
-        if case .unavailable = bridge.phase { return "Reconnecting…" }
         guard let outgoing = bridge.outgoing,
               outgoing.content == draft || draft.hasPrefix(outgoing.content + "\n\n") else { return nil }
         switch outgoing.status {
@@ -131,6 +130,14 @@ struct NativeChatComposer: View {
 }
 
 extension ChatHostBridge.Connection {
+    /// Red: Chat cannot reach the conversation. The dot's details then offer Connect.
+    var isDown: Bool {
+        switch self {
+        case .disconnected, .unsupported, .unauthorized: true
+        case .connecting, .connected, .reconnecting: false
+        }
+    }
+
     /// Chat's status colors: moss when connected, ochre while connecting, red when it cannot connect.
     var color: Color {
         switch self {
@@ -144,6 +151,7 @@ extension ChatHostBridge.Connection {
 /// The details Chat's status popup shows, as far as Chat shares them with Tuner.
 private struct ConnectionDetails: View {
     let bridge: ChatHostBridge
+    let dismiss: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -158,6 +166,14 @@ private struct ConnectionDetails: View {
                 row("Agent", bridge.agentName)
             }
             .font(.subheadline)
+            if bridge.connection.isDown {
+                Button("Connect", systemImage: "arrow.clockwise") {
+                    dismiss()
+                    bridge.reconnect()
+                }
+                .buttonStyle(.glassProminent)
+                .tint(Color(.accent))
+            }
         }
         .foregroundStyle(Color.nordicText)
         .padding()
