@@ -91,8 +91,10 @@ struct NativeChatComposer: View {
             guard let outgoing else { return }
             switch outgoing.status {
             case .failed, .uncertain:
-                // Give the words back so the user can retry or edit them.
+                // Give the words back so the user can retry or edit them, ahead of anything
+                // typed since, so nothing is lost.
                 if trimmed.isEmpty { draft = outgoing.content }
+                else if !draft.contains(outgoing.content) { draft = outgoing.content + "\n\n" + draft }
             default: break
             }
         }
@@ -110,7 +112,8 @@ struct NativeChatComposer: View {
 
     private var notice: String? {
         if case .unavailable = bridge.phase { return "Reconnecting…" }
-        guard let outgoing = bridge.outgoing, outgoing.content == draft else { return nil }
+        guard let outgoing = bridge.outgoing,
+              outgoing.content == draft || draft.hasPrefix(outgoing.content + "\n\n") else { return nil }
         switch outgoing.status {
         case .failed: return "Not sent"
         case .uncertain: return "May not have sent"

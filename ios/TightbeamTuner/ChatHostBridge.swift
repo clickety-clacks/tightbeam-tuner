@@ -30,7 +30,8 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         case uncertain(String)
     }
 
-    /// The message the user last sent. Kept until it is delivered or replaced, so it can be retried.
+    /// The message the user last sent, or an earlier one that did not send. Kept until it is
+    /// delivered or replaced, so it can be retried.
     struct Outgoing: Equatable {
         let correlationId: String
         let content: String
@@ -43,6 +44,9 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
 
     private(set) var phase: Phase = .waiting
     private(set) var outgoing: Outgoing?
+    /// Earlier messages Chat accepted but has not yet reported delivered, oldest first.
+    /// The user can send again once a message is accepted; each message keeps its own outcome.
+    private(set) var earlier: [Outgoing] = []
     /// True once Chat has hidden its composer in this page load (it stays hidden until the next page).
     private(set) var hostComposerActive = false
     /// True while Tuner's message field has the keyboard. The page then leaves focus with it.
@@ -123,8 +127,9 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         return false
     }
 
+    /// Only a message Chat has not yet accepted holds the Send button.
     var isSending: Bool {
-        outgoing?.status == .sending || outgoing?.status == .accepted
+        outgoing?.status == .sending
     }
 
     // MARK: Page lifetime (host rule 2)
@@ -160,6 +165,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             default: break
             }
         }
+        if let previous = outgoing, previous.status == .accepted { earlier.append(previous) }
         outgoing = Outgoing(correlationId: correlationId, content: text, lifetimeId: lifetimeId,
                             attempt: nil, status: .sending, attempted: retry)
         var command: [String: Any] = [
@@ -188,9 +194,29 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
 
     /// Marks every outstanding send as uncertain; that is its one outcome (host rule 2).
     private func settleUnresolved(reason: String) {
-        guard var current = outgoing, current.status == .sending || current.status == .accepted else { return }
-        current.status = .uncertain(current.status == .accepted ? "accepted-unreconciled" : reason)
-        outgoing = current
+        for index in earlier.indices where earlier[index].status == .accepted {
+            earlier[index].status = .uncertain("accepted-unreconciled")
+        }
+        if var current = outgoing, current.status == .sending || current.status == .accepted {
+            current.status = .uncertain(current.status == .accepted ? "accepted-unreconciled" : reason)
+            outgoing = current
+        }
+        surfaceEarlierProblem()
+    }
+
+    /// An earlier message that failed or may not have sent becomes the current one, so its words
+    /// come back for a retry. It waits while the latest message is still sending or itself unsent.
+    private func surfaceEarlierProblem() {
+        if let current = outgoing {
+            switch current.status {
+            case .sending, .failed, .uncertain: return
+            case .accepted, .delivered: break
+            }
+        }
+        guard let index = earlier.firstIndex(where: { $0.status != .accepted }) else { return }
+        let problem = earlier.remove(at: index)
+        if let current = outgoing, current.status == .accepted { earlier.append(current) }
+        outgoing = problem
     }
 
     // MARK: Events from Chat
@@ -233,27 +259,43 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             current.status = reason == "already-delivered" ? .delivered : .failed(reason)
             outgoing = current
         case "accepted", "delivered", "failed", "uncertain":
-            guard var current = matching(event) else { return }
-            let attempt = event["attempt"] as? Int
-            if let attempt, let seen = current.attempt, attempt < seen { return }
-            current.attempt = attempt ?? current.attempt
-            current.attempted = true
-            let reason = event["reason"] as? String ?? type
-            switch type {
-            case "accepted": if current.status == .sending { current.status = .accepted }
-            case "delivered": current.status = .delivered
-            case "failed": current.status = .failed(reason)
-            default: current.status = .uncertain(reason)
+            if let index = earlier.firstIndex(where: { matches($0, event) }) {
+                var message = earlier[index]
+                Self.apply(type: type, event: event, to: &message)
+                if message.status == .delivered { earlier.remove(at: index) } else { earlier[index] = message }
+                surfaceEarlierProblem()
+                return
             }
+            guard var current = matching(event) else { return }
+            Self.apply(type: type, event: event, to: &current)
             outgoing = current
+            surfaceEarlierProblem()
         default:
             break
         }
     }
 
+    private static func apply(type: String, event: [String: Any], to current: inout Outgoing) {
+        let attempt = event["attempt"] as? Int
+        if let attempt, let seen = current.attempt, attempt < seen { return }
+        current.attempt = attempt ?? current.attempt
+        current.attempted = true
+        let reason = event["reason"] as? String ?? type
+        switch type {
+        case "accepted": if current.status == .sending { current.status = .accepted }
+        case "delivered": current.status = .delivered
+        case "failed": current.status = .failed(reason)
+        default: current.status = .uncertain(reason)
+        }
+    }
+
+    private func matches(_ message: Outgoing, _ event: [String: Any]) -> Bool {
+        event["correlationId"] as? String == message.correlationId
+            && event["lifetimeId"] as? String == message.lifetimeId
+    }
+
     private func matching(_ event: [String: Any]) -> Outgoing? {
-        guard let current = outgoing, event["correlationId"] as? String == current.correlationId,
-              event["lifetimeId"] as? String == current.lifetimeId else { return nil }
+        guard let current = outgoing, matches(current, event) else { return nil }
         return current
     }
 

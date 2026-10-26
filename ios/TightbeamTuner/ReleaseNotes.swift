@@ -5,6 +5,10 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 26, date: "October 26, 2026", items: [
+            .init(symbol: "paperplane", title: "Send the next message sooner",
+                  detail: "Once Chat accepts a message, you can send another right away instead of waiting for it to arrive. A message that does not send comes back to the field so you can retry it."),
+        ]),
         ReleaseNote(version: "1.0", build: 25, date: "October 26, 2026", items: [
             .init(symbol: "square.and.pencil", title: "Unsent messages are kept",
                   detail: "A message you started typing stays in the field for that agent, even after you quit Tuner or iOS closes it in the background."),
