@@ -258,6 +258,12 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             let reason = event["reason"] as? String ?? "rejected"
             current.status = reason == "already-delivered" ? .delivered : .failed(reason)
             outgoing = current
+            // Chat stopped taking messages before its unavailable event arrived. Hold Send until
+            // Chat reports ready again.
+            if reason == "not-ready", case let .ready(lifetimeId, _) = phase, lifetimeId == current.lifetimeId {
+                unavailableReason = "reconnecting"
+                phase = .unavailable(lifetimeId: lifetimeId)
+            }
         case "accepted", "delivered", "failed", "uncertain":
             if let index = earlier.firstIndex(where: { matches($0, event) }) {
                 var message = earlier[index]

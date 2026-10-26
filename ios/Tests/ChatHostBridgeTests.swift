@@ -75,4 +75,17 @@ final class ChatHostBridgeTests: XCTestCase {
         XCTAssertEqual(bridge.outgoing?.status, .uncertain("accepted-unreconciled"))
         XCTAssertEqual(bridge.earlier.map(\.status), [.uncertain("accepted-unreconciled")])
     }
+
+    func testNotReadyRejectionHoldsSendUntilReady() {
+        let bridge = readyBridge()
+        bridge.send("hello")
+        report(bridge, "rejected", bridge.outgoing!.correlationId, reason: "not-ready")
+        XCTAssertFalse(bridge.isReady)
+        XCTAssertEqual(bridge.connection, .reconnecting)
+        XCTAssertEqual(bridge.outgoing?.status, .failed("not-ready"))
+        bridge.handle(type: "ready", event: [
+            "event": "ready", "version": 1, "lifetimeId": lifetime, "sessionKey": "agent:test"
+        ])
+        XCTAssertTrue(bridge.isReady)
+    }
 }

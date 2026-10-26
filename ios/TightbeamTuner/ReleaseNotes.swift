@@ -5,6 +5,10 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 27, date: "October 26, 2026", items: [
+            .init(symbol: "arrow.up.circle", title: "Send is grey when it can't send",
+                  detail: "While Chat is reconnecting, or the field is empty, the send button turns grey and can't be tapped. If Chat turns a message away because it's reconnecting, the button stays grey until Chat is back."),
+        ]),
         ReleaseNote(version: "1.0", build: 26, date: "October 26, 2026", items: [
             .init(symbol: "paperplane", title: "Send the next message sooner",
                   detail: "Once Chat accepts a message, you can send another right away instead of waiting for it to arrive. A message that does not send comes back to the field so you can retry it."),

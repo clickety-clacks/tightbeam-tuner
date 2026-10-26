@@ -68,8 +68,9 @@ struct NativeChatComposer: View {
                     }
                         .accessibilityLabel(sendTitle)
                         .fontWeight(.semibold)
-                        .foregroundStyle(Color.nordicOnAccent)
-                        .tint(Color(.accent))
+                        .foregroundStyle(canSend ? Color.nordicOnAccent : Color.nordicSecondaryText)
+                        // Grey whenever a tap would not send, so Send never looks available when it is not.
+                        .tint(canSend ? Color(.accent) : Color.nordicSecondaryText.opacity(0.25))
                         .buttonStyle(.glassProminent)
                         .buttonBorderShape(.circle)
                         // The glass style pads wider than tall and centers its circle in that
