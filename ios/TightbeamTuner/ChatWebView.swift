@@ -48,56 +48,6 @@ struct ChatWebView: UIViewControllerRepresentable {
             if (active && /^(TEXTAREA|INPUT)$/.test(active.tagName)) active.blur();
             window.webkit.messageHandlers.tunerPinch.postMessage({ dismissKeyboard: true });
           }, { passive: true });
-          // A conversation scrolled to the bottom stays there when the page's room changes: the
-          // keyboard, the message field's height, or new content. Only real scrolling moves it off.
-          let scroller = null;
-          let atBottom = false;
-          // Chat opens at the newest message; until the reader touches it, keep it there while
-          // the page settles (content loading, the message field arriving).
-          let touched = false;
-          document.addEventListener('touchstart', () => { touched = true; }, { capture: true, passive: true });
-          let lastHeight = 0;
-          const gap = (el) => el.scrollHeight - el.scrollTop - el.clientHeight;
-          const pin = () => { if (scroller) scroller.scrollTop = scroller.scrollHeight; };
-          // A size change (keyboard, message field, new content) keeps a bottom reader at the bottom.
-          const sizeChanged = () => {
-            if (!scroller) return;
-            if (atBottom) pin();
-            lastHeight = scroller.clientHeight;
-          };
-          const sizes = new ResizeObserver(sizeChanged);
-          const children = new MutationObserver(() => { for (const child of scroller.children) sizes.observe(child); });
-          const adopt = (el) => {
-            if (el === scroller) return;
-            scroller = el;
-            atBottom = !touched || gap(el) <= 64;
-            if (atBottom) pin();
-            lastHeight = el.clientHeight;
-            sizes.disconnect();
-            children.disconnect();
-            sizes.observe(el);
-            for (const child of el.children) sizes.observe(child);
-            children.observe(el, { childList: true });
-          };
-          const findScroller = () => {
-            let best = null;
-            for (const el of document.querySelectorAll('*')) {
-              if (el.scrollHeight <= el.clientHeight + 2 || !/(auto|scroll)/.test(getComputedStyle(el).overflowY)) continue;
-              if (!best || el.clientHeight > best.clientHeight) best = el;
-            }
-            return best;
-          };
-          const look = () => { if (!scroller) { const el = findScroller(); if (el) adopt(el); } return scroller; };
-          const looking = setInterval(() => { if (look()) clearInterval(looking); }, 100);
-          document.addEventListener('scroll', (event) => {
-            const el = event.target;
-            if (!(el instanceof Element) || el.clientHeight < innerHeight / 2) return;
-            adopt(el);
-            // A scroll that comes with a size change is layout, not the reader moving.
-            if (el.clientHeight !== lastHeight || !touched) return;
-            atBottom = gap(el) <= 64;
-          }, { capture: true, passive: true });
-          window.__tunerKeepBottom = () => { if (look() && atBottom) requestAnimationFrame(pin); };
         })();
         """#
 
@@ -129,6 +79,7 @@ struct ChatWebView: UIViewControllerRepresentable {
         webView.allowsBackForwardNavigationGestures = true
         bridge.webView = webView
         context.coordinator.bridge = bridge
+        context.coordinator.webView = webView
         webView.load(URLRequest(url: url))
         context.coordinator.loadedURL = url
         let controller = UIViewController()
@@ -141,7 +92,6 @@ struct ChatWebView: UIViewControllerRepresentable {
         guard let webView = controller.view as? WKWebView else { return }
         if controller.additionalSafeAreaInsets.bottom != floatingBottomInset {
             controller.additionalSafeAreaInsets.bottom = floatingBottomInset
-            webView.evaluateJavaScript("window.__tunerKeepBottom?.()")
         }
         if context.coordinator.loadedURL != url {
             context.coordinator.loadedURL = url
@@ -185,8 +135,38 @@ struct ChatWebView: UIViewControllerRepresentable {
             bridge?.pageEnded()
         }
 
+        // iOS can discard a background page's content process, which leaves the chat blank on
+        // return. Reload it as soon as Tuner is in front again.
+        weak var webView: WKWebView?
+        private var needsReload = false
+
+        override init() {
+            super.init()
+            NotificationCenter.default.addObserver(self, selector: #selector(becameActive),
+                                                   name: UIApplication.didBecomeActiveNotification, object: nil)
+        }
+
+        @objc private func becameActive() {
+            guard let webView else { return }
+            if needsReload || webView.url == nil { restart(webView); return }
+            // A page whose content process is gone cannot run script.
+            webView.evaluateJavaScript("1") { [weak self, weak webView] _, error in
+                if error != nil, let webView { self?.restart(webView) }
+            }
+        }
+
+        private func restart(_ webView: WKWebView) {
+            needsReload = false
+            if webView.url == nil, let loadedURL {
+                webView.load(URLRequest(url: loadedURL))
+            } else {
+                webView.reload()
+            }
+        }
+
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             bridge?.pageEnded()
+            if UIApplication.shared.applicationState == .active { restart(webView) } else { needsReload = true }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
