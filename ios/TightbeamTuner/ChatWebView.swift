@@ -83,15 +83,27 @@ struct ChatWebView: UIViewControllerRepresentable {
         webView.load(URLRequest(url: url))
         context.coordinator.loadedURL = url
         let controller = UIViewController()
-        controller.view = webView
-        controller.additionalSafeAreaInsets.bottom = floatingBottomInset
+        controller.view.backgroundColor = UIColor(resource: .nordicBackground)
+        controller.view.clipsToBounds = true
+        let pageController = UIViewController()
+        pageController.view = webView
+        controller.addChild(pageController)
+        pageController.view.frame = controller.view.bounds
+        pageController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        controller.view.addSubview(pageController.view)
+        pageController.didMove(toParent: controller)
+        // This child controller applies the composer inset to the web view's safe area.
+        pageController.additionalSafeAreaInsets.bottom = floatingBottomInset
+        context.coordinator.hostView = controller.view
+        context.coordinator.pageController = pageController
         return controller
     }
 
     func updateUIViewController(_ controller: UIViewController, context: Context) {
-        guard let webView = controller.view as? WKWebView else { return }
-        if controller.additionalSafeAreaInsets.bottom != floatingBottomInset {
-            controller.additionalSafeAreaInsets.bottom = floatingBottomInset
+        guard let webView = context.coordinator.webView,
+              let pageController = context.coordinator.pageController else { return }
+        if pageController.additionalSafeAreaInsets.bottom != floatingBottomInset {
+            pageController.additionalSafeAreaInsets.bottom = floatingBottomInset
         }
         if context.coordinator.loadedURL != url {
             context.coordinator.loadedURL = url
@@ -111,6 +123,9 @@ struct ChatWebView: UIViewControllerRepresentable {
         private static let zoomKey = "chatTextZoom"
         static let zoomRange: ClosedRange<Double> = 0.7...2.0
 
+        weak var hostView: UIView?
+        weak var pageController: UIViewController?
+        private var latestKeyboardShift: CGFloat?
         var savedZoom: Double {
             let value = UserDefaults.standard.double(forKey: Self.zoomKey)
             return value > 0 ? min(max(value, Self.zoomRange.lowerBound), Self.zoomRange.upperBound) : 1
@@ -144,6 +159,51 @@ struct ChatWebView: UIViewControllerRepresentable {
             super.init()
             NotificationCenter.default.addObserver(self, selector: #selector(becameActive),
                                                    name: UIApplication.didBecomeActiveNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillChangeFrame(_:)),
+                                                   name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        }
+
+        @objc private func keyboardWillChangeFrame(_ notification: Notification) {
+            guard let hostView, let pageController, let webView,
+                  let endValue = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue,
+                  let durationValue = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber,
+                  let curveValue = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber else { return }
+
+            let bounds = hostView.bounds
+            let endFrame = hostView.convert(endValue.cgRectValue, from: nil)
+            let targetShift = endFrame.maxY >= bounds.maxY - 1
+                ? max(0, bounds.maxY - endFrame.minY) : 0
+            let presentationTransform = webView.layer.presentation().map {
+                CATransform3DGetAffineTransform($0.transform)
+            } ?? webView.transform
+            let currentShift = webView.bounds.height < bounds.height - 0.5
+                && abs(presentationTransform.ty) < 0.5
+                ? max(0, bounds.maxY - webView.frame.maxY)
+                : max(0, -presentationTransform.ty)
+            let targetSafeAreaBottom = pageController.additionalSafeAreaInsets.bottom
+                + (targetShift > 0 ? 0 : hostView.safeAreaInsets.bottom)
+            let startShift = max(0, currentShift + webView.safeAreaInsets.bottom - targetSafeAreaBottom)
+            latestKeyboardShift = targetShift
+            let options = UIView.AnimationOptions(rawValue: UInt(truncating: curveValue) << 16)
+                .union([.beginFromCurrentState, .allowUserInteraction])
+
+            UIView.performWithoutAnimation {
+                webView.transform = .identity
+                webView.frame = bounds
+                webView.transform = CGAffineTransform(translationX: 0, y: -startShift)
+            }
+            UIView.animate(withDuration: durationValue.doubleValue, delay: 0, options: options) {
+                webView.transform = CGAffineTransform(translationX: 0, y: -targetShift)
+            } completion: { [weak self, weak hostView, weak webView] finished in
+                guard let self, let hostView, let webView,
+                      finished || abs((self.latestKeyboardShift ?? -1) - targetShift) < 0.5 else { return }
+                UIView.performWithoutAnimation {
+                    let finalBounds = hostView.bounds
+                    webView.transform = .identity
+                    webView.frame = CGRect(x: 0, y: 0, width: finalBounds.width,
+                                           height: max(0, finalBounds.maxY - targetShift))
+                }
+            }
         }
 
         @objc private func becameActive() {

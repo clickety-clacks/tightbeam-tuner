@@ -5,6 +5,12 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 29, date: "October 28, 2026", items: [
+            .init(symbol: "keyboard", title: "The conversation moves with the keyboard",
+                  detail: "When the keyboard opens or closes, the newest message slides along with it and the message field, instead of jumping first and leaving an empty gap."),
+            .init(symbol: "rectangle.split.2x1", title: "Message field lines up with Filter",
+                  detail: "On a large iPhone in landscape, with the agent list beside the chat, the message field sits level with the Filter agents field."),
+        ]),
         ReleaseNote(version: "1.0", build: 28, date: "October 26, 2026", items: [
             .init(symbol: "circle.fill", title: "The dot shows the connection",
                   detail: "The Reconnecting banner is gone. The dot in the message field shows the connection: green when connected, yellow while reconnecting, red when disconnected. When it is red, tap it and choose Connect."),

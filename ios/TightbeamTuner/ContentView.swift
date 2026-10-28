@@ -38,7 +38,9 @@ struct ContentView: View {
         } detail: {
             Group {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
-                    AgentChatView(url: url, reloadToken: reloadToken, draft: draftBinding(for: agent.id))
+                    AgentChatView(url: url, reloadToken: reloadToken, draft: draftBinding(for: agent.id),
+                                  alignComposerWithSidebar: UIDevice.current.userInterfaceIdiom == .phone
+                                      && horizontalSizeClass == .regular && !portrait && columnVisibility != .detailOnly)
                         .id(agent.id)
                         .toolbarBackground(.hidden, for: .navigationBar)
                         .toolbar {
@@ -96,13 +98,15 @@ private struct AgentChatView: View {
     let url: URL
     let reloadToken: Int
     @Binding var draft: String
+    let alignComposerWithSidebar: Bool
     @State private var bridge: ChatHostBridge
     @State private var composerHeight: CGFloat = 0
 
-    init(url: URL, reloadToken: Int, draft: Binding<String>) {
+    init(url: URL, reloadToken: Int, draft: Binding<String>, alignComposerWithSidebar: Bool) {
         self.url = url
         self.reloadToken = reloadToken
         _draft = draft
+        self.alignComposerWithSidebar = alignComposerWithSidebar
         _bridge = State(initialValue: ChatHostBridge(chatURL: url))
     }
 
@@ -114,9 +118,11 @@ private struct AgentChatView: View {
         ZStack(alignment: .bottom) {
             ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
                         floatingBottomInset: bridge.hostComposerActive ? composerHeight : 0)
-                .ignoresSafeArea(.container, edges: .vertical)
+                .ignoresSafeArea(edges: .vertical)
             if bridge.hostComposerActive {
                 NativeChatComposer(draft: $draft, bridge: bridge)
+                    // 10 pt measured against the system filter field in the landscape split.
+                    .padding(.bottom, alignComposerWithSidebar ? 10 : 0)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
         }
