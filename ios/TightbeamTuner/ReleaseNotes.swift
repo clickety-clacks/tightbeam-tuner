@@ -5,6 +5,14 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 30, date: "October 28, 2026", items: [
+            .init(symbol: "sidebar.left", title: "Swipe in from the left for agents",
+                  detail: "A swipe from the left edge opens the agent list, even after Chat opens another page."),
+            .init(symbol: "arrow.up.circle", title: "Send while Chat reconnects",
+                  detail: "A reconnecting feed no longer disables Send. The button stays grey when Chat is unavailable, a message is still on its way to Chat, or the field is empty."),
+            .init(symbol: "circle.fill", title: "The dot follows Chat's connection",
+                  detail: "Green means connected, yellow means reconnecting, and red means disconnected. Connect reconnects in place and keeps your place in the conversation."),
+        ]),
         ReleaseNote(version: "1.0", build: 29, date: "October 28, 2026", items: [
             .init(symbol: "keyboard", title: "The conversation moves with the keyboard",
                   detail: "When the keyboard opens or closes, the newest message slides along with it and the message field, instead of jumping first and leaving an empty gap."),

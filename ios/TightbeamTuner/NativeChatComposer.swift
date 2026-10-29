@@ -87,15 +87,22 @@ struct NativeChatComposer: View {
         .padding(.bottom, 8)
         .animation(.default, value: notice)
         .onChange(of: focused, initial: true) { _, focused in bridge.nativeComposerFocused = focused }
+        .onAppear {
+            if let outgoing = bridge.outgoing, outgoing.status == .interrupted { restoreDraft(outgoing) }
+            if bridge.overlayOpen { focusChatPage() }
+        }
         .onDisappear { bridge.nativeComposerFocused = false }
+        .onChange(of: bridge.overlayOpen) { _, open in
+            if open {
+                focusChatPage()
+            } else {
+                focused = true
+            }
+        }
         .onChange(of: bridge.outgoing) { _, outgoing in
             guard let outgoing else { return }
             switch outgoing.status {
-            case .failed, .uncertain:
-                // Give the words back so the user can retry or edit them, ahead of anything
-                // typed since, so nothing is lost.
-                if trimmed.isEmpty { draft = outgoing.content }
-                else if !draft.contains(outgoing.content) { draft = outgoing.content + "\n\n" + draft }
+            case .failed, .uncertain, .interrupted: restoreDraft(outgoing)
             default: break
             }
         }
@@ -104,7 +111,7 @@ struct NativeChatComposer: View {
     private var isRetry: Bool {
         guard let outgoing = bridge.outgoing, outgoing.content == draft else { return false }
         switch outgoing.status {
-        case .failed, .uncertain: return true
+        case .failed, .uncertain, .interrupted: return true
         default: return false
         }
     }
@@ -116,8 +123,22 @@ struct NativeChatComposer: View {
               outgoing.content == draft || draft.hasPrefix(outgoing.content + "\n\n") else { return nil }
         switch outgoing.status {
         case .failed: return "Not sent"
-        case .uncertain: return "May not have sent"
         default: return nil
+        }
+    }
+
+    private func restoreDraft(_ outgoing: ChatHostBridge.Outgoing) {
+        // Give the words back so the user can retry or edit them, ahead of anything
+        // typed since, so nothing is lost.
+        if trimmed.isEmpty { draft = outgoing.content }
+        else if !draft.contains(outgoing.content) { draft = outgoing.content + "\n\n" + draft }
+    }
+
+    private func focusChatPage() {
+        focused = false
+        Task { @MainActor in
+            await Task.yield()
+            _ = bridge.webView?.becomeFirstResponder()
         }
     }
 

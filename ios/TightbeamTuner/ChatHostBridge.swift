@@ -18,7 +18,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         /// No `ready` yet for this page; Chat's own composer serves.
         case waiting
         case ready(lifetimeId: String, sessionKey: String)
-        /// Chat hid its composer earlier in this page and is reconnecting.
+        /// Chat cannot accept sends for this lifetime.
         case unavailable(lifetimeId: String)
     }
 
@@ -28,6 +28,8 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         case delivered
         case failed(String)
         case uncertain(String)
+        /// Its page ended before Chat reported an outcome.
+        case interrupted
     }
 
     /// The message the user last sent, or an earlier one that did not send. Kept until it is
@@ -38,7 +40,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         var lifetimeId: String
         var attempt: Int?
         var status: Status
-        /// Chat started at least one attempt for this message (any later send of it is a retry).
+        /// Chat may have started an attempt for this message (any later send of it is a retry).
         var attempted = false
     }
 
@@ -55,11 +57,15 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     private(set) var agentName: String?
     /// The gateway from Chat's latest `ready`.
     private(set) var gatewayOrigin: String?
-    /// Why Chat last reported the conversation unavailable (`connecting`, `reconnecting`, ...).
+    /// Why Chat last reported the conversation unavailable.
     private(set) var unavailableReason: String?
+    private(set) var overlayOpen = false
+    private(set) var lastCommandJSON: String?
+    private var reconnectSupported = false
+    private var reportedConnection: Connection?
 
     /// Chat's connection state, as its own composer's status dot shows it.
-    enum Connection {
+    enum Connection: Equatable {
         case connecting, connected, reconnecting, disconnected, unsupported, unauthorized
 
         var label: String {
@@ -75,6 +81,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     }
 
     var connection: Connection {
+        if let reportedConnection { return reportedConnection }
         switch phase {
         case .waiting: return .connecting
         case .ready: return .connected
@@ -132,31 +139,66 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         outgoing?.status == .sending
     }
 
-    /// Starts Chat over on the same conversation, as Chat's own Reconnect does.
+    /// Reconnects the live feed in place when Chat advertises support; older Chat reloads.
     func reconnect() {
-        webView?.reload()
+        guard case let .ready(lifetimeId, sessionKey) = phase, reconnectSupported else {
+            webView?.reload()
+            return
+        }
+        let command: [String: Any] = [
+            "type": "reconnect",
+            "lifetimeId": lifetimeId,
+            "sessionKey": sessionKey
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: command),
+              let json = String(data: data, encoding: .utf8) else { return }
+        lastCommandJSON = json
+        webView?.evaluateJavaScript("window.\(Self.commandEntryName)(\(json))")
     }
 
     // MARK: Page lifetime (host rule 2)
 
     /// A new main-frame page committed: wait for that page's `ready` before showing the native composer.
     func pageStarted() {
-        settleUnresolved(reason: "page-replaced")
+        interruptUnresolved()
         phase = .waiting
         hostComposerActive = false
+        resetPageState()
     }
 
     /// The page failed to load or its web content process ended.
     func pageEnded() {
-        settleUnresolved(reason: "page-ended")
+        interruptUnresolved()
         phase = .waiting
         hostComposerActive = false
+        resetPageState()
+    }
+
+    /// Keeps outstanding sends available for a user retry after the next ready.
+    private func interruptUnresolved() {
+        for index in earlier.indices where earlier[index].status == .accepted {
+            earlier[index].status = .interrupted
+            earlier[index].attempted = true
+        }
+        if var current = outgoing, current.status == .sending || current.status == .accepted {
+            current.status = .interrupted
+            current.attempted = true
+            outgoing = current
+        }
+        surfaceEarlierProblem()
+    }
+
+    private func resetPageState() {
+        unavailableReason = nil
+        overlayOpen = false
+        reconnectSupported = false
+        reportedConnection = nil
     }
 
     // MARK: Sending
 
-    /// Sends `text` as a user action. Unchanged text after a failed or uncertain result is a retry
-    /// of the same message; edited text is a new message.
+    /// Sends `text` as a user action. Unchanged text after a failed, uncertain, or interrupted
+    /// result is a retry of the same message; edited text is a new message.
     func send(_ text: String) {
         guard case let .ready(lifetimeId, sessionKey) = phase,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !isSending else { return }
@@ -164,7 +206,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         var correlationId = "c_" + UUID().uuidString.lowercased()
         if let previous = outgoing, previous.content == text {
             switch previous.status {
-            case .failed, .uncertain:
+            case .failed, .uncertain, .interrupted:
                 correlationId = previous.correlationId
                 retry = previous.attempted
             default: break
@@ -183,6 +225,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         if retry { command["retry"] = true }
         guard let data = try? JSONSerialization.data(withJSONObject: command),
               let json = String(data: data, encoding: .utf8) else { return }
+        lastCommandJSON = json
         let script = "window.\(Self.commandEntryName)(\(json))"
         webView?.evaluateJavaScript(script) { [weak self] _, error in
             guard error != nil else { return }
@@ -197,24 +240,12 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         outgoing = current
     }
 
-    /// Marks every outstanding send as uncertain; that is its one outcome (host rule 2).
-    private func settleUnresolved(reason: String) {
-        for index in earlier.indices where earlier[index].status == .accepted {
-            earlier[index].status = .uncertain("accepted-unreconciled")
-        }
-        if var current = outgoing, current.status == .sending || current.status == .accepted {
-            current.status = .uncertain(current.status == .accepted ? "accepted-unreconciled" : reason)
-            outgoing = current
-        }
-        surfaceEarlierProblem()
-    }
-
     /// An earlier message that failed or may not have sent becomes the current one, so its words
     /// come back for a retry. It waits while the latest message is still sending or itself unsent.
     private func surfaceEarlierProblem() {
         if let current = outgoing {
             switch current.status {
-            case .sending, .failed, .uncertain: return
+            case .sending, .failed, .uncertain, .interrupted: return
             case .accepted, .delivered: break
             }
         }
@@ -240,10 +271,12 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         case "ready":
             guard (event["version"] as? Int) == 1, let lifetimeId,
                   let sessionKey = event["sessionKey"] as? String else { return }
+            reportedConnection = nil
             phase = .ready(lifetimeId: lifetimeId, sessionKey: sessionKey)
             agentName = event["agentDisplayName"] as? String ?? agentName
             gatewayOrigin = event["gatewayOrigin"] as? String ?? gatewayOrigin
             unavailableReason = nil
+            reconnectSupported = (event["capabilities"] as? [String: Any])?["reconnect"] as? Bool ?? false
             hostComposerActive = true
         case "unavailable":
             if let lifetimeId, case let .ready(current, _) = phase, current == lifetimeId {
@@ -254,21 +287,31 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             if hostComposerActive, let lifetimeId {
                 unavailableReason = "lifetime-ended"
                 phase = .unavailable(lifetimeId: lifetimeId)
+                reconnectSupported = false
+                reportedConnection = nil
             }
         case "declined":
             phase = .waiting
             hostComposerActive = false
+            resetPageState()
+        case "connection":
+            guard (event["version"] as? Int) == 1, let lifetimeId,
+                  lifetimeId == currentLifetimeId else { return }
+            switch event["state"] as? String {
+            case "connected": reportedConnection = .connected
+            case "reconnecting": reportedConnection = .reconnecting
+            case "disconnected": reportedConnection = .disconnected
+            default: break
+            }
+        case "overlay":
+            guard (event["version"] as? Int) == 1, let lifetimeId,
+                  lifetimeId == currentLifetimeId, let open = event["open"] as? Bool else { return }
+            overlayOpen = open
         case "rejected":
             guard var current = matching(event), current.attempt == nil, current.status == .sending else { return }
             let reason = event["reason"] as? String ?? "rejected"
-            current.status = reason == "already-delivered" ? .delivered : .failed(reason)
+            current.status = reason == "already-delivered" || reason == "local-command" ? .delivered : .failed(reason)
             outgoing = current
-            // Chat stopped taking messages before its unavailable event arrived. Hold Send until
-            // Chat reports ready again.
-            if reason == "not-ready", case let .ready(lifetimeId, _) = phase, lifetimeId == current.lifetimeId {
-                unavailableReason = "reconnecting"
-                phase = .unavailable(lifetimeId: lifetimeId)
-            }
         case "accepted", "delivered", "failed", "uncertain":
             if let index = earlier.firstIndex(where: { matches($0, event) }) {
                 var message = earlier[index]
@@ -308,6 +351,14 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     private func matching(_ event: [String: Any]) -> Outgoing? {
         guard let current = outgoing, matches(current, event) else { return nil }
         return current
+    }
+
+    private var currentLifetimeId: String? {
+        switch phase {
+        case .waiting: nil
+        case let .ready(lifetimeId, _): lifetimeId
+        case let .unavailable(lifetimeId): unavailableReason == "lifetime-ended" ? nil : lifetimeId
+        }
     }
 
     private func origin(of origin: WKSecurityOrigin) -> String {

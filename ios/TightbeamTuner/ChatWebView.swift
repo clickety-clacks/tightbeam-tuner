@@ -76,7 +76,7 @@ struct ChatWebView: UIViewControllerRepresentable {
         webView.underPageBackgroundColor = UIColor(resource: .nordicBackground)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
-        webView.allowsBackForwardNavigationGestures = true
+        webView.allowsBackForwardNavigationGestures = false
         bridge.webView = webView
         context.coordinator.bridge = bridge
         context.coordinator.webView = webView
