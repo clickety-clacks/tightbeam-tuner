@@ -4,7 +4,7 @@ struct Roster: Decodable {
     let sessions: [Agent]
 }
 
-struct Agent: Decodable, Identifiable, Hashable {
+struct Agent: Decodable, Identifiable, Hashable, Sendable {
     let id: String
     let name: String
     let state: String

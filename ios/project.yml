@@ -29,6 +29,11 @@ targets:
     type: application
     platform: iOS
     sources: [TightbeamTuner]
+    info:
+      path: TightbeamTuner/Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
     dependencies:
       - package: Citadel
       - package: Crypto

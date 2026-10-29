@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var store = TunerStore()
+    @State private var repliedFeed = RepliedFeed()
     @State private var showingSettings = false
     @State private var reloadToken = 0
     @State private var whatsNew: [ReleaseNote] = []
@@ -29,7 +30,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
-            AgentSidebar(store: store)
+            AgentSidebar(store: store, repliedFeed: repliedFeed)
                 .navigationTitle("Agents")
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -77,6 +78,16 @@ struct ContentView: View {
             whatsNew = ReleaseNotes.takeUnseen(firstInstall: !store.connection.isComplete)
             if store.connection.isComplete { await store.refresh() }
             else { showingSettings = true }
+        }
+        .task(id: RepliedTaskKey(
+            gateway: store.connection.gateway,
+            user: store.connection.tightbeamUser,
+            sessionKeys: store.agents.map(\.id).sorted()
+        )) {
+            let sessionKeys = store.agents.map(\.id).sorted()
+            guard store.connection.isComplete, !sessionKeys.isEmpty else { return }
+            await repliedFeed.run(gateway: store.connection.gateway, user: store.connection.tightbeamUser,
+                                  sessionKeys: sessionKeys)
         }
         .onChange(of: store.selectedID) { _, value in
             if let value, let agent = store.agents.first(where: { $0.id == value }) {
@@ -298,6 +309,7 @@ private struct AgentBranch: View {
 
 private struct AgentSidebar: View {
     @Bindable var store: TunerStore
+    let repliedFeed: RepliedFeed
     @State private var query = ""
     @State private var selectedArchetypes: Set<String> = []
     @State private var collapsed: Set<String> = []
@@ -350,7 +362,17 @@ private struct AgentSidebar: View {
 
     var body: some View {
         List(selection: $store.selectedID) {
+            let replied = repliedFeed.state.agents(from: store.agents)
             let recents = store.recentAgents.prefix(maxRecents)
+            if !replied.isEmpty {
+                Section("Replied") {
+                    ForEach(replied.filter { matches($0, words: words) }) { agent in
+                        NavigationLink(value: agent.id) {
+                            AgentRowLabel(agent: agent, symbol: "arrowshape.turn.up.left")
+                        }
+                    }
+                }
+            }
             if !recents.isEmpty {
                 Section("Recent") {
                     ForEach(recents.filter { matches($0, words: words) }) { agent in

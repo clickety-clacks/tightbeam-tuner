@@ -3,24 +3,27 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 63;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
 		09450AF22E32E08A35B1B364 /* ChatWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D03D0E09B76E27FDCF1396B1 /* ChatWebView.swift */; };
-		E304117A6F383C249DDD9495 /* NativeChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45877BD23DE38EED29D8875A /* NativeChatComposer.swift */; };
-		7FB5AAFE3AF6850EA1B7E99C /* ReleaseNotes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF3D4BC72B500DAFB236E42C /* ReleaseNotes.swift */; };
-		AE683EBBAB16C85A79AFCBD2 /* NordicStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D04F5ED9AD04993093DD323 /* NordicStyle.swift */; };
-		286DEDE27310962FC0535D76 /* ChatHostBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB8A728276A12764A6A3636 /* ChatHostBridge.swift */; };
 		19741202E7C1549C5598796F /* Connection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F356E541109E44BB67E5912B /* Connection.swift */; };
+		22BCB372A9DD74F2104C5A92 /* NordicStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28664AC3B51AC348AEFA363D /* NordicStyle.swift */; };
+		3FA347EB8A603721DE29F8E0 /* NativeChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A6346F05A278BDFB5CD929E /* NativeChatComposer.swift */; };
+		53670126D52A2032D16366F4 /* ChatHostBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53D3923635A58ACEFD594A57 /* ChatHostBridge.swift */; };
+		6D871E6F982DB9720FC3F162 /* RepliedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E5C99F34C2EB0117B642314 /* RepliedTests.swift */; };
 		773B38DFFC81D0C9DF4FA891 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B27FF03A215A345C45C5928 /* ContentView.swift */; };
+		7FB5AAFE3AF6850EA1B7E99C /* ReleaseNotes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF3D4BC72B500DAFB236E42C /* ReleaseNotes.swift */; };
 		807B940D0AC55DEFBD9C324C /* SSHRoster.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42FEFA0A365C135F071282FE /* SSHRoster.swift */; };
 		87909C9A9B0CD07642AEED3B /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = AF7C95F4CAC685BA2965D520 /* NIOSSH */; };
 		A4745A950BF1C2A4B63FE8A6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0290CD0850842496E03BFF8 /* SettingsView.swift */; };
 		A52840FEC650D22316CD83B1 /* TightbeamTunerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 053DD6AA4E4E5A915C9F2B1E /* TightbeamTunerApp.swift */; };
 		A7F0BFDA21CBCC92D23EB748 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0025914401F3E615BEC3509 /* Agent.swift */; };
 		A981B0BA13B464004DF743BE /* ConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A981DB7748C7BCB960FCC7E9 /* ConnectionTests.swift */; };
+		BFD33986031B52EFA16F83F3 /* Replied.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF57441B6732A2AF8915BA63 /* Replied.swift */; };
 		C13E3A5AEB0AC4048B4D7818 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = 3F79AD618C35E38ED961FCC7 /* Citadel */; };
+		E2A9FB911B7D27057D552026 /* ChatHostBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7FBFAE83CE0AFBFBB5697B3 /* ChatHostBridgeTests.swift */; };
 		E55C639360551037997EE983 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = BA6B142D0C76B5B425A58665 /* Crypto */; };
 		EB8E4B2E042974BA420B82EE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E849A636E74EE986F0D51A87 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
@@ -37,20 +40,24 @@
 
 /* Begin PBXFileReference section */
 		053DD6AA4E4E5A915C9F2B1E /* TightbeamTunerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TightbeamTunerApp.swift; sourceTree = "<group>"; };
+		28664AC3B51AC348AEFA363D /* NordicStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NordicStyle.swift; sourceTree = "<group>"; };
+		3A6346F05A278BDFB5CD929E /* NativeChatComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatComposer.swift; sourceTree = "<group>"; };
 		42FEFA0A365C135F071282FE /* SSHRoster.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHRoster.swift; sourceTree = "<group>"; };
-		43CC7B3106FAD04288027279 /* TightbeamTuner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TightbeamTuner.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		43CC7B3106FAD04288027279 /* TightbeamTuner.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = TightbeamTuner.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4B27FF03A215A345C45C5928 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		504EAD276D7C297968E985BD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		53D3923635A58ACEFD594A57 /* ChatHostBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHostBridge.swift; sourceTree = "<group>"; };
+		6E5C99F34C2EB0117B642314 /* RepliedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepliedTests.swift; sourceTree = "<group>"; };
 		A981DB7748C7BCB960FCC7E9 /* ConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionTests.swift; sourceTree = "<group>"; };
 		B0025914401F3E615BEC3509 /* Agent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Agent.swift; sourceTree = "<group>"; };
+		B7FBFAE83CE0AFBFBB5697B3 /* ChatHostBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHostBridgeTests.swift; sourceTree = "<group>"; };
 		CC9CFE0F84962B04E6A9B33D /* TightbeamTunerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = TightbeamTunerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D0290CD0850842496E03BFF8 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		D03D0E09B76E27FDCF1396B1 /* ChatWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWebView.swift; sourceTree = "<group>"; };
-		45877BD23DE38EED29D8875A /* NativeChatComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatComposer.swift; sourceTree = "<group>"; };
-		FF3D4BC72B500DAFB236E42C /* ReleaseNotes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseNotes.swift; sourceTree = "<group>"; };
-		4D04F5ED9AD04993093DD323 /* NordicStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NordicStyle.swift; sourceTree = "<group>"; };
-		BBB8A728276A12764A6A3636 /* ChatHostBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHostBridge.swift; sourceTree = "<group>"; };
 		E849A636E74EE986F0D51A87 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F356E541109E44BB67E5912B /* Connection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Connection.swift; sourceTree = "<group>"; };
+		FF3D4BC72B500DAFB236E42C /* ReleaseNotes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseNotes.swift; sourceTree = "<group>"; };
+		FF57441B6732A2AF8915BA63 /* Replied.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Replied.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -79,7 +86,9 @@
 		8C9DC737C056524394195730 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				B7FBFAE83CE0AFBFBB5697B3 /* ChatHostBridgeTests.swift */,
 				A981DB7748C7BCB960FCC7E9 /* ConnectionTests.swift */,
+				6E5C99F34C2EB0117B642314 /* RepliedTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -98,13 +107,15 @@
 			children = (
 				B0025914401F3E615BEC3509 /* Agent.swift */,
 				E849A636E74EE986F0D51A87 /* Assets.xcassets */,
+				53D3923635A58ACEFD594A57 /* ChatHostBridge.swift */,
 				D03D0E09B76E27FDCF1396B1 /* ChatWebView.swift */,
-				45877BD23DE38EED29D8875A /* NativeChatComposer.swift */,
-				FF3D4BC72B500DAFB236E42C /* ReleaseNotes.swift */,
-				4D04F5ED9AD04993093DD323 /* NordicStyle.swift */,
-				BBB8A728276A12764A6A3636 /* ChatHostBridge.swift */,
 				F356E541109E44BB67E5912B /* Connection.swift */,
 				4B27FF03A215A345C45C5928 /* ContentView.swift */,
+				504EAD276D7C297968E985BD /* Info.plist */,
+				3A6346F05A278BDFB5CD929E /* NativeChatComposer.swift */,
+				28664AC3B51AC348AEFA363D /* NordicStyle.swift */,
+				FF3D4BC72B500DAFB236E42C /* ReleaseNotes.swift */,
+				FF57441B6732A2AF8915BA63 /* Replied.swift */,
 				D0290CD0850842496E03BFF8 /* SettingsView.swift */,
 				42FEFA0A365C135F071282FE /* SSHRoster.swift */,
 				053DD6AA4E4E5A915C9F2B1E /* TightbeamTunerApp.swift */,
@@ -184,6 +195,7 @@
 				F261CC5D98BC53EBD0B5BCB3 /* XCRemoteSwiftPackageReference "swift-crypto" */,
 				256C56C6413026AE82712303 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
 			);
+			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -209,7 +221,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E2A9FB911B7D27057D552026 /* ChatHostBridgeTests.swift in Sources */,
 				A981B0BA13B464004DF743BE /* ConnectionTests.swift in Sources */,
+				6D871E6F982DB9720FC3F162 /* RepliedTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -218,13 +232,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				A7F0BFDA21CBCC92D23EB748 /* Agent.swift in Sources */,
+				53670126D52A2032D16366F4 /* ChatHostBridge.swift in Sources */,
 				09450AF22E32E08A35B1B364 /* ChatWebView.swift in Sources */,
-				E304117A6F383C249DDD9495 /* NativeChatComposer.swift in Sources */,
-				7FB5AAFE3AF6850EA1B7E99C /* ReleaseNotes.swift in Sources */,
-				AE683EBBAB16C85A79AFCBD2 /* NordicStyle.swift in Sources */,
-				286DEDE27310962FC0535D76 /* ChatHostBridge.swift in Sources */,
 				19741202E7C1549C5598796F /* Connection.swift in Sources */,
 				773B38DFFC81D0C9DF4FA891 /* ContentView.swift in Sources */,
+				3FA347EB8A603721DE29F8E0 /* NativeChatComposer.swift in Sources */,
+				22BCB372A9DD74F2104C5A92 /* NordicStyle.swift in Sources */,
+				7FB5AAFE3AF6850EA1B7E99C /* ReleaseNotes.swift in Sources */,
+				BFD33986031B52EFA16F83F3 /* Replied.swift in Sources */,
 				807B940D0AC55DEFBD9C324C /* SSHRoster.swift in Sources */,
 				A4745A950BF1C2A4B63FE8A6 /* SettingsView.swift in Sources */,
 				A52840FEC650D22316CD83B1 /* TightbeamTunerApp.swift in Sources */,
@@ -263,17 +278,13 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = TightbeamTuner/Info.plist;
 				INFOPLIST_KEY_CFBundleShortVersionString = 1.0;
 				INFOPLIST_KEY_CFBundleVersion = 1;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
-				INFOPLIST_KEY_CFBundleDisplayName = "Tightbeam Tuner";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -291,17 +302,13 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = TightbeamTuner/Info.plist;
 				INFOPLIST_KEY_CFBundleShortVersionString = 1.0;
 				INFOPLIST_KEY_CFBundleVersion = 1;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
-				INFOPLIST_KEY_CFBundleDisplayName = "Tightbeam Tuner";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				LD_RUNPATH_SEARCH_PATHS = (
