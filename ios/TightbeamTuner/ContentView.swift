@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var whatsNew: [ReleaseNote] = []
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @State private var sidebarSearchFrame: CGRect?
     /// In portrait on a wide screen the agent list floats over the chat instead of beside it.
     @State private var portrait = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -39,8 +40,7 @@ struct ContentView: View {
             Group {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
                     AgentChatView(url: url, reloadToken: reloadToken, draft: draftBinding(for: agent.id),
-                                  alignComposerWithSidebar: UIDevice.current.userInterfaceIdiom == .phone
-                                      && horizontalSizeClass == .regular && !portrait && columnVisibility != .detailOnly)
+                                  sidebarSearchFrame: sidebarSearchFrame)
                         .id(agent.id)
                         .toolbarBackground(.hidden, for: .navigationBar)
                         .toolbar {
@@ -55,6 +55,14 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.nordicBackground)
+        }
+        .background {
+            // SwiftUI does not expose the visible .searchable capsule's frame. Find it from
+            // the text field so the composer follows the current navigation layout.
+            SidebarSearchFrameReader(prompt: "Filter agents") { frame in
+                sidebarSearchFrame = frame
+            }
+            .accessibilityHidden(true)
         }
         .preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
         .sheet(isPresented: $showingSettings) {
@@ -92,21 +100,102 @@ struct ContentView: View {
     }
 }
 
+/// Reports the visible system search capsule's frame in window coordinates.
+private struct SidebarSearchFrameReader: UIViewRepresentable {
+    let prompt: String
+    let onFrameChange: (CGRect?) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = SearchFieldProbeView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        view.prompt = prompt
+        view.onFrameChange = onFrameChange
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        guard let view = view as? SearchFieldProbeView else { return }
+        view.prompt = prompt
+        view.onFrameChange = onFrameChange
+        view.scheduleRead()
+    }
+
+    private final class SearchFieldProbeView: UIView {
+        var prompt = ""
+        var onFrameChange: ((CGRect?) -> Void)?
+        private var lastFrame: CGRect?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            scheduleRead()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            // This background fills the split view, so a window resize schedules a fresh read.
+            scheduleRead()
+        }
+
+        func scheduleRead() {
+            // The sidebar may lay out after this view. Read its final frame on the next turn.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let frame = self.searchFrame()
+                guard frame != self.lastFrame else { return }
+                self.lastFrame = frame
+                self.onFrameChange?(frame)
+            }
+        }
+
+        private func searchFrame() -> CGRect? {
+            guard let window,
+                  let field = findSearchField(in: window),
+                  !field.isHidden,
+                  field.alpha > 0.01 else { return nil }
+
+            let fieldFrame = field.convert(field.bounds, to: window)
+            var capsuleFrame = fieldFrame
+            var ancestor = field.superview
+            // The text field can be shorter than its capsule; its enclosing capsule keeps the same width.
+            while let view = ancestor {
+                let frame = view.convert(view.bounds, to: window)
+                guard abs(frame.minX - fieldFrame.minX) <= 0.5,
+                      abs(frame.width - fieldFrame.width) <= 0.5 else { break }
+                capsuleFrame = frame
+                ancestor = view.superview
+            }
+            return window.bounds.intersects(capsuleFrame) ? capsuleFrame : nil
+        }
+
+        private func findSearchField(in view: UIView) -> UITextField? {
+            if let field = view as? UITextField,
+               field.placeholder == prompt || field.accessibilityLabel == prompt {
+                return field
+            }
+            for subview in view.subviews {
+                if let field = findSearchField(in: subview) { return field }
+            }
+            return nil
+        }
+    }
+}
+
 /// One agent's chat. Chat's own composer serves until Chat reports the seam ready,
 /// then Tuner's native composer takes over below the transcript.
 private struct AgentChatView: View {
     let url: URL
     let reloadToken: Int
     @Binding var draft: String
-    let alignComposerWithSidebar: Bool
+    let sidebarSearchFrame: CGRect?
     @State private var bridge: ChatHostBridge
     @State private var composerHeight: CGFloat = 0
 
-    init(url: URL, reloadToken: Int, draft: Binding<String>, alignComposerWithSidebar: Bool) {
+    init(url: URL, reloadToken: Int, draft: Binding<String>, sidebarSearchFrame: CGRect?) {
         self.url = url
         self.reloadToken = reloadToken
         _draft = draft
-        self.alignComposerWithSidebar = alignComposerWithSidebar
+        self.sidebarSearchFrame = sidebarSearchFrame
         _bridge = State(initialValue: ChatHostBridge(chatURL: url))
     }
 
@@ -115,17 +204,36 @@ private struct AgentChatView: View {
         // safe areas (a floating sidebar, a notch, a folded iPhone Duo's side bar), so anything
         // Chat centers lands in the visible part of the detail column. The composer's height
         // joins the page's bottom safe area, so Chat keeps the newest message above the glass.
-        ZStack(alignment: .bottom) {
-            ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
-                        floatingBottomInset: bridge.hostComposerActive ? composerHeight : 0)
-                .ignoresSafeArea(edges: .vertical)
-            if bridge.hostComposerActive {
-                NativeChatComposer(draft: $draft, bridge: bridge)
-                    // 10 pt measured against the system filter field in the landscape split.
-                    .padding(.bottom, alignComposerWithSidebar ? 10 : 0)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
+        GeometryReader { geometry in
+            let detailFrame = geometry.frame(in: .global)
+            let composerOffset = composerOffset(in: detailFrame)
+            ZStack(alignment: .bottom) {
+                ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
+                            // Preserve the clearance below the composer after moving it from the bottom anchor.
+                            floatingBottomInset: bridge.hostComposerActive
+                                ? max(0, composerHeight - composerOffset) : 0)
+                    .ignoresSafeArea(edges: .vertical)
+                if bridge.hostComposerActive {
+                    NativeChatComposer(draft: $draft, bridge: bridge)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
+                        .offset(y: composerOffset)
+                }
             }
         }
+    }
+
+    private func composerOffset(in detailFrame: CGRect) -> CGFloat {
+        guard let sidebarSearchFrame,
+              // A separate column means the list is beside the chat; a floating sidebar overlaps it.
+              sidebarSearchFrame.maxX <= detailFrame.minX + 0.5,
+              // The system puts top-placed filters above center and the bottom filter below it.
+              sidebarSearchFrame.midY > detailFrame.midY,
+              // A raised keyboard puts the filter below the detail's safe bottom.
+              sidebarSearchFrame.maxY <= detailFrame.maxY else { return 0 }
+
+        // The glass ends at the composer view's bottom minus its existing bottom padding.
+        let composerGlassBottom = detailFrame.maxY - NativeChatComposer.bottomPadding
+        return sidebarSearchFrame.maxY - composerGlassBottom
     }
 }
 

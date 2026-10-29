@@ -16,6 +16,8 @@ struct NativeChatComposer: View {
     private static let gap: CGFloat = 5
     private static let buttonSize: CGFloat = 34
     private static let cornerRadius = buttonSize / 2 + gap
+    /// Used by the enclosing chat layout to locate the glass edge from the view's bottom.
+    static let bottomPadding: CGFloat = 8
 
     private var trimmed: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -84,7 +86,7 @@ struct NativeChatComposer: View {
         }
         .frame(maxWidth: maxWidth)
         .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        .padding(.bottom, Self.bottomPadding)
         .animation(.default, value: notice)
         .onChange(of: focused, initial: true) { _, focused in bridge.nativeComposerFocused = focused }
         .onAppear {

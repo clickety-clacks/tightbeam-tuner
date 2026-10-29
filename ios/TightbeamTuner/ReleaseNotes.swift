@@ -5,6 +5,10 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 31, date: "October 29, 2026", items: [
+            .init(symbol: "rectangle.split.2x1", title: "Message field lines up with Filter agents",
+                  detail: "Wherever the agent list sits beside the chat, the message field now sits level with Filter agents, including on iOS 27 and iPhone Duo."),
+        ]),
         ReleaseNote(version: "1.0", build: 30, date: "October 28, 2026", items: [
             .init(symbol: "sidebar.left", title: "Swipe in from the left for agents",
                   detail: "A swipe from the left edge opens the agent list, even after Chat opens another page."),
