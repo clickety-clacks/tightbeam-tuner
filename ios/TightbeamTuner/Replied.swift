@@ -79,8 +79,17 @@ private struct FrameHeader: Decodable {
 struct RepliedState: Sendable {
     private(set) var latestReplyBySession: [String: Int] = [:]
     private(set) var readMarkerBySession: [String: RepliedReadMarker] = [:]
+    private(set) var localReadMarkerBySession: [String: Int]
     private(set) var retiredSessionKeys: Set<String> = []
-    init() {}
+    init(localReadMarkerBySession: [String: Int] = [:]) {
+        self.localReadMarkerBySession = localReadMarkerBySession
+    }
+    mutating func markOpened(_ key: String) -> Int? {
+        guard let reply = latestReplyBySession[key] else { return nil }
+        let marker = max(reply, localReadMarkerBySession[key] ?? Int.min)
+        localReadMarkerBySession[key] = marker
+        return marker
+    }
     mutating func apply(_ message: RepliedMessage) {
         guard message.role == "assistant", message.turnIncludesHuman else { return }
         latestReplyBySession[message.sessionKey] = max(latestReplyBySession[message.sessionKey] ?? Int.min, message.seq)
@@ -102,7 +111,9 @@ struct RepliedState: Sendable {
     func agents(from roster: [Agent]) -> [Agent] {
         roster.compactMap { agent -> (Agent, Int)? in
             guard !retiredSessionKeys.contains(agent.id), let reply = latestReplyBySession[agent.id] else { return nil }
-            if let marker = readMarkerBySession[agent.id]?.marker, reply <= marker { return nil }
+            let marker = max(readMarkerBySession[agent.id]?.marker ?? Int.min,
+                             localReadMarkerBySession[agent.id] ?? Int.min)
+            if reply <= marker { return nil }
             return (agent, reply)
         }
         .sorted { $0.1 == $1.1 ? $0.0.id < $1.0.id : $0.1 > $1.1 }
@@ -117,9 +128,35 @@ struct RepliedTaskKey: Equatable {
 
 @MainActor @Observable final class RepliedFeed {
     private(set) var state = RepliedState()
+    private static let localReadMarkersKey = "repliedLocalReadMarkers"
+    private let defaults: UserDefaults
+    private var stateGateway: String?
+    private var stateUser: String?
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        state = RepliedState(localReadMarkerBySession: Self.localReadMarkers(from: defaults))
+    }
+
+    private static func localReadMarkers(from defaults: UserDefaults) -> [String: Int] {
+        defaults.dictionary(forKey: localReadMarkersKey)?.compactMapValues { $0 as? Int } ?? [:]
+    }
+
+    func markOpened(_ key: String) {
+        guard state.markOpened(key) != nil else { return }
+        defaults.set(state.localReadMarkerBySession, forKey: Self.localReadMarkersKey)
+    }
+
+    func apply(_ frame: RepliedFrame, userID: String) {
+        state.apply(frame, userID: userID)
+    }
 
     func run(gateway: String, user: String, sessionKeys: [String]) async {
-        state = RepliedState()
+        if stateGateway != gateway || stateUser != user {
+            state = RepliedState(localReadMarkerBySession: Self.localReadMarkers(from: defaults))
+            stateGateway = gateway
+            stateUser = user
+        }
         guard let url = RepliedAPI.webSocketURL(gateway: gateway) else { return }
         var retry: UInt64 = 1
         var firstLoad = true
@@ -145,7 +182,7 @@ struct RepliedTaskKey: Equatable {
                             firstLoad = false
                             snapshotTask = Task { await self.loadSnapshot(gateway: gateway, user: user, sessionKeys: sessionKeys, limit: limit) }
                         case .serverError: break receiveLoop
-                        default: state.apply(frame, userID: user)
+                        default: apply(frame, userID: user)
                         }
                     }
                 } catch { }
@@ -158,14 +195,22 @@ struct RepliedTaskKey: Equatable {
         }
     }
 
-    private func loadSnapshot(gateway: String, user: String, sessionKeys: [String], limit: Int?) async {
-        let markers = await RepliedAPI.fetchMarkers(gateway: gateway, user: user)
+    func loadSnapshot(
+        gateway: String,
+        user: String,
+        sessionKeys: [String],
+        limit: Int?,
+        fetchMarkers: @escaping @Sendable (String, String) async -> [RepliedReadMarker] = RepliedAPI.fetchMarkers,
+        fetchMessages: @escaping @Sendable (String, String, Int?) async -> [RepliedMessage]? = RepliedAPI.fetchMessages
+    ) async {
+        let markers = await fetchMarkers(gateway, user)
         guard !Task.isCancelled else { return }
         for marker in markers { state.apply(marker, userID: user) }
+        guard !markers.isEmpty else { return }
         await withTaskGroup(of: (String, [RepliedMessage]?).self) { group in
             var next = min(6, sessionKeys.count)
             for key in sessionKeys.prefix(6) {
-                group.addTask { (key, await RepliedAPI.fetchMessages(gateway: gateway, sessionKey: key, limit: limit)) }
+                group.addTask { (key, await fetchMessages(gateway, key, limit)) }
             }
             while let (key, messages) = await group.next() {
                 guard !Task.isCancelled else { group.cancelAll(); return }
@@ -175,7 +220,7 @@ struct RepliedTaskKey: Equatable {
                 if next < sessionKeys.count {
                     let key = sessionKeys[next]
                     next += 1
-                    group.addTask { (key, await RepliedAPI.fetchMessages(gateway: gateway, sessionKey: key, limit: limit)) }
+                    group.addTask { (key, await fetchMessages(gateway, key, limit)) }
                 }
             }
         }

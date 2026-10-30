@@ -5,6 +5,12 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 33, date: "October 29, 2026", items: [
+            .init(symbol: "arrowshape.turn.up.left", title: "Replied starts with new replies",
+                  detail: "When nothing has been marked as read yet, Replied starts empty and fills with replies that arrive while Tuner is open."),
+            .init(symbol: "bubble.left.and.bubble.right", title: "Opening a chat clears it from Replied",
+                  detail: "An agent leaves Replied when you open its chat and returns when it replies again."),
+        ]),
         ReleaseNote(version: "1.0", build: 32, date: "October 29, 2026", items: [
             .init(symbol: "arrowshape.turn.up.left", title: "Replied",
                   detail: "Agents that replied to you appear at the top of the agent list, newest first, until you read their reply."),

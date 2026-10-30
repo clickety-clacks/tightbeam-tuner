@@ -92,6 +92,7 @@ struct ContentView: View {
         .onChange(of: store.selectedID) { _, value in
             if let value, let agent = store.agents.first(where: { $0.id == value }) {
                 store.select(agent)
+                repliedFeed.markOpened(value)
                 preferredCompactColumn = .detail
                 // A floating agent list closes once an agent is chosen, like a popover.
                 if horizontalSizeClass == .regular && portrait { columnVisibility = .detailOnly }
@@ -370,6 +371,7 @@ private struct AgentSidebar: View {
                         NavigationLink(value: agent.id) {
                             AgentRowLabel(agent: agent, symbol: "arrowshape.turn.up.left")
                         }
+                        .simultaneousGesture(TapGesture().onEnded { repliedFeed.markOpened(agent.id) })
                     }
                 }
             }

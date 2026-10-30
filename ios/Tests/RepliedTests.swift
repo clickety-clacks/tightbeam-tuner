@@ -70,6 +70,102 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(state.agents(from: roster).map(\.id), ["agent:alpha"])
     }
 
+    @MainActor func testEmptyMarkersSkipHistoryAndLiveReplyPopulatesList() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let reads = FetchCounter()
+        let roster = try makeAgents(["agent:alpha"])
+
+        await feed.loadSnapshot(
+            gateway: "https://gateway.example.test",
+            user: "reader",
+            sessionKeys: ["agent:alpha"],
+            limit: nil,
+            fetchMarkers: { _, _ in [] },
+            fetchMessages: { _, _, _ in
+                await reads.recordMessageFetch()
+                return []
+            }
+        )
+
+        let messageFetches = await reads.messageFetches
+        XCTAssertEqual(messageFetches, 0)
+        let initiallyVisible = feed.state.agents(from: roster).map(\.id)
+        XCTAssertTrue(initiallyVisible.isEmpty)
+
+        let reply = try change(#"{"type":"change","class":"message.created","payload":{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#)
+        feed.apply(reply, userID: "reader")
+        let afterReply = feed.state.agents(from: roster).map(\.id)
+        XCTAssertEqual(afterReply, ["agent:alpha"])
+    }
+
+    @MainActor func testNonEmptyMarkersStillReadMessageHistory() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let reads = FetchCounter()
+        let markers = try JSONDecoder().decode(RepliedMarkersPage.self, from: Data(#"{"items":[{"userId":"reader","scopeKey":"session:agent:alpha","marker":3,"updatedAt":1}],"page":{"hasMoreAfter":false}}"#.utf8)).items
+        let history = [try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)]
+        let roster = try makeAgents(["agent:alpha", "agent:beta"])
+
+        await feed.loadSnapshot(
+            gateway: "https://gateway.example.test",
+            user: "reader",
+            sessionKeys: ["agent:alpha", "agent:beta"],
+            limit: 100,
+            fetchMarkers: { _, _ in markers },
+            fetchMessages: { _, key, _ in
+                await reads.recordMessageFetch()
+                return history.filter { $0.sessionKey == key }
+            }
+        )
+
+        let messageFetches = await reads.messageFetches
+        XCTAssertEqual(messageFetches, 2)
+        let visible = feed.state.agents(from: roster).map(\.id)
+        XCTAssertEqual(visible, ["agent:alpha"])
+    }
+
+    @MainActor func testOpeningHidesReplyUntilNewerReplyAndSurvivesRelaunch() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let roster = try makeAgents(["agent:alpha"])
+        let oldReply = try change(#"{"type":"change","class":"message.created","payload":{"seq":20,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#)
+        let newReply = try change(#"{"type":"change","class":"message.created","payload":{"seq":21,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#)
+        let feed = RepliedFeed(defaults: defaults)
+
+        feed.markOpened("agent:alpha") // No reply is known yet.
+        feed.apply(oldReply, userID: "reader")
+        let beforeOpen = feed.state.agents(from: roster).map(\.id)
+        XCTAssertEqual(beforeOpen, ["agent:alpha"])
+
+        feed.markOpened("agent:alpha")
+        let afterOpen = feed.state.agents(from: roster).map(\.id)
+        XCTAssertTrue(afterOpen.isEmpty)
+
+        let olderServerMarker = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"session:agent:alpha","marker":19,"updatedAt":1}}"#)
+        feed.apply(olderServerMarker, userID: "reader")
+        feed.apply(oldReply, userID: "reader")
+        let afterDuplicate = feed.state.agents(from: roster).map(\.id)
+        XCTAssertTrue(afterDuplicate.isEmpty)
+
+        feed.apply(newReply, userID: "reader")
+        let afterNewReply = feed.state.agents(from: roster).map(\.id)
+        XCTAssertEqual(afterNewReply, ["agent:alpha"])
+
+        feed.markOpened("agent:alpha")
+        let relaunched = RepliedFeed(defaults: defaults)
+        relaunched.apply(oldReply, userID: "reader")
+        let afterRelaunch = relaunched.state.agents(from: roster).map(\.id)
+        XCTAssertTrue(afterRelaunch.isEmpty)
+
+        relaunched.markOpened("agent:alpha") // An older reply cannot lower the saved marker.
+        relaunched.apply(newReply, userID: "reader")
+        let afterOlderOpen = relaunched.state.agents(from: roster).map(\.id)
+        XCTAssertTrue(afterOlderOpen.isEmpty)
+    }
+
     func testRetiredAndOutOfRosterAgentsAreExcluded() throws {
         let roster = try makeAgents(["agent:active"])
         var state = RepliedState()
@@ -127,5 +223,15 @@ final class RepliedTests: XCTestCase {
         ] }
         let data = try JSONSerialization.data(withJSONObject: ["sessions": sessions])
         return try JSONDecoder().decode(Roster.self, from: data).sessions
+    }
+
+    private func testDefaults() throws -> (UserDefaults, String) {
+        let suiteName = "RepliedTests.\(UUID().uuidString)"
+        return (try XCTUnwrap(UserDefaults(suiteName: suiteName)), suiteName)
+    }
+
+    private actor FetchCounter {
+        private(set) var messageFetches = 0
+        func recordMessageFetch() { messageFetches += 1 }
     }
 }
