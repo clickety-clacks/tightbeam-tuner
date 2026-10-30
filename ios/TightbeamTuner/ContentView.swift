@@ -12,6 +12,7 @@ struct ContentView: View {
     /// In portrait on a wide screen the agent list floats over the chat instead of beside it.
     @State private var portrait = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("appearance") private var appearance = "system"
     /// Native composer drafts per agent. Kept in app defaults, not scene storage, so a draft
     /// survives a force-quit or iOS ending Tuner in the background. Send state is not kept.
@@ -26,6 +27,20 @@ struct ContentView: View {
                 draftsData = (try? JSONEncoder().encode(drafts)) ?? Data()
             }
         )
+    }
+
+    /// In compact width the sidebar replaces the detail chat. In regular width the selected
+    /// detail stays on screen under a floating sidebar.
+    private var shownChatSessionKey: String? {
+        let selectedSessionKey = store.selectedAgent.flatMap { agent in
+            store.connection.chatURL(for: agent) == nil ? nil : agent.id
+        }
+        return RepliedShownChat(
+            selectedSessionKey: selectedSessionKey,
+            compactWidth: horizontalSizeClass == .compact,
+            compactDetailSelected: preferredCompactColumn == .detail,
+            sceneIsActive: scenePhase == .active
+        ).sessionKeyOnScreen
     }
 
     var body: some View {
@@ -88,6 +103,9 @@ struct ContentView: View {
             guard store.connection.isComplete, !sessionKeys.isEmpty else { return }
             await repliedFeed.run(gateway: store.connection.gateway, user: store.connection.tightbeamUser,
                                   sessionKeys: sessionKeys)
+        }
+        .onChange(of: shownChatSessionKey, initial: true) { _, key in
+            repliedFeed.updateShownSessionKey(key)
         }
         .onChange(of: store.selectedID) { _, value in
             if let value, let agent = store.agents.first(where: { $0.id == value }) {

@@ -3,6 +3,33 @@ import XCTest
 @testable import TightbeamTuner
 
 final class RepliedTests: XCTestCase {
+    func testShownChatUsesCompactColumnAndKeepsRegularDetailVisible() {
+        XCTAssertNil(RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: true,
+            compactDetailSelected: false,
+            sceneIsActive: true
+        ).sessionKeyOnScreen)
+        XCTAssertEqual(RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: true,
+            compactDetailSelected: true,
+            sceneIsActive: true
+        ).sessionKeyOnScreen, "agent:alpha")
+        XCTAssertEqual(RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: false,
+            compactDetailSelected: false,
+            sceneIsActive: true
+        ).sessionKeyOnScreen, "agent:alpha")
+        XCTAssertNil(RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: false,
+            compactDetailSelected: true,
+            sceneIsActive: false
+        ).sessionKeyOnScreen)
+    }
+
     func testPagesSelectUnreadRepliesAndSortNewestFirst() throws {
         let messages = try JSONDecoder().decode(RepliedMessagesPage.self, from: Data(#"""
         {
@@ -168,6 +195,71 @@ final class RepliedTests: XCTestCase {
         relaunched.apply(newReply, userID: "reader")
         let afterOlderOpen = relaunched.state.agents(from: roster).map(\.id)
         XCTAssertTrue(afterOlderOpen.isEmpty)
+    }
+
+    @MainActor func testLiveReplyIsPerDeviceAndOnlySuppressedWhenItsChatIsShown() throws {
+        let (shownDefaults, shownSuite) = try testDefaults()
+        defer { shownDefaults.removePersistentDomain(forName: shownSuite) }
+        let (otherDefaults, otherSuite) = try testDefaults()
+        defer { otherDefaults.removePersistentDomain(forName: otherSuite) }
+        let roster = try makeAgents(["agent:alpha"])
+        let reply = try change(#"{"type":"change","class":"message.created","payload":{"seq":20,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#)
+        let shownDevice = RepliedFeed(defaults: shownDefaults)
+        shownDevice.updateShownSessionKey("agent:alpha")
+        shownDevice.apply(reply, userID: "reader")
+
+        XCTAssertTrue(shownDevice.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(shownDevice.state.localReadMarkerBySession["agent:alpha"], 20)
+        XCTAssertEqual(shownDefaults.dictionary(forKey: "repliedLocalReadMarkers")?["agent:alpha"] as? Int, 20)
+
+        let otherDevice = RepliedFeed(defaults: otherDefaults)
+        otherDevice.apply(reply, userID: "reader")
+        XCTAssertEqual(otherDevice.state.agents(from: roster).map(\.id), ["agent:alpha"])
+
+        shownDevice.updateShownSessionKey(nil)
+        let laterReply = try change(#"{"type":"change","class":"message.created","payload":{"seq":21,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#)
+        shownDevice.apply(laterReply, userID: "reader")
+        XCTAssertEqual(shownDevice.state.agents(from: roster).map(\.id), ["agent:alpha"])
+    }
+
+    @MainActor func testCatchUpUsesCurrentShownChatAndSavedSuppressionSurvivesRelaunch() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let roster = try makeAgents(["agent:alpha"])
+        let markers = try JSONDecoder().decode(RepliedMarkersPage.self, from: Data(#"{"items":[{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":0,"updatedAt":1}],"page":{"hasMoreAfter":false}}"#.utf8)).items
+        let reply = try message(#"{"seq":30,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)
+        let feed = RepliedFeed(defaults: defaults)
+
+        await feed.loadSnapshot(
+            gateway: "https://gateway.example.test",
+            user: "reader",
+            sessionKeys: ["agent:alpha"],
+            limit: 100,
+            fetchMarkers: { _, _ in markers },
+            fetchMessages: { _, _, _ in
+                await feed.updateShownSessionKey("agent:alpha")
+                return [reply]
+            }
+        )
+
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(defaults.dictionary(forKey: "repliedLocalReadMarkers")?["agent:alpha"] as? Int, 30)
+
+        let relaunched = RepliedFeed(defaults: defaults)
+        relaunched.updateShownSessionKey(nil)
+        await relaunched.loadSnapshot(
+            gateway: "https://gateway.example.test",
+            user: "reader",
+            sessionKeys: ["agent:alpha"],
+            limit: 100,
+            fetchMarkers: { _, _ in markers },
+            fetchMessages: { _, _, _ in [reply] }
+        )
+        XCTAssertTrue(relaunched.state.agents(from: roster).isEmpty)
+
+        let laterReply = try change(#"{"type":"change","class":"message.created","payload":{"seq":31,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#)
+        relaunched.apply(laterReply, userID: "reader")
+        XCTAssertEqual(relaunched.state.agents(from: roster).map(\.id), ["agent:alpha"])
     }
 
     func testRetiredAndOutOfRosterAgentsAreExcluded() throws {

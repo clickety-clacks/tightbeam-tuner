@@ -91,8 +91,17 @@ struct RepliedState: Sendable {
         return marker
     }
     mutating func apply(_ message: RepliedMessage) {
-        guard message.role == "assistant", message.turnIncludesHuman else { return }
+        _ = apply(message, shownSessionKey: nil)
+    }
+    mutating func apply(_ message: RepliedMessage, shownSessionKey: String?) -> Bool {
+        guard message.role == "assistant", message.turnIncludesHuman else { return false }
         latestReplyBySession[message.sessionKey] = max(latestReplyBySession[message.sessionKey] ?? Int.min, message.seq)
+        guard message.sessionKey == shownSessionKey else { return false }
+        let previousMarker = localReadMarkerBySession[message.sessionKey] ?? Int.min
+        let clearedMarker = max(previousMarker, message.seq)
+        guard clearedMarker != previousMarker else { return false }
+        localReadMarkerBySession[message.sessionKey] = clearedMarker
+        return true
     }
     mutating func apply(_ marker: RepliedReadMarker, userID: String) {
         let suffix = ":session-read-position"
@@ -102,12 +111,16 @@ struct RepliedState: Sendable {
         readMarkerBySession[key] = marker
     }
     mutating func apply(_ frame: RepliedFrame, userID: String) {
+        _ = apply(frame, userID: userID, shownSessionKey: nil)
+    }
+    mutating func apply(_ frame: RepliedFrame, userID: String, shownSessionKey: String?) -> Bool {
         switch frame {
-        case .message(let message): apply(message)
+        case .message(let message): return apply(message, shownSessionKey: shownSessionKey)
         case .readMarker(let marker): apply(marker, userID: userID)
         case .retired(let key): retiredSessionKeys.insert(key)
         default: break
         }
+        return false
     }
     func agents(from roster: [Agent]) -> [Agent] {
         roster.compactMap { agent -> (Agent, Int)? in
@@ -127,8 +140,22 @@ struct RepliedTaskKey: Equatable {
     let sessionKeys: [String]
 }
 
+struct RepliedShownChat {
+    let selectedSessionKey: String?
+    let compactWidth: Bool
+    let compactDetailSelected: Bool
+    let sceneIsActive: Bool
+
+    var sessionKeyOnScreen: String? {
+        guard sceneIsActive, let selectedSessionKey,
+              !compactWidth || compactDetailSelected else { return nil }
+        return selectedSessionKey
+    }
+}
+
 @MainActor @Observable final class RepliedFeed {
     private(set) var state = RepliedState()
+    private(set) var shownSessionKey: String?
     private static let localReadMarkersKey = "repliedLocalReadMarkers"
     private let defaults: UserDefaults
     private var stateGateway: String?
@@ -145,11 +172,21 @@ struct RepliedTaskKey: Equatable {
 
     func markOpened(_ key: String) {
         guard state.markOpened(key) != nil else { return }
-        defaults.set(state.localReadMarkerBySession, forKey: Self.localReadMarkersKey)
+        persistLocalReadMarkers()
+    }
+
+    func updateShownSessionKey(_ key: String?) {
+        shownSessionKey = key
     }
 
     func apply(_ frame: RepliedFrame, userID: String) {
-        state.apply(frame, userID: userID)
+        if state.apply(frame, userID: userID, shownSessionKey: shownSessionKey) {
+            persistLocalReadMarkers()
+        }
+    }
+
+    private func persistLocalReadMarkers() {
+        defaults.set(state.localReadMarkerBySession, forKey: Self.localReadMarkersKey)
     }
 
     func run(gateway: String, user: String, sessionKeys: [String]) async {
@@ -216,7 +253,9 @@ struct RepliedTaskKey: Equatable {
             while let (key, messages) = await group.next() {
                 guard !Task.isCancelled else { group.cancelAll(); return }
                 if let messages {
-                    for message in messages where message.sessionKey == key { state.apply(message) }
+                    for message in messages where message.sessionKey == key {
+                        apply(.message(message), userID: user)
+                    }
                 }
                 if next < sessionKeys.count {
                     let key = sessionKeys[next]
