@@ -5,6 +5,10 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 37, date: "October 30, 2026", items: [
+            .init(symbol: "bubble.left.and.bubble.right", title: "Replied opens the conversation",
+                  detail: "Tapping a reply opens its chat while clearing it from Replied on this device."),
+        ]),
         ReleaseNote(version: "1.0", build: 36, date: "October 30, 2026", items: [
             .init(symbol: "arrowshape.turn.up.left", title: "Replied follows the chat on screen",
                   detail: "A reply joins Replied only when Tuner receives it while its chat is off screen on this device. Replies that arrive while the chat is open stay out after you switch away, reconnect, or restart."),

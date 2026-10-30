@@ -43,9 +43,26 @@ struct ContentView: View {
         ).sessionKeyOnScreen
     }
 
+    private func openRepliedAgent(_ id: String) {
+        let selectionChanged = store.selectedID != id
+        if selectionChanged {
+            // Commit the split-view selection before clearing the row. The selection change
+            // handler below records the recent visit and local read position.
+            store.selectedID = id
+        }
+        preferredCompactColumn = .detail
+        // A floating agent list closes once an agent is chosen, like a popover.
+        if horizontalSizeClass == .regular && portrait { columnVisibility = .detailOnly }
+        if !selectionChanged {
+            // The selected chat can be hidden behind the compact list. Make it visible before
+            // clearing a Replied row whose selection value is already current.
+            repliedFeed.markOpened(id)
+        }
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
-            AgentSidebar(store: store, repliedFeed: repliedFeed)
+            AgentSidebar(store: store, repliedFeed: repliedFeed, openRepliedAgent: openRepliedAgent)
                 .navigationTitle("Agents")
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -372,6 +389,7 @@ private struct AgentSectionHeader: View {
 private struct AgentSidebar: View {
     @Bindable var store: TunerStore
     let repliedFeed: RepliedFeed
+    let openRepliedAgent: (String) -> Void
     @State private var query = ""
     @State private var selectedArchetypes: Set<String> = []
     @State private var collapsed: Set<String> = []
@@ -439,7 +457,7 @@ private struct AgentSidebar: View {
                         NavigationLink(value: agent.id) {
                             AgentRowLabel(agent: agent, symbol: "arrowshape.turn.up.left")
                         }
-                        .simultaneousGesture(TapGesture().onEnded { repliedFeed.markOpened(agent.id) })
+                        .simultaneousGesture(TapGesture().onEnded { openRepliedAgent(agent.id) })
                     }
                 } header: {
                     AgentSectionHeader(title: "Replied", count: counts.replied)
