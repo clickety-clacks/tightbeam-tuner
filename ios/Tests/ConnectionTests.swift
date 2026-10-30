@@ -33,4 +33,20 @@ final class ConnectionTests: XCTestCase {
         connection.chatServer = "http://chat.example.test"
         XCTAssertFalse(connection.isComplete)
     }
+
+    @MainActor
+    func testRemovingRecentPersistsWithoutChangingSelection() throws {
+        let suiteName = "TunerRecentTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(["alpha", "beta"], forKey: "recentAgents.v1")
+
+        let store = TunerStore(defaults: defaults)
+        store.selectedID = "alpha"
+        store.removeRecent("alpha")
+
+        XCTAssertEqual(store.recentIDs, ["beta"])
+        XCTAssertEqual(store.selectedID, "alpha")
+        XCTAssertEqual(TunerStore(defaults: defaults).recentIDs, ["beta"])
+    }
 }

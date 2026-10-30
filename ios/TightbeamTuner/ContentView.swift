@@ -469,6 +469,15 @@ private struct AgentSidebar: View {
                         NavigationLink(value: agent.id) {
                             AgentRowLabel(agent: agent, symbol: "clock")
                         }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                store.removeRecent(agent.id)
+                            } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .accessibilityLabel("Remove from Recent")
+                            .tint(Color.nordicDanger)
+                        }
                     }
                 } header: {
                     AgentSectionHeader(title: "Recent", count: counts.recent)
