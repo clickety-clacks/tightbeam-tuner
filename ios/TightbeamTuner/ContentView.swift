@@ -257,6 +257,30 @@ private struct AgentNode: Identifiable {
     var id: String { agent.id }
 }
 
+struct AgentListFilter {
+    let words: [String]
+    let archetypes: Set<String>
+
+    var isActive: Bool { !words.isEmpty || !archetypes.isEmpty }
+
+    func matches(_ agent: Agent) -> Bool {
+        (archetypes.isEmpty || archetypes.contains(agent.archetype ?? ""))
+            && words.allSatisfy { agent.name.localizedCaseInsensitiveContains($0) }
+    }
+}
+
+struct AgentSectionCounts {
+    let replied: Int
+    let recent: Int
+    let agents: Int
+
+    init(replied: [Agent], recent: [Agent], agents: [Agent], filter: AgentListFilter) {
+        self.replied = replied.filter { filter.matches($0) }.count
+        self.recent = recent.filter { filter.matches($0) }.count
+        self.agents = agents.filter { filter.matches($0) }.count
+    }
+}
+
 /// An agent's name with its archetype as a caption below.
 private struct AgentRowLabel: View {
     let agent: Agent
@@ -308,6 +332,25 @@ private struct AgentBranch: View {
     }
 }
 
+private struct AgentSectionHeader: View {
+    let title: LocalizedStringKey
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+            Text(count, format: .number)
+                .font(.caption.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(Color(.accent))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color(.accent).opacity(0.16), in: Capsule())
+        }
+        .foregroundStyle(Color.nordicSecondaryText)
+    }
+}
+
 private struct AgentSidebar: View {
     @Bindable var store: TunerStore
     let repliedFeed: RepliedFeed
@@ -315,25 +358,27 @@ private struct AgentSidebar: View {
     @State private var selectedArchetypes: Set<String> = []
     @State private var collapsed: Set<String> = []
     @AppStorage("maxRecents") private var maxRecents = 10
+    @AppStorage("repliedSectionExpanded") private var repliedSectionExpanded = true
+    @AppStorage("recentSectionExpanded") private var recentSectionExpanded = true
+    @AppStorage("agentsSectionExpanded") private var agentsSectionExpanded = true
 
     private var words: [String] {
         query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    private var listFilter: AgentListFilter {
+        AgentListFilter(words: words, archetypes: selectedArchetypes)
     }
 
     private var archetypes: [String] {
         Array(Set(store.agents.compactMap(\.archetype))).sorted()
     }
 
-    private func matches(_ agent: Agent, words: [String]) -> Bool {
-        (selectedArchetypes.isEmpty || selectedArchetypes.contains(agent.archetype ?? ""))
-            && words.allSatisfy { agent.name.localizedCaseInsensitiveContains($0) }
-    }
-
     private var visibleRoots: [AgentNode] {
         let agents = store.agents
         let ids = Set(agents.map(\.id))
-        let terms = words
-        let filtering = !terms.isEmpty || !selectedArchetypes.isEmpty
+        let filter = listFilter
+        let filtering = filter.isActive
         var children: [String: [Agent]] = [:]
         var roots: [Agent] = []
         for agent in agents {
@@ -353,7 +398,7 @@ private struct AgentSidebar: View {
         func project(_ agent: Agent) -> AgentNode? {
             guard visited.insert(agent.id).inserted else { return nil }
             let descendants = (children[agent.id] ?? []).compactMap(project)
-            let ownMatch = matches(agent, words: terms)
+            let ownMatch = filter.matches(agent)
             guard !filtering || ownMatch || !descendants.isEmpty else { return nil }
             return AgentNode(agent: agent, children: descendants,
                              contextOnly: filtering && !ownMatch)
@@ -363,32 +408,43 @@ private struct AgentSidebar: View {
 
     var body: some View {
         List(selection: $store.selectedID) {
+            let filter = listFilter
             let replied = repliedFeed.state.agents(from: store.agents)
             let recents = store.recentAgents.prefix(maxRecents)
+            let matchingReplied = replied.filter { filter.matches($0) }
+            let matchingRecents = recents.filter { filter.matches($0) }
+            let counts = AgentSectionCounts(replied: replied, recent: Array(recents),
+                                            agents: store.agents, filter: filter)
             if !replied.isEmpty {
-                Section("Replied") {
-                    ForEach(replied.filter { matches($0, words: words) }) { agent in
+                Section(isExpanded: $repliedSectionExpanded) {
+                    ForEach(matchingReplied) { agent in
                         NavigationLink(value: agent.id) {
                             AgentRowLabel(agent: agent, symbol: "arrowshape.turn.up.left")
                         }
                         .simultaneousGesture(TapGesture().onEnded { repliedFeed.markOpened(agent.id) })
                     }
+                } header: {
+                    AgentSectionHeader(title: "Replied", count: counts.replied)
                 }
             }
             if !recents.isEmpty {
-                Section("Recent") {
-                    ForEach(recents.filter { matches($0, words: words) }) { agent in
+                Section(isExpanded: $recentSectionExpanded) {
+                    ForEach(matchingRecents) { agent in
                         NavigationLink(value: agent.id) {
                             AgentRowLabel(agent: agent, symbol: "clock")
                         }
                     }
+                } header: {
+                    AgentSectionHeader(title: "Recent", count: counts.recent)
                 }
             }
-            Section("Agents") {
+            Section(isExpanded: $agentsSectionExpanded) {
                 ForEach(visibleRoots) { node in
                     AgentBranch(node: node, filtering: !words.isEmpty || !selectedArchetypes.isEmpty,
                                 collapsed: $collapsed)
                 }
+            } header: {
+                AgentSectionHeader(title: "Agents", count: counts.agents)
             }
             if store.isLoading { ProgressView("Loading agents…") }
             if let error = store.error {

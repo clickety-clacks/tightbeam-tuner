@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		09450AF22E32E08A35B1B364 /* ChatWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D03D0E09B76E27FDCF1396B1 /* ChatWebView.swift */; };
+		F0135A6D0E244792A610CC6B /* AgentSectionCountsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6D87C79351548CB9A4E2DE8 /* AgentSectionCountsTests.swift */; };
 		19741202E7C1549C5598796F /* Connection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F356E541109E44BB67E5912B /* Connection.swift */; };
 		22BCB372A9DD74F2104C5A92 /* NordicStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28664AC3B51AC348AEFA363D /* NordicStyle.swift */; };
 		3FA347EB8A603721DE29F8E0 /* NativeChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A6346F05A278BDFB5CD929E /* NativeChatComposer.swift */; };
@@ -48,6 +49,7 @@
 		504EAD276D7C297968E985BD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		53D3923635A58ACEFD594A57 /* ChatHostBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHostBridge.swift; sourceTree = "<group>"; };
 		6E5C99F34C2EB0117B642314 /* RepliedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepliedTests.swift; sourceTree = "<group>"; };
+		F6D87C79351548CB9A4E2DE8 /* AgentSectionCountsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSectionCountsTests.swift; sourceTree = "<group>"; };
 		A981DB7748C7BCB960FCC7E9 /* ConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionTests.swift; sourceTree = "<group>"; };
 		B0025914401F3E615BEC3509 /* Agent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Agent.swift; sourceTree = "<group>"; };
 		B7FBFAE83CE0AFBFBB5697B3 /* ChatHostBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHostBridgeTests.swift; sourceTree = "<group>"; };
@@ -86,6 +88,7 @@
 		8C9DC737C056524394195730 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				F6D87C79351548CB9A4E2DE8 /* AgentSectionCountsTests.swift */,
 				B7FBFAE83CE0AFBFBB5697B3 /* ChatHostBridgeTests.swift */,
 				A981DB7748C7BCB960FCC7E9 /* ConnectionTests.swift */,
 				6E5C99F34C2EB0117B642314 /* RepliedTests.swift */,
@@ -221,6 +224,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F0135A6D0E244792A610CC6B /* AgentSectionCountsTests.swift in Sources */,
 				E2A9FB911B7D27057D552026 /* ChatHostBridgeTests.swift in Sources */,
 				A981B0BA13B464004DF743BE /* ConnectionTests.swift in Sources */,
 				6D871E6F982DB9720FC3F162 /* RepliedTests.swift in Sources */,

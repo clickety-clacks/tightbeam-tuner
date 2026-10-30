@@ -5,6 +5,10 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 35, date: "October 30, 2026", items: [
+            .init(symbol: "list.bullet", title: "Collapse agent sections",
+                  detail: "Replied, Recent and Agents now collapse and expand independently, and Tuner remembers each choice. Their count pills follow text and archetype filters; collapsing a section or agent branch does not change the count. Grey parent rows shown only for context are left out of the Agents count."),
+        ]),
         ReleaseNote(version: "1.0", build: 34, date: "October 29, 2026", items: [
             .init(symbol: "arrow.triangle.2.circlepath", title: "Getting ready for shared read positions",
                   detail: "Once available, Tuner can pick up which replies you have read on your other devices."),
