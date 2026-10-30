@@ -23,8 +23,8 @@ final class RepliedTests: XCTestCase {
         let markers = try JSONDecoder().decode(RepliedMarkersPage.self, from: Data(#"""
         {
           "items": [
-            {"userId":"reader","scopeKey":"session:agent:alpha","marker":10,"updatedAt":1,"rowVersion":"a"},
-            {"userId":"reader","scopeKey":"session:agent:beta","marker":"10","updatedAt":2,"rowVersion":"b"},
+            {"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":10,"updatedAt":1,"rowVersion":"a"},
+            {"userId":"reader","scopeKey":"agent:beta:session-read-position","marker":"10","updatedAt":2,"rowVersion":"b"},
             {"userId":"reader","scopeKey":"device:agent:zeta","marker":99,"updatedAt":3,"rowVersion":"c"}
           ],
           "page": {"hasMoreAfter":true,"newestCursor":"cursor /+"}
@@ -49,19 +49,23 @@ final class RepliedTests: XCTestCase {
         var state = RepliedState()
         state.apply(try message(#"{"seq":20,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#))
 
-        let read = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"session:agent:alpha","marker":20,"updatedAt":10}}"#)
+        let oldFormatRead = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"session:agent:alpha","marker":20,"updatedAt":100}}"#)
+        state.apply(oldFormatRead, userID: "reader")
+        XCTAssertEqual(state.agents(from: roster).map(\.id), ["agent:alpha"])
+
+        let read = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":20,"updatedAt":10}}"#)
         state.apply(read, userID: "reader")
         XCTAssertTrue(state.agents(from: roster).isEmpty)
 
-        let olderRead = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"session:agent:alpha","marker":"1","updatedAt":9}}"#)
+        let olderRead = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":"1","updatedAt":9}}"#)
         state.apply(olderRead, userID: "reader")
         XCTAssertTrue(state.agents(from: roster).isEmpty)
 
-        let cleared = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"session:agent:alpha","marker":null,"updatedAt":11}}"#)
+        let cleared = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":null,"updatedAt":11}}"#)
         state.apply(cleared, userID: "reader")
         XCTAssertEqual(state.agents(from: roster).map(\.id), ["agent:alpha"])
 
-        let readAgain = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"session:agent:alpha","marker":20,"updatedAt":12}}"#)
+        let readAgain = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":20,"updatedAt":12}}"#)
         state.apply(readAgain, userID: "reader")
         XCTAssertTrue(state.agents(from: roster).isEmpty)
 
@@ -105,7 +109,7 @@ final class RepliedTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let feed = RepliedFeed(defaults: defaults)
         let reads = FetchCounter()
-        let markers = try JSONDecoder().decode(RepliedMarkersPage.self, from: Data(#"{"items":[{"userId":"reader","scopeKey":"session:agent:alpha","marker":3,"updatedAt":1}],"page":{"hasMoreAfter":false}}"#.utf8)).items
+        let markers = try JSONDecoder().decode(RepliedMarkersPage.self, from: Data(#"{"items":[{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":3,"updatedAt":1}],"page":{"hasMoreAfter":false}}"#.utf8)).items
         let history = [try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)]
         let roster = try makeAgents(["agent:alpha", "agent:beta"])
 
@@ -144,7 +148,7 @@ final class RepliedTests: XCTestCase {
         let afterOpen = feed.state.agents(from: roster).map(\.id)
         XCTAssertTrue(afterOpen.isEmpty)
 
-        let olderServerMarker = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"session:agent:alpha","marker":19,"updatedAt":1}}"#)
+        let olderServerMarker = try change(#"{"type":"change","class":"read_marker.updated","payload":{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":19,"updatedAt":1}}"#)
         feed.apply(olderServerMarker, userID: "reader")
         feed.apply(oldReply, userID: "reader")
         let afterDuplicate = feed.state.agents(from: roster).map(\.id)

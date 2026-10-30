@@ -95,8 +95,9 @@ struct RepliedState: Sendable {
         latestReplyBySession[message.sessionKey] = max(latestReplyBySession[message.sessionKey] ?? Int.min, message.seq)
     }
     mutating func apply(_ marker: RepliedReadMarker, userID: String) {
-        guard marker.userId == userID, marker.scopeKey.hasPrefix("session:") else { return }
-        let key = String(marker.scopeKey.dropFirst("session:".count))
+        let suffix = ":session-read-position"
+        guard marker.userId == userID, marker.scopeKey.hasSuffix(suffix) else { return }
+        let key = String(marker.scopeKey.dropLast(suffix.count))
         if let current = readMarkerBySession[key], current.updatedAt > marker.updatedAt { return }
         readMarkerBySession[key] = marker
     }
