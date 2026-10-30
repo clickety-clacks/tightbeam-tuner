@@ -55,9 +55,10 @@ final class TunerStore {
     var recentIDs: [String]
     var error: String?
     var isLoading = false
+    @ObservationIgnored private let defaults: UserDefaults
 
-    init() {
-        let defaults = UserDefaults.standard
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         connection = defaults.data(forKey: Keys.connection)
             .flatMap { try? JSONDecoder().decode(Connection.self, from: $0) } ?? Connection()
         recentIDs = defaults.stringArray(forKey: Keys.recent) ?? []
@@ -74,7 +75,7 @@ final class TunerStore {
 
     func save(_ value: Connection) {
         connection = value
-        UserDefaults.standard.set(try? JSONEncoder().encode(value), forKey: Keys.connection)
+        defaults.set(try? JSONEncoder().encode(value), forKey: Keys.connection)
         selectedID = nil
         agents = []
         error = nil
@@ -85,7 +86,12 @@ final class TunerStore {
         recentIDs.removeAll { $0 == agent.id }
         recentIDs.insert(agent.id, at: 0)
         recentIDs = Array(recentIDs.prefix(Self.storedRecents))
-        UserDefaults.standard.set(recentIDs, forKey: Keys.recent)
+        defaults.set(recentIDs, forKey: Keys.recent)
+    }
+
+    func removeRecent(_ sessionKey: String) {
+        recentIDs.removeAll { $0 == sessionKey }
+        defaults.set(recentIDs, forKey: Keys.recent)
     }
 
     func refresh() async {
