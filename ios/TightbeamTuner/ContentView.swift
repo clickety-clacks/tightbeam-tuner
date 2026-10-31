@@ -93,8 +93,7 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
             AgentSidebar(store: store, repliedFeed: repliedFeed, openRepliedAgent: openRepliedAgent,
-                         filterCapsuleFrame: sidebarSearchFrame, query: $sidebarQuery,
-                         selectedArchetypes: $selectedArchetypes)
+                         query: $sidebarQuery, selectedArchetypes: $selectedArchetypes)
                 .navigationTitle("Agents")
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -437,7 +436,6 @@ private struct AgentSidebar: View {
     @Bindable var store: TunerStore
     let repliedFeed: RepliedFeed
     let openRepliedAgent: (String) -> Void
-    let filterCapsuleFrame: CGRect?
     @Binding var query: String
     @Binding var selectedArchetypes: Set<String>
     @State private var collapsed: Set<String> = []
@@ -452,11 +450,6 @@ private struct AgentSidebar: View {
 
     private var listFilter: AgentListFilter {
         AgentListFilter(words: words, archetypes: selectedArchetypes)
-    }
-
-    private var filteredResultClearance: CGFloat {
-        guard !words.isEmpty else { return 0 }
-        return (filterCapsuleFrame?.height ?? 44) + 12
     }
 
     private var archetypes: [String] {
@@ -550,16 +543,6 @@ private struct AgentSidebar: View {
             }
         }
         .nordicListStyle()
-        // The native search capsule can overlap the list's scroll range. Add room only while
-        // text filtering so the final result can scroll fully above the capsule.
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if filteredResultClearance > 0 {
-                Color.clear
-                    .frame(height: filteredResultClearance)
-                    .accessibilityHidden(true)
-                    .allowsHitTesting(false)
-            }
-        }
         .refreshable { await store.refresh() }
         .searchable(text: $query, placement: .sidebar, prompt: "Filter agents")
         // Keep the archetype menu in the toolbar while searching.
