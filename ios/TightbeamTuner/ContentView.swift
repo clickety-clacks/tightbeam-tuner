@@ -247,10 +247,10 @@ private struct AgentChatView: View {
     }
 
     var body: some View {
-        // The page runs under the top bar and the floating composer, but stays clear of side
-        // safe areas (a floating sidebar, a notch, a folded iPhone Duo's side bar), so anything
-        // Chat centers lands in the visible part of the detail column. The composer's height
-        // joins the page's bottom safe area, so Chat keeps the newest message above the glass.
+        // The page respects the top safe area and toolbar, but still runs under the floating
+        // composer. It stays clear of side safe areas, so centered Chat content remains visible
+        // in the detail column. The composer's height joins the page's bottom safe area, keeping
+        // the newest message above the glass.
         GeometryReader { geometry in
             let detailFrame = geometry.frame(in: .global)
             let composerOffset = composerOffset(in: detailFrame)
@@ -259,7 +259,7 @@ private struct AgentChatView: View {
                             // Preserve the clearance below the composer after moving it from the bottom anchor.
                             floatingBottomInset: bridge.hostComposerActive
                                 ? max(0, composerHeight - composerOffset) : 0)
-                    .ignoresSafeArea(edges: .vertical)
+                    .ignoresSafeArea(edges: .bottom)
                 if bridge.hostComposerActive {
                     NativeChatComposer(draft: $draft, bridge: bridge)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
