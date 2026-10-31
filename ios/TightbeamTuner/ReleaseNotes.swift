@@ -5,6 +5,10 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 41, date: "October 31, 2026", items: [
+            .init(symbol: "sidebar.left", title: "See Replied from the list controls",
+                  detail: "When the agent list is hidden, its return control shows how many agents are listed in Replied after filtering."),
+        ]),
         ReleaseNote(version: "1.0", build: 40, date: "October 31, 2026", items: [
             .init(symbol: "line.3.horizontal.decrease.circle", title: "Filter results stay clear",
                   detail: "Scroll the last matching agent above Filter agents and tap it, with the keyboard open or closed."),

@@ -9,6 +9,8 @@ struct ContentView: View {
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var sidebarSearchFrame: CGRect?
+    @State private var sidebarQuery = ""
+    @State private var selectedArchetypes: Set<String> = []
     /// In portrait on a wide screen the agent list floats over the chat instead of beside it.
     @State private var portrait = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -43,6 +45,34 @@ struct ContentView: View {
         ).sessionKeyOnScreen
     }
 
+    private var sidebarFilter: AgentListFilter {
+        AgentListFilter(
+            words: sidebarQuery.lowercased().split(whereSeparator: \.isWhitespace).map(String.init),
+            archetypes: selectedArchetypes
+        )
+    }
+
+    private var repliedBadgeCount: Int {
+        repliedFeed.state.agents(from: store.agents).filter { sidebarFilter.matches($0) }.count
+    }
+
+    private var compactDetailSelected: Bool {
+        horizontalSizeClass == .compact && preferredCompactColumn == .detail
+    }
+
+    private var agentListHidden: Bool {
+        horizontalSizeClass == .compact ? compactDetailSelected : columnVisibility == .detailOnly
+    }
+
+    private func showOrToggleAgentList() {
+        if horizontalSizeClass == .compact {
+            store.selectedID = nil
+            preferredCompactColumn = .sidebar
+        } else {
+            columnVisibility = agentListHidden ? .automatic : .detailOnly
+        }
+    }
+
     private func openRepliedAgent(_ id: String) {
         let selectionChanged = store.selectedID != id
         if selectionChanged {
@@ -63,13 +93,15 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
             AgentSidebar(store: store, repliedFeed: repliedFeed, openRepliedAgent: openRepliedAgent,
-                         filterCapsuleFrame: sidebarSearchFrame)
+                         filterCapsuleFrame: sidebarSearchFrame, query: $sidebarQuery,
+                         selectedArchetypes: $selectedArchetypes)
                 .navigationTitle("Agents")
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Settings", systemImage: "gearshape") { showingSettings = true }
                     }
                 }
+                .toolbar(removing: .sidebarToggle)
         } detail: {
             Group {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
@@ -89,6 +121,20 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.nordicBackground)
+            .toolbar {
+                if horizontalSizeClass == .regular || compactDetailSelected {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: showOrToggleAgentList) {
+                            Image(systemName: "sidebar.left")
+                        }
+                        .badge(agentListHidden ? repliedBadgeCount : 0)
+                        .accessibilityLabel(
+                            agentListHidden ? "Show agent list" : "Hide agent list"
+                        )
+                        .accessibilityValue(Text("\(repliedBadgeCount) Replied"))
+                    }
+                }
+            }
         }
         .background {
             // SwiftUI does not expose the visible .searchable capsule's frame. Find it from
@@ -392,8 +438,8 @@ private struct AgentSidebar: View {
     let repliedFeed: RepliedFeed
     let openRepliedAgent: (String) -> Void
     let filterCapsuleFrame: CGRect?
-    @State private var query = ""
-    @State private var selectedArchetypes: Set<String> = []
+    @Binding var query: String
+    @Binding var selectedArchetypes: Set<String>
     @State private var collapsed: Set<String> = []
     @AppStorage("maxRecents") private var maxRecents = 10
     @AppStorage("repliedSectionExpanded") private var repliedSectionExpanded = true
