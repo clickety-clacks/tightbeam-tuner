@@ -66,6 +66,7 @@ struct ContentView: View {
 
     private func showOrToggleAgentList() {
         if horizontalSizeClass == .compact {
+            store.selectedID = nil
             preferredCompactColumn = .sidebar
         } else {
             columnVisibility = agentListHidden ? .automatic : .detailOnly
@@ -124,21 +125,16 @@ struct ContentView: View {
                 if horizontalSizeClass == .regular || compactDetailSelected {
                     ToolbarItem(placement: .topBarLeading) {
                         Button(action: showOrToggleAgentList) {
-                            if horizontalSizeClass == .compact {
-                                Label("Agents", systemImage: "chevron.left")
-                            } else {
-                                Image(systemName: "sidebar.left")
-                            }
+                            Image(systemName: "sidebar.left")
                         }
                         .badge(agentListHidden ? repliedBadgeCount : 0)
                         .accessibilityLabel(
-                            horizontalSizeClass == .compact ? "Agents" : agentListHidden ? "Show agent list" : "Hide agent list"
+                            agentListHidden ? "Show agent list" : "Hide agent list"
                         )
                         .accessibilityValue(Text("\(repliedBadgeCount) Replied"))
                     }
                 }
             }
-            .navigationBarBackButtonHidden(compactDetailSelected)
         }
         .background {
             // SwiftUI does not expose the visible .searchable capsule's frame. Find it from
