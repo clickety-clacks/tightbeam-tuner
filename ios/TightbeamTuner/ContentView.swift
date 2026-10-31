@@ -410,7 +410,7 @@ private struct AgentSidebar: View {
 
     private var filteredResultClearance: CGFloat {
         guard !words.isEmpty else { return 0 }
-        return max(56, (filterCapsuleFrame?.height ?? 44) + 12)
+        return (filterCapsuleFrame?.height ?? 44) + 12
     }
 
     private var archetypes: [String] {
