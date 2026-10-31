@@ -5,6 +5,10 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 40, date: "October 31, 2026", items: [
+            .init(symbol: "line.3.horizontal.decrease.circle", title: "Filter results stay clear",
+                  detail: "Scroll the last matching agent above Filter agents and tap it, with the keyboard open or closed."),
+        ]),
         ReleaseNote(version: "1.0", build: 39, date: "October 31, 2026", items: [
             .init(symbol: "arrow.up.to.line", title: "Chat stays clear of the top bar",
                   detail: "The conversation now starts below Tuner's top toolbar, so its controls stay clear."),
