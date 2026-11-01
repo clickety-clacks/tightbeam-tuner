@@ -82,7 +82,9 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: splitViewColumnVisibility, preferredCompactColumn: $preferredCompactColumn) {
             AgentSidebar(store: store, repliedFeed: repliedFeed, openRepliedAgent: openRepliedAgent,
-                         query: $sidebarQuery, selectedArchetypes: $selectedArchetypes)
+                         query: $sidebarQuery, selectedArchetypes: $selectedArchetypes,
+                         isRegularWidthIPad: UIDevice.current.userInterfaceIdiom == .pad
+                            && horizontalSizeClass == .regular)
                 .navigationTitle("Agents")
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -290,6 +292,103 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
     }
 }
 
+/// Reports the docked keyboard's overlap with the sidebar, in sidebar coordinates.
+private struct SidebarKeyboardOcclusionReader: UIViewRepresentable {
+    let onChange: (CGFloat) -> Void
+
+    func makeUIView(context: Context) -> KeyboardOcclusionProbeView {
+        let view = KeyboardOcclusionProbeView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        view.onChange = onChange
+        return view
+    }
+
+    func updateUIView(_ view: KeyboardOcclusionProbeView, context: Context) {
+        view.onChange = onChange
+        view.updateOcclusion()
+    }
+
+    private final class KeyboardOcclusionProbeView: UIView {
+        var onChange: ((CGFloat) -> Void)?
+        private var keyboardScreenFrame: CGRect?
+        private var observers: [NSObjectProtocol] = []
+        private var lastOverlap: CGFloat = -1
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            removeKeyboardObservers()
+            keyboardScreenFrame = nil
+            guard window != nil else {
+                publish(0)
+                return
+            }
+
+            let center = NotificationCenter.default
+            observers = [
+                center.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification,
+                                  object: nil, queue: .main) { [weak self] notification in
+                    let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+                    Task { @MainActor [weak self] in
+                        self?.keyboardFrameDidChange(frame)
+                    }
+                },
+                center.addObserver(forName: UIResponder.keyboardWillHideNotification,
+                                  object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.keyboardFrameDidChange(nil)
+                    }
+                },
+            ]
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            updateOcclusion()
+        }
+
+        deinit {
+            removeKeyboardObservers()
+        }
+
+        func updateOcclusion() {
+            guard let window, let keyboardScreenFrame else {
+                publish(0)
+                return
+            }
+
+            let keyboardFrame = window.convert(keyboardScreenFrame, from: window.screen.coordinateSpace)
+            let sidebarFrame = convert(bounds, to: window)
+            let intersection = sidebarFrame.intersection(keyboardFrame)
+            let keyboardIsDocked = keyboardFrame.maxY >= window.bounds.maxY - 1
+            let keyboardCoversSidebarWidth = !intersection.isNull
+                && intersection.width >= sidebarFrame.width - 1
+            guard keyboardIsDocked, keyboardCoversSidebarWidth else {
+                publish(0)
+                return
+            }
+
+            publish(min(sidebarFrame.height, max(0, sidebarFrame.maxY - keyboardFrame.minY)))
+        }
+
+        private func keyboardFrameDidChange(_ frame: CGRect?) {
+            keyboardScreenFrame = frame
+            updateOcclusion()
+        }
+
+        private func publish(_ overlap: CGFloat) {
+            guard abs(overlap - lastOverlap) > 0.5 else { return }
+            lastOverlap = overlap
+            onChange?(overlap)
+        }
+
+        private func removeKeyboardObservers() {
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
+            observers.removeAll()
+        }
+    }
+}
+
 /// One agent's chat. Chat's own composer serves until Chat reports the seam ready,
 /// then Tuner's native composer takes over below the transcript.
 private struct AgentChatView: View {
@@ -454,7 +553,10 @@ private struct AgentSidebar: View {
     let openRepliedAgent: (String) -> Void
     @Binding var query: String
     @Binding var selectedArchetypes: Set<String>
+    let isRegularWidthIPad: Bool
     @State private var collapsed: Set<String> = []
+    @State private var keyboardBottomOverlap: CGFloat = 0
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("maxRecents") private var maxRecents = 10
     @AppStorage("repliedSectionExpanded") private var repliedSectionExpanded = true
     @AppStorage("recentSectionExpanded") private var recentSectionExpanded = true
@@ -466,6 +568,11 @@ private struct AgentSidebar: View {
 
     private var listFilter: AgentListFilter {
         AgentListFilter(words: words, archetypes: selectedArchetypes)
+    }
+
+    private var keyboardClearance: CGFloat {
+        guard isRegularWidthIPad, !dynamicTypeSize.isAccessibilitySize, listFilter.isActive else { return 0 }
+        return keyboardBottomOverlap
     }
 
     private var archetypes: [String] {
@@ -559,6 +666,23 @@ private struct AgentSidebar: View {
             }
         }
         .nordicListStyle()
+        .background {
+            GeometryReader { geometry in
+                SidebarKeyboardOcclusionReader { keyboardBottomOverlap = $0 }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .accessibilityHidden(true)
+            }
+        }
+        // Let filtered rows scroll above a docked iPad keyboard. Compact devices keep their
+        // existing spacing, and oversized accessibility rows keep their existing behavior.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if keyboardClearance > 0 {
+                Color.clear
+                    .frame(height: keyboardClearance)
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+            }
+        }
         .refreshable { await store.refresh() }
         .searchable(text: $query, placement: .sidebar, prompt: "Filter agents")
         // Keep the archetype menu in the toolbar while searching.
