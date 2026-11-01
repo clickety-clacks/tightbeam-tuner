@@ -296,7 +296,7 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
 private struct SidebarKeyboardOcclusionReader: UIViewRepresentable {
     let onChange: (CGFloat) -> Void
 
-    func makeUIView(context: Context) -> KeyboardOcclusionProbeView {
+    private func makeUIView(context: Context) -> KeyboardOcclusionProbeView {
         let view = KeyboardOcclusionProbeView()
         view.isUserInteractionEnabled = false
         view.backgroundColor = .clear
@@ -304,7 +304,7 @@ private struct SidebarKeyboardOcclusionReader: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ view: KeyboardOcclusionProbeView, context: Context) {
+    private func updateUIView(_ view: KeyboardOcclusionProbeView, context: Context) {
         view.onChange = onChange
         view.updateOcclusion()
     }
