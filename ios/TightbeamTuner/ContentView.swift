@@ -45,34 +45,6 @@ struct ContentView: View {
         ).sessionKeyOnScreen
     }
 
-    private var sidebarFilter: AgentListFilter {
-        AgentListFilter(
-            words: sidebarQuery.lowercased().split(whereSeparator: \.isWhitespace).map(String.init),
-            archetypes: selectedArchetypes
-        )
-    }
-
-    private var repliedBadgeCount: Int {
-        repliedFeed.state.agents(from: store.agents).filter { sidebarFilter.matches($0) }.count
-    }
-
-    private var compactDetailSelected: Bool {
-        horizontalSizeClass == .compact && preferredCompactColumn == .detail
-    }
-
-    private var agentListHidden: Bool {
-        horizontalSizeClass == .compact ? compactDetailSelected : columnVisibility == .detailOnly
-    }
-
-    private func showOrToggleAgentList() {
-        if horizontalSizeClass == .compact {
-            store.selectedID = nil
-            preferredCompactColumn = .sidebar
-        } else {
-            columnVisibility = agentListHidden ? .automatic : .detailOnly
-        }
-    }
-
     private func openRepliedAgent(_ id: String) {
         let selectionChanged = store.selectedID != id
         if selectionChanged {
@@ -100,7 +72,6 @@ struct ContentView: View {
                         Button("Settings", systemImage: "gearshape") { showingSettings = true }
                     }
                 }
-                .toolbar(removing: .sidebarToggle)
         } detail: {
             Group {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
@@ -120,20 +91,6 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.nordicBackground)
-            .toolbar {
-                if horizontalSizeClass == .regular || compactDetailSelected {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button(action: showOrToggleAgentList) {
-                            Image(systemName: "sidebar.left")
-                        }
-                        .badge(agentListHidden ? repliedBadgeCount : 0)
-                        .accessibilityLabel(
-                            agentListHidden ? "Show agent list" : "Hide agent list"
-                        )
-                        .accessibilityValue(Text("\(repliedBadgeCount) Replied"))
-                    }
-                }
-            }
         }
         .background {
             // SwiftUI does not expose the visible .searchable capsule's frame. Find it from
