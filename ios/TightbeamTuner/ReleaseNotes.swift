@@ -7,7 +7,7 @@ enum ReleaseNotes {
     static let all: [ReleaseNote] = [
         ReleaseNote(version: "1.0", build: 43, date: "November 1, 2026", items: [
             .init(symbol: "sidebar.left", title: "Restore the standard agent-list control",
-                  detail: "Use the standard system control to open or close the agent list. It no longer shows a Replied count while the list is hidden."),
+                  detail: "The standard sidebar button is back without a Replied count because this system-owned control has no supported badge mechanism."),
         ]),
         ReleaseNote(version: "1.0", build: 42, date: "October 31, 2026", items: [
             .init(symbol: "line.3.horizontal.decrease.circle", title: "Filtered results sit closer to Filter agents",
