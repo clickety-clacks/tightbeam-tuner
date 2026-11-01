@@ -309,7 +309,7 @@ private struct SidebarKeyboardOcclusionReader: UIViewRepresentable {
         view.updateOcclusion()
     }
 
-    private final class KeyboardOcclusionProbeView: UIView {
+    fileprivate final class KeyboardOcclusionProbeView: UIView {
         var onChange: ((CGFloat) -> Void)?
         private var keyboardScreenFrame: CGRect?
         private var observers: [NSObjectProtocol] = []
