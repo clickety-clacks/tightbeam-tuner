@@ -6,8 +6,8 @@ import SwiftUI
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
         ReleaseNote(version: "1.0", build: 44, date: "November 1, 2026", items: [
-            .init(symbol: "sidebar.left", title: "The agent list keeps its place when you return",
-                  detail: "On split screens, the agent list stays open or closed when you return to Tuner. Rotating while Tuner is active keeps working as before."),
+            .init(symbol: "sidebar.left", title: "The agent list stays where you left it",
+                  detail: "When you return to Tuner, the list stays open, closed, or floating where it was. Rotating while Tuner is active keeps working as before."),
         ]),
         ReleaseNote(version: "1.0", build: 43, date: "November 1, 2026", items: [
             .init(symbol: "sidebar.left", title: "Restore the standard agent-list control",
