@@ -137,15 +137,30 @@ struct ContentView: View {
             }
         }
         .onChange(of: columnVisibility) { _, visibility in
+#if DEBUG
+            print("NAVIGATION_VISIBILITY phase=\(scenePhase) visibility=\(visibility) portrait=\(portrait) sizeClass=\(String(describing: horizontalSizeClass))")
+#endif
             // Opening the agent list puts the keyboard away, so the list is not half covered.
             if visibility != .detailOnly {
                 UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
             }
         }
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+#if DEBUG
+            print("NAVIGATION_SCENE old=\(oldPhase) new=\(newPhase) visibility=\(columnVisibility) portrait=\(portrait) sizeClass=\(String(describing: horizontalSizeClass))")
+#endif
+        }
         .onGeometryChange(for: Bool.self) { $0.size.height > $0.size.width } action: { isPortrait in
             portrait = isPortrait
+            let wouldShowSidebar = !isPortrait && columnVisibility == .detailOnly
+#if DEBUG
+            let geometryDecision = scenePhase == .active
+                ? (wouldShowSidebar ? "show-sidebar" : "keep-visibility")
+                : (wouldShowSidebar ? "guarded-inactive" : "keep-visibility-inactive")
+            print("NAVIGATION_GEOMETRY phase=\(scenePhase) portrait=\(isPortrait) visibility=\(columnVisibility) sizeClass=\(String(describing: horizontalSizeClass)) decision=\(geometryDecision)")
+#endif
             // Side by side again in landscape: bring the list back if it was closed in portrait.
-            if !isPortrait && columnVisibility == .detailOnly { columnVisibility = .automatic }
+            if scenePhase == .active && wouldShowSidebar { columnVisibility = .automatic }
         }
     }
 }
