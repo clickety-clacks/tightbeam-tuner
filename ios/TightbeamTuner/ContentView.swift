@@ -465,9 +465,9 @@ private struct AgentChatView: View {
     }
 
     var body: some View {
-        // The page respects the top safe area and toolbar and fills the detail column. Extra top
-        // or bottom safe area keeps its content clear of the floating composer without changing
-        // the usable width of centered Chat content.
+        // The page fills the detail width and respects the toolbar. When the composer is above
+        // the conversation, move the web view below its glass; when it is below, extend the
+        // page's bottom safe area so content can scroll clear of the glass.
         GeometryReader { geometry in
             let detailFrame = geometry.frame(in: .global)
             let searchFrame = composerTargetFrame(in: detailFrame, composerKeyboardFocused: composerKeyboardFocused)
@@ -478,13 +478,13 @@ private struct AgentChatView: View {
             let composerOffset = searchFrame.map {
                 $0.maxY - (detailFrame.maxY - NativeChatComposer.bottomPadding) - compactGlassBottomCorrection
             } ?? 0
-            let floatingTopInset = bridge.hostComposerActive && composerIsTopAligned ? composerHeight : 0
+            let topComposerClearance = bridge.hostComposerActive && composerIsTopAligned ? composerHeight : 0
             let floatingBottomInset = bridge.hostComposerActive && !composerIsTopAligned
                 ? max(0, composerHeight - composerOffset) : 0
             ZStack(alignment: .bottom) {
                 ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
-                            floatingTopInset: floatingTopInset,
                             floatingBottomInset: floatingBottomInset)
+                    .padding(.top, topComposerClearance)
                     .ignoresSafeArea(edges: .bottom)
                 if bridge.hostComposerActive {
                     NativeChatComposer(

@@ -1,13 +1,12 @@
 import SwiftUI
 import WebKit
 
-/// Hosts Chat in a web view. The child controller carries extra safe area for the native
-/// composer, which Chat reads from the corresponding `env(safe-area-inset-*)` value.
+/// Hosts Chat in a web view. The child controller carries extra bottom safe area for controls
+/// below the page, which Chat reads as `env(safe-area-inset-bottom)`.
 struct ChatWebView: UIViewControllerRepresentable {
     let url: URL
     let reloadToken: Int
     let bridge: ChatHostBridge
-    var floatingTopInset: CGFloat = 0
     var floatingBottomInset: CGFloat = 0
 
     static let pinchHandlerName = "tunerPinch"
@@ -93,8 +92,7 @@ struct ChatWebView: UIViewControllerRepresentable {
         pageController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         controller.view.addSubview(pageController.view)
         pageController.didMove(toParent: controller)
-        // This child controller applies the composer insets to the web view's safe area.
-        pageController.additionalSafeAreaInsets.top = floatingTopInset
+        // This child controller applies the bottom composer inset to the web view's safe area.
         pageController.additionalSafeAreaInsets.bottom = floatingBottomInset
         context.coordinator.hostView = controller.view
         context.coordinator.pageController = pageController
@@ -104,9 +102,6 @@ struct ChatWebView: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UIViewController, context: Context) {
         guard let webView = context.coordinator.webView,
               let pageController = context.coordinator.pageController else { return }
-        if pageController.additionalSafeAreaInsets.top != floatingTopInset {
-            pageController.additionalSafeAreaInsets.top = floatingTopInset
-        }
         if pageController.additionalSafeAreaInsets.bottom != floatingBottomInset {
             pageController.additionalSafeAreaInsets.bottom = floatingBottomInset
         }
