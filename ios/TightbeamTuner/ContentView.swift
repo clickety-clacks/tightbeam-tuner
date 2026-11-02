@@ -11,6 +11,8 @@ struct ContentView: View {
     /// Retains the in-process sidebar position across background layout changes.
     @State private var visibilityBeforeInactive: NavigationSplitViewVisibility?
     @State private var sidebarSearchFrame: CGRect?
+    @State private var compactSearchKeyboardDownFrame: CGRect?
+    @State private var compactSearchKeyboardUpFrame: CGRect?
     @State private var sidebarQuery = ""
     @State private var selectedArchetypes: Set<String> = []
     /// In portrait on a wide screen the agent list floats over the chat instead of beside it.
@@ -95,7 +97,10 @@ struct ContentView: View {
             Group {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
                     AgentChatView(url: url, reloadToken: reloadToken, draft: draftBinding(for: agent.id),
-                                  sidebarSearchFrame: sidebarSearchFrame)
+                                  sidebarSearchFrame: sidebarSearchFrame,
+                                  compactSearchKeyboardDownFrame: compactSearchKeyboardDownFrame,
+                                  compactSearchKeyboardUpFrame: compactSearchKeyboardUpFrame,
+                                  isCompact: horizontalSizeClass == .compact)
                         .id(agent.id)
                         .toolbarBackground(.hidden, for: .navigationBar)
                         .toolbar {
@@ -114,8 +119,17 @@ struct ContentView: View {
         .background {
             // SwiftUI does not expose the visible .searchable capsule's frame. Find it from
             // the text field so the composer follows the current navigation layout.
-            SidebarSearchFrameReader(prompt: "Filter agents") { frame in
-                sidebarSearchFrame = frame
+            SidebarSearchFrameReader(
+                prompt: "Filter agents",
+                usesCompactFieldFrame: horizontalSizeClass == .compact
+            ) { measurement in
+                sidebarSearchFrame = measurement.capsule
+                guard let capsule = measurement.capsule else { return }
+                if measurement.keyboardFocused {
+                    compactSearchKeyboardUpFrame = capsule
+                } else {
+                    compactSearchKeyboardDownFrame = capsule
+                }
             }
             .accessibilityHidden(true)
         }
@@ -214,13 +228,20 @@ struct ContentView: View {
 /// Reports the visible system search capsule's frame in window coordinates.
 private struct SidebarSearchFrameReader: UIViewRepresentable {
     let prompt: String
-    let onFrameChange: (CGRect?) -> Void
+    let usesCompactFieldFrame: Bool
+    let onFrameChange: (Measurement) -> Void
+
+    struct Measurement: Equatable {
+        let capsule: CGRect?
+        let keyboardFocused: Bool
+    }
 
     func makeUIView(context: Context) -> UIView {
         let view = SearchFieldProbeView()
         view.isUserInteractionEnabled = false
         view.backgroundColor = .clear
         view.prompt = prompt
+        view.usesCompactFieldFrame = usesCompactFieldFrame
         view.onFrameChange = onFrameChange
         return view
     }
@@ -228,14 +249,16 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
     func updateUIView(_ view: UIView, context: Context) {
         guard let view = view as? SearchFieldProbeView else { return }
         view.prompt = prompt
+        view.usesCompactFieldFrame = usesCompactFieldFrame
         view.onFrameChange = onFrameChange
         view.scheduleRead()
     }
 
     private final class SearchFieldProbeView: UIView {
         var prompt = ""
-        var onFrameChange: ((CGRect?) -> Void)?
-        private var lastFrame: CGRect?
+        var usesCompactFieldFrame = false
+        var onFrameChange: ((Measurement) -> Void)?
+        private var lastMeasurement: Measurement?
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
@@ -252,31 +275,50 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
             // The sidebar may lay out after this view. Read its final frame on the next turn.
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                let frame = self.searchFrame()
-                guard frame != self.lastFrame else { return }
-                self.lastFrame = frame
-                self.onFrameChange?(frame)
+                let measurement = self.searchMeasurement()
+                guard measurement != self.lastMeasurement else { return }
+                self.lastMeasurement = measurement
+                self.onFrameChange?(measurement)
             }
         }
 
-        private func searchFrame() -> CGRect? {
+        private func searchMeasurement() -> Measurement {
             guard let window,
                   let field = findSearchField(in: window),
                   !field.isHidden,
-                  field.alpha > 0.01 else { return nil }
+                  field.alpha > 0.01 else { return Measurement(capsule: nil, keyboardFocused: false) }
 
             let fieldFrame = field.convert(field.bounds, to: window)
+            if usesCompactFieldFrame {
+                let visibleField = window.bounds.intersects(fieldFrame) ? fieldFrame : nil
+                return Measurement(capsule: visibleField, keyboardFocused: field.isFirstResponder)
+            }
+
             var capsuleFrame = fieldFrame
             var ancestor = field.superview
-            // The text field can be shorter than its capsule; its enclosing capsule keeps the same width.
+            // On iPad the search field itself is the capsule; larger ancestors are toolbar containers.
             while let view = ancestor {
                 let frame = view.convert(view.bounds, to: window)
-                guard abs(frame.minX - fieldFrame.minX) <= 0.5,
-                      abs(frame.width - fieldFrame.width) <= 0.5 else { break }
+                guard frame.minX <= fieldFrame.minX + 0.5,
+                      frame.minY <= fieldFrame.minY + 0.5,
+                      frame.maxX >= fieldFrame.maxX - 0.5,
+                      frame.maxY >= fieldFrame.maxY - 0.5 else { break }
+                let insets = [
+                    fieldFrame.minX - frame.minX,
+                    fieldFrame.minY - frame.minY,
+                    frame.maxX - fieldFrame.maxX,
+                    frame.maxY - fieldFrame.maxY,
+                ]
+                guard insets.allSatisfy({ $0 <= 8 }) else { break }
+                if insets.contains(where: { $0 > 0.5 }) {
+                    capsuleFrame = frame
+                    break
+                }
                 capsuleFrame = frame
                 ancestor = view.superview
             }
-            return window.bounds.intersects(capsuleFrame) ? capsuleFrame : nil
+            let visibleCapsule = window.bounds.intersects(capsuleFrame) ? capsuleFrame : nil
+            return Measurement(capsule: visibleCapsule, keyboardFocused: field.isFirstResponder)
         }
 
         private func findSearchField(in view: UIView) -> UITextField? {
@@ -396,14 +438,29 @@ private struct AgentChatView: View {
     let reloadToken: Int
     @Binding var draft: String
     let sidebarSearchFrame: CGRect?
+    let compactSearchKeyboardDownFrame: CGRect?
+    let compactSearchKeyboardUpFrame: CGRect?
+    let isCompact: Bool
     @State private var bridge: ChatHostBridge
     @State private var composerHeight: CGFloat = 0
+    @State private var composerKeyboardFocused = false
 
-    init(url: URL, reloadToken: Int, draft: Binding<String>, sidebarSearchFrame: CGRect?) {
+    init(
+        url: URL,
+        reloadToken: Int,
+        draft: Binding<String>,
+        sidebarSearchFrame: CGRect?,
+        compactSearchKeyboardDownFrame: CGRect?,
+        compactSearchKeyboardUpFrame: CGRect?,
+        isCompact: Bool
+    ) {
         self.url = url
         self.reloadToken = reloadToken
         _draft = draft
         self.sidebarSearchFrame = sidebarSearchFrame
+        self.compactSearchKeyboardDownFrame = compactSearchKeyboardDownFrame
+        self.compactSearchKeyboardUpFrame = compactSearchKeyboardUpFrame
+        self.isCompact = isCompact
         _bridge = State(initialValue: ChatHostBridge(chatURL: url))
     }
 
@@ -414,7 +471,12 @@ private struct AgentChatView: View {
         // the newest message above the glass.
         GeometryReader { geometry in
             let detailFrame = geometry.frame(in: .global)
-            let composerOffset = composerOffset(in: detailFrame)
+            let searchFrame = composerTargetFrame(in: detailFrame, composerKeyboardFocused: composerKeyboardFocused)
+            // The compact Filter capsule is 38 pt high; its backing text field's bounds can be taller.
+            let compactGlassBottomCorrection: CGFloat = isCompact && composerKeyboardFocused ? 1 : 0
+            let composerOffset = searchFrame.map {
+                $0.maxY - (detailFrame.maxY - NativeChatComposer.bottomPadding) - compactGlassBottomCorrection
+            } ?? 0
             ZStack(alignment: .bottom) {
                 ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
                             // Preserve the clearance below the composer after moving it from the bottom anchor.
@@ -422,7 +484,13 @@ private struct AgentChatView: View {
                                 ? max(0, composerHeight - composerOffset) : 0)
                     .ignoresSafeArea(edges: .bottom)
                 if bridge.hostComposerActive {
-                    NativeChatComposer(draft: $draft, bridge: bridge)
+                    NativeChatComposer(
+                        draft: $draft,
+                        bridge: bridge,
+                        glassHeight: isCompact ? NativeChatComposer.compactSearchHeight : searchFrame?.height
+                    ) { focused in
+                        composerKeyboardFocused = focused
+                    }
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
                         .offset(y: composerOffset)
                 }
@@ -430,18 +498,20 @@ private struct AgentChatView: View {
         }
     }
 
-    private func composerOffset(in detailFrame: CGRect) -> CGFloat {
-        guard let sidebarSearchFrame,
-              // A separate column means the list is beside the chat; a floating sidebar overlaps it.
-              sidebarSearchFrame.maxX <= detailFrame.minX + 0.5,
-              // The system puts top-placed filters above center and the bottom filter below it.
-              sidebarSearchFrame.midY > detailFrame.midY,
-              // A raised keyboard puts the filter below the detail's safe bottom.
-              sidebarSearchFrame.maxY <= detailFrame.maxY else { return 0 }
+    private func composerTargetFrame(in detailFrame: CGRect, composerKeyboardFocused: Bool) -> CGRect? {
+        let isSideBySide = sidebarSearchFrame.map { $0.maxX <= detailFrame.minX + 0.5 } ?? false
+        let searchFrame: CGRect?
+        if isSideBySide {
+            searchFrame = sidebarSearchFrame
+        } else if isCompact {
+            searchFrame = composerKeyboardFocused ? compactSearchKeyboardUpFrame : compactSearchKeyboardDownFrame
+        } else {
+            return nil
+        }
 
-        // The glass ends at the composer view's bottom minus its existing bottom padding.
-        let composerGlassBottom = detailFrame.maxY - NativeChatComposer.bottomPadding
-        return sidebarSearchFrame.maxY - composerGlassBottom
+        guard let searchFrame,
+              searchFrame.maxY <= detailFrame.maxY + NativeChatComposer.bottomPadding else { return nil }
+        return searchFrame
     }
 }
 
