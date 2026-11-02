@@ -8,6 +8,8 @@ struct ContentView: View {
     @State private var whatsNew: [ReleaseNote] = []
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    /// Retains the in-process sidebar position across background layout changes.
+    @State private var visibilityBeforeInactive: NavigationSplitViewVisibility?
     @State private var sidebarSearchFrame: CGRect?
     @State private var sidebarQuery = ""
     @State private var selectedArchetypes: Set<String> = []
@@ -19,6 +21,21 @@ struct ContentView: View {
     /// Native composer drafts per agent. Kept in app defaults, not scene storage, so a draft
     /// survives a force-quit or iOS ending Tuner in the background. Send state is not kept.
     @AppStorage("composerDrafts") private var draftsData = Data()
+
+    private var splitViewColumnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { columnVisibility },
+            set: { visibility in
+                if scenePhase != .active && visibilityBeforeInactive == nil {
+                    visibilityBeforeInactive = columnVisibility
+#if DEBUG
+                    print("NAVIGATION_STATE_SNAPSHOT source=visibility-binding phase=\(scenePhase) visibility=\(columnVisibility)")
+#endif
+                }
+                columnVisibility = visibility
+            }
+        )
+    }
 
     private func draftBinding(for agentID: String) -> Binding<String> {
         Binding(
@@ -63,7 +80,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
+        NavigationSplitView(columnVisibility: splitViewColumnVisibility, preferredCompactColumn: $preferredCompactColumn) {
             AgentSidebar(store: store, repliedFeed: repliedFeed, openRepliedAgent: openRepliedAgent,
                          query: $sidebarQuery, selectedArchetypes: $selectedArchetypes)
                 .navigationTitle("Agents")
@@ -136,16 +153,58 @@ struct ContentView: View {
                 if horizontalSizeClass == .regular && portrait { columnVisibility = .detailOnly }
             }
         }
-        .onChange(of: columnVisibility) { _, visibility in
+        .onChange(of: columnVisibility) { previousVisibility, visibility in
+            if scenePhase != .active && visibilityBeforeInactive == nil {
+                visibilityBeforeInactive = previousVisibility
+#if DEBUG
+                print("NAVIGATION_STATE_SNAPSHOT source=visibility-binding phase=\(scenePhase) visibility=\(previousVisibility)")
+#endif
+            }
+#if DEBUG
+            print("NAVIGATION_VISIBILITY phase=\(scenePhase) visibility=\(visibility) portrait=\(portrait) sizeClass=\(String(describing: horizontalSizeClass))")
+#endif
             // Opening the agent list puts the keyboard away, so the list is not half covered.
             if visibility != .detailOnly {
                 UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
             }
         }
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+#if DEBUG
+            print("NAVIGATION_SCENE old=\(oldPhase) new=\(newPhase) visibility=\(columnVisibility) portrait=\(portrait) sizeClass=\(String(describing: horizontalSizeClass))")
+#endif
+            if oldPhase == .active && newPhase != .active {
+                if visibilityBeforeInactive == nil {
+                    visibilityBeforeInactive = columnVisibility
+                }
+#if DEBUG
+                if let visibilityBeforeInactive {
+                    print("NAVIGATION_STATE_SNAPSHOT source=scene-phase phase=\(newPhase) visibility=\(visibilityBeforeInactive)")
+                }
+#endif
+            } else if oldPhase != .active && newPhase == .active,
+                      let preservedVisibility = visibilityBeforeInactive {
+                let currentVisibility = columnVisibility
+                let didRestore = currentVisibility != preservedVisibility
+                visibilityBeforeInactive = nil
+                if didRestore {
+                    columnVisibility = preservedVisibility
+                }
+#if DEBUG
+                print("NAVIGATION_STATE_RESTORE saved=\(preservedVisibility) current=\(currentVisibility) applied=\(didRestore)")
+#endif
+            }
+        }
         .onGeometryChange(for: Bool.self) { $0.size.height > $0.size.width } action: { isPortrait in
             portrait = isPortrait
+            let wouldShowSidebar = !isPortrait && columnVisibility == .detailOnly
+#if DEBUG
+            let geometryDecision = scenePhase == .active
+                ? (wouldShowSidebar ? "show-sidebar" : "keep-visibility")
+                : (wouldShowSidebar ? "guarded-inactive" : "keep-visibility-inactive")
+            print("NAVIGATION_GEOMETRY phase=\(scenePhase) portrait=\(isPortrait) visibility=\(columnVisibility) sizeClass=\(String(describing: horizontalSizeClass)) decision=\(geometryDecision)")
+#endif
             // Side by side again in landscape: bring the list back if it was closed in portrait.
-            if !isPortrait && columnVisibility == .detailOnly { columnVisibility = .automatic }
+            if scenePhase == .active && wouldShowSidebar { columnVisibility = .automatic }
         }
     }
 }
