@@ -7,7 +7,7 @@ enum ReleaseNotes {
     static let all: [ReleaseNote] = [
         ReleaseNote(version: "1.0", build: 46, date: "November 2, 2026", items: [
             .init(symbol: "text.bubble", title: "Match the message field to Filter agents",
-                  detail: "On iPhone, the empty message field matches Filter agents in height and stays the same distance from the bottom as the keyboard opens or closes. When both are visible side by side, their edges line up."),
+                  detail: "On iPhone, the empty message field matches Filter agents in height and stays the same distance from the bottom as the keyboard opens or closes. Side by side, their edges line up while Chat content stays clear of the field."),
         ]),
         ReleaseNote(version: "1.0", build: 45, date: "November 2, 2026", items: [
             .init(symbol: "line.3.horizontal.decrease.circle", title: "Keep filtered iPad results above the keyboard",

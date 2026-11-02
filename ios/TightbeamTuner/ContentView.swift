@@ -465,23 +465,26 @@ private struct AgentChatView: View {
     }
 
     var body: some View {
-        // The page respects the top safe area and toolbar, but still runs under the floating
-        // composer. It stays clear of side safe areas, so centered Chat content remains visible
-        // in the detail column. The composer's height joins the page's bottom safe area, keeping
-        // the newest message above the glass.
+        // The page respects the top safe area and toolbar and fills the detail column. Extra top
+        // or bottom safe area keeps its content clear of the floating composer without changing
+        // the usable width of centered Chat content.
         GeometryReader { geometry in
             let detailFrame = geometry.frame(in: .global)
             let searchFrame = composerTargetFrame(in: detailFrame, composerKeyboardFocused: composerKeyboardFocused)
+            let composerIsTopAligned = searchFrame != nil
+                && sidebarSearchFrame.map { $0.maxX <= detailFrame.minX + 0.5 } == true
             // The compact Filter capsule is 38 pt high; its backing text field's bounds can be taller.
             let compactGlassBottomCorrection: CGFloat = isCompact && composerKeyboardFocused ? 1 : 0
             let composerOffset = searchFrame.map {
                 $0.maxY - (detailFrame.maxY - NativeChatComposer.bottomPadding) - compactGlassBottomCorrection
             } ?? 0
+            let floatingTopInset = bridge.hostComposerActive && composerIsTopAligned ? composerHeight : 0
+            let floatingBottomInset = bridge.hostComposerActive && !composerIsTopAligned
+                ? max(0, composerHeight - composerOffset) : 0
             ZStack(alignment: .bottom) {
                 ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
-                            // Preserve the clearance below the composer after moving it from the bottom anchor.
-                            floatingBottomInset: bridge.hostComposerActive
-                                ? max(0, composerHeight - composerOffset) : 0)
+                            floatingTopInset: floatingTopInset,
+                            floatingBottomInset: floatingBottomInset)
                     .ignoresSafeArea(edges: .bottom)
                 if bridge.hostComposerActive {
                     NativeChatComposer(
