@@ -5,6 +5,10 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 47, date: "November 3, 2026", items: [
+            .init(symbol: "text.bubble", title: "Keep the message field full size when the keyboard closes",
+                  detail: "When the keyboard closes, the empty message field keeps room for its text and send button while its bottom stays aligned with Filter agents."),
+        ]),
         ReleaseNote(version: "1.0", build: 46, date: "November 2, 2026", items: [
             .init(symbol: "text.bubble", title: "Match the message field to Filter agents",
                   detail: "On iPhone, the empty message field matches Filter agents in height and stays the same distance from the bottom as the keyboard opens or closes. Side by side, their edges line up while Chat content stays clear of the field."),
