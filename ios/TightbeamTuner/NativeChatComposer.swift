@@ -5,19 +5,51 @@ import SwiftUI
 struct NativeChatComposer: View {
     @Binding var draft: String
     let bridge: ChatHostBridge
+    let glassHeight: CGFloat?
+    let onFocusChange: (Bool) -> Void
     @FocusState private var focused: Bool
     @State private var showingStatus = false
     /// A comfortable line of body text, about 70 characters, plus the send button.
     /// Scales with Dynamic Type so the line length stays the same at any text size.
     @ScaledMetric(relativeTo: .body) private var maxWidth: CGFloat = 640
 
-    // The field's ends are concentric with the send button: corner radius = button radius + gap.
-    // One line of text is exactly two corner radii tall, so each end is a half circle.
-    private static let gap: CGFloat = 5
+    // Compact Filter search is 38 pt tall. The backing UIKit text field can report taller bounds,
+    // so use the visible capsule measurement for the composer instead of those transformed bounds.
+    static let compactSearchHeight: CGFloat = 38
+    private static let horizontalGap: CGFloat = 5
     private static let buttonSize: CGFloat = 34
-    private static let cornerRadius = buttonSize / 2 + gap
+    private static let standardVerticalGap: CGFloat = 5
+    private static let standardContentHeight = buttonSize + 2 * standardVerticalGap
+    private var matchesCompactSearchHeight: Bool {
+        (glassHeight ?? Self.standardContentHeight) < Self.standardContentHeight
+    }
+    private var verticalGap: CGFloat {
+        guard matchesCompactSearchHeight, let glassHeight else { return Self.standardVerticalGap }
+        return max(0, (glassHeight - Self.buttonSize) / 2)
+    }
+    private var contentHeight: CGFloat { Self.buttonSize + 2 * verticalGap }
+    private var textFieldVerticalPadding: CGFloat {
+        guard matchesCompactSearchHeight else { return 11 }
+        return focused ? 3 : 6
+    }
+    private var glassVerticalInset: CGFloat {
+        max(0, ((glassHeight ?? contentHeight) - contentHeight) / 2)
+    }
+    private var cornerRadius: CGFloat { Self.buttonSize / 2 + verticalGap + glassVerticalInset }
     /// Used by the enclosing chat layout to locate the glass edge from the view's bottom.
     static let bottomPadding: CGFloat = 8
+
+    init(
+        draft: Binding<String>,
+        bridge: ChatHostBridge,
+        glassHeight: CGFloat?,
+        onFocusChange: @escaping (Bool) -> Void
+    ) {
+        _draft = draft
+        self.bridge = bridge
+        self.glassHeight = glassHeight
+        self.onFocusChange = onFocusChange
+    }
 
     private var trimmed: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -49,7 +81,8 @@ struct NativeChatComposer: View {
                             .contentShape(.circle)
                     }
                     .buttonStyle(.plain)
-                    .padding(Self.gap)
+                    .padding(.horizontal, Self.horizontalGap)
+                    .padding(.vertical, verticalGap)
                     .accessibilityLabel("Connection status: \(bridge.connection.label). Show details")
                     .popover(isPresented: $showingStatus) {
                         ConnectionDetails(bridge: bridge) { showingStatus = false }
@@ -61,7 +94,8 @@ struct NativeChatComposer: View {
                         .foregroundStyle(Color.nordicText)
                         .focused($focused)
                         .padding(.trailing, 4)
-                        .padding(.vertical, 11)
+                        .padding(.vertical, textFieldVerticalPadding)
+                        .frame(minHeight: contentHeight, alignment: .center)
                         .accessibilityLabel("Message")
 
                     Button(action: send) {
@@ -79,21 +113,29 @@ struct NativeChatComposer: View {
                         // width; pin the layout to the circle so the gap is the same on every side.
                         .frame(width: Self.buttonSize, height: Self.buttonSize)
                         .disabled(!canSend)
-                        .padding(Self.gap)
+                        .padding(.horizontal, Self.horizontalGap)
+                        .padding(.vertical, verticalGap)
                 }
-                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: Self.cornerRadius, style: .continuous))
+                .padding(.vertical, glassVerticalInset)
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius, style: .continuous))
             }
         }
         .frame(maxWidth: maxWidth)
         .padding(.horizontal, 12)
         .padding(.bottom, Self.bottomPadding)
         .animation(.default, value: notice)
-        .onChange(of: focused, initial: true) { _, focused in bridge.nativeComposerFocused = focused }
+        .onChange(of: focused, initial: true) { _, focused in
+            bridge.nativeComposerFocused = focused
+            onFocusChange(focused)
+        }
         .onAppear {
             if let outgoing = bridge.outgoing, outgoing.status == .interrupted { restoreDraft(outgoing) }
             if bridge.overlayOpen { focusChatPage() }
         }
-        .onDisappear { bridge.nativeComposerFocused = false }
+        .onDisappear {
+            bridge.nativeComposerFocused = false
+            onFocusChange(false)
+        }
         .onChange(of: bridge.overlayOpen) { _, open in
             if open {
                 focusChatPage()
