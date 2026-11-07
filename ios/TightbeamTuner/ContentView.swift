@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var sidebarSearchFrame: CGRect?
     @State private var compactSearchKeyboardDownFrame: CGRect?
     @State private var compactSearchKeyboardUpFrame: CGRect?
+    @State private var softwareKeyboardVisible = false
     @State private var sidebarQuery = ""
     @State private var selectedArchetypes: Set<String> = []
     /// In portrait on a wide screen the agent list floats over the chat instead of beside it.
@@ -100,6 +101,7 @@ struct ContentView: View {
                                   sidebarSearchFrame: sidebarSearchFrame,
                                   compactSearchKeyboardDownFrame: compactSearchKeyboardDownFrame,
                                   compactSearchKeyboardUpFrame: compactSearchKeyboardUpFrame,
+                                  softwareKeyboardVisible: softwareKeyboardVisible,
                                   isCompact: horizontalSizeClass == .compact)
                         .id(agent.id)
                         .toolbarBackground(.hidden, for: .navigationBar)
@@ -123,6 +125,7 @@ struct ContentView: View {
                 prompt: "Filter agents",
                 usesCompactFieldFrame: horizontalSizeClass == .compact
             ) { measurement in
+                softwareKeyboardVisible = measurement.softwareKeyboardVisible
                 sidebarSearchFrame = measurement.capsule
                 guard let capsule = measurement.capsule else { return }
                 if measurement.keyboardFocused {
@@ -225,7 +228,7 @@ struct ContentView: View {
     }
 }
 
-/// Reports the visible system search capsule's frame in window coordinates.
+/// Reports the visible search capsule and software-keyboard state in window coordinates.
 private struct SidebarSearchFrameReader: UIViewRepresentable {
     let prompt: String
     let usesCompactFieldFrame: Bool
@@ -234,6 +237,7 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
     struct Measurement: Equatable {
         let capsule: CGRect?
         let keyboardFocused: Bool
+        let softwareKeyboardVisible: Bool
     }
 
     func makeUIView(context: Context) -> UIView {
@@ -259,9 +263,36 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
         var usesCompactFieldFrame = false
         var onFrameChange: ((Measurement) -> Void)?
         private var lastMeasurement: Measurement?
+        private var keyboardScreenFrame: CGRect?
+        private var keyboardObservers: [NSObjectProtocol] = []
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
+            removeKeyboardObservers()
+            keyboardScreenFrame = nil
+            guard window != nil else {
+                scheduleRead()
+                return
+            }
+
+            let center = NotificationCenter.default
+            keyboardObservers = [
+                center.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification,
+                                  object: nil, queue: .main) { [weak self] notification in
+                    let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+                    Task { @MainActor [weak self] in
+                        self?.keyboardScreenFrame = frame
+                        self?.scheduleRead()
+                    }
+                },
+                center.addObserver(forName: UIResponder.keyboardWillHideNotification,
+                                  object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.keyboardScreenFrame = nil
+                        self?.scheduleRead()
+                    }
+                },
+            ]
             scheduleRead()
         }
 
@@ -282,16 +313,25 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
             }
         }
 
+        deinit {
+            removeKeyboardObservers()
+        }
+
         private func searchMeasurement() -> Measurement {
+            let keyboardVisible = softwareKeyboardIsVisible
             guard let window,
                   let field = findSearchField(in: window),
                   !field.isHidden,
-                  field.alpha > 0.01 else { return Measurement(capsule: nil, keyboardFocused: false) }
+                  field.alpha > 0.01 else {
+                return Measurement(capsule: nil, keyboardFocused: false,
+                                   softwareKeyboardVisible: keyboardVisible)
+            }
 
             let fieldFrame = field.convert(field.bounds, to: window)
             if usesCompactFieldFrame {
                 let visibleField = window.bounds.intersects(fieldFrame) ? fieldFrame : nil
-                return Measurement(capsule: visibleField, keyboardFocused: field.isFirstResponder)
+                return Measurement(capsule: visibleField, keyboardFocused: field.isFirstResponder,
+                                   softwareKeyboardVisible: keyboardVisible)
             }
 
             var capsuleFrame = fieldFrame
@@ -318,7 +358,20 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
                 ancestor = view.superview
             }
             let visibleCapsule = window.bounds.intersects(capsuleFrame) ? capsuleFrame : nil
-            return Measurement(capsule: visibleCapsule, keyboardFocused: field.isFirstResponder)
+            return Measurement(capsule: visibleCapsule, keyboardFocused: field.isFirstResponder,
+                               softwareKeyboardVisible: keyboardVisible)
+        }
+
+        private var softwareKeyboardIsVisible: Bool {
+            guard let window, let keyboardScreenFrame else { return false }
+            let keyboardFrame = window.convert(keyboardScreenFrame, from: window.screen.coordinateSpace)
+            let intersection = window.bounds.intersection(keyboardFrame)
+            return !intersection.isNull && intersection.width > 1 && intersection.height > 1
+        }
+
+        private func removeKeyboardObservers() {
+            keyboardObservers.forEach { NotificationCenter.default.removeObserver($0) }
+            keyboardObservers.removeAll()
         }
 
         private func findSearchField(in view: UIView) -> UITextField? {
@@ -440,6 +493,7 @@ private struct AgentChatView: View {
     let sidebarSearchFrame: CGRect?
     let compactSearchKeyboardDownFrame: CGRect?
     let compactSearchKeyboardUpFrame: CGRect?
+    let softwareKeyboardVisible: Bool
     let isCompact: Bool
     @State private var bridge: ChatHostBridge
     @State private var composerHeight: CGFloat = 0
@@ -452,6 +506,7 @@ private struct AgentChatView: View {
         sidebarSearchFrame: CGRect?,
         compactSearchKeyboardDownFrame: CGRect?,
         compactSearchKeyboardUpFrame: CGRect?,
+        softwareKeyboardVisible: Bool,
         isCompact: Bool
     ) {
         self.url = url
@@ -460,6 +515,7 @@ private struct AgentChatView: View {
         self.sidebarSearchFrame = sidebarSearchFrame
         self.compactSearchKeyboardDownFrame = compactSearchKeyboardDownFrame
         self.compactSearchKeyboardUpFrame = compactSearchKeyboardUpFrame
+        self.softwareKeyboardVisible = softwareKeyboardVisible
         self.isCompact = isCompact
         _bridge = State(initialValue: ChatHostBridge(chatURL: url))
     }
@@ -470,11 +526,12 @@ private struct AgentChatView: View {
         // page's bottom safe area so content can scroll clear of the glass.
         GeometryReader { geometry in
             let detailFrame = geometry.frame(in: .global)
-            let searchFrame = composerTargetFrame(in: detailFrame, composerKeyboardFocused: composerKeyboardFocused)
+            let keyboardUpForComposer = composerKeyboardFocused && softwareKeyboardVisible
+            let searchFrame = composerTargetFrame(in: detailFrame, keyboardIsUp: keyboardUpForComposer)
             let composerIsTopAligned = searchFrame != nil
                 && sidebarSearchFrame.map { $0.maxX <= detailFrame.minX + 0.5 } == true
             // The compact Filter capsule is 38 pt high; its backing text field's bounds can be taller.
-            let compactGlassBottomCorrection: CGFloat = isCompact && composerKeyboardFocused ? 1 : 0
+            let compactGlassBottomCorrection: CGFloat = isCompact && keyboardUpForComposer ? 1 : 0
             let composerOffset = searchFrame.map {
                 $0.maxY - (detailFrame.maxY - NativeChatComposer.bottomPadding) - compactGlassBottomCorrection
             } ?? 0
@@ -501,13 +558,13 @@ private struct AgentChatView: View {
         }
     }
 
-    private func composerTargetFrame(in detailFrame: CGRect, composerKeyboardFocused: Bool) -> CGRect? {
+    private func composerTargetFrame(in detailFrame: CGRect, keyboardIsUp: Bool) -> CGRect? {
         let isSideBySide = sidebarSearchFrame.map { $0.maxX <= detailFrame.minX + 0.5 } ?? false
         let searchFrame: CGRect?
         if isSideBySide {
             searchFrame = sidebarSearchFrame
         } else if isCompact {
-            searchFrame = composerKeyboardFocused ? compactSearchKeyboardUpFrame : compactSearchKeyboardDownFrame
+            searchFrame = keyboardIsUp ? compactSearchKeyboardUpFrame : compactSearchKeyboardDownFrame
         } else {
             return nil
         }
