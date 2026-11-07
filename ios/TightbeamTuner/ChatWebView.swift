@@ -173,6 +173,34 @@ struct ChatWebView: UIViewControllerRepresentable {
             let endFrame = hostView.convert(endValue.cgRectValue, from: nil)
             let targetShift = endFrame.maxY >= bounds.maxY - 1
                 ? max(0, bounds.maxY - endFrame.minY) : 0
+            let options = UIView.AnimationOptions(rawValue: UInt(truncating: curveValue) << 16)
+                .union([.beginFromCurrentState, .allowUserInteraction])
+            applyKeyboardShift(targetShift, duration: durationValue.doubleValue, options: options,
+                               hostView: hostView, pageController: pageController, webView: webView)
+        }
+
+        private func reconcileKeyboardGeometry() {
+            guard let hostView, let pageController, let webView, hostView.window != nil else { return }
+            let keyboardGuide = hostView.keyboardLayoutGuide
+            keyboardGuide.followsUndockedKeyboard = true
+            hostView.layoutIfNeeded()
+
+            let bounds = hostView.bounds
+            let keyboardFrame = keyboardGuide.layoutFrame
+            // The guide sits at the safe area when hidden; when visible, only shift for a keyboard
+            // frame that reaches the bottom edge, matching the notification path's geometry check.
+            let targetShift = keyboardFrame.height > hostView.safeAreaInsets.bottom + 0.5
+                && keyboardFrame.maxY >= bounds.maxY - 1
+                ? max(0, bounds.maxY - keyboardFrame.minY) : 0
+            applyKeyboardShift(targetShift, duration: 0,
+                               options: [.beginFromCurrentState, .allowUserInteraction],
+                               hostView: hostView, pageController: pageController, webView: webView)
+        }
+
+        private func applyKeyboardShift(_ targetShift: CGFloat, duration: TimeInterval,
+                                        options: UIView.AnimationOptions, hostView: UIView,
+                                        pageController: UIViewController, webView: WKWebView) {
+            let bounds = hostView.bounds
             let presentationTransform = webView.layer.presentation().map {
                 CATransform3DGetAffineTransform($0.transform)
             } ?? webView.transform
@@ -184,15 +212,13 @@ struct ChatWebView: UIViewControllerRepresentable {
                 + (targetShift > 0 ? 0 : hostView.safeAreaInsets.bottom)
             let startShift = max(0, currentShift + webView.safeAreaInsets.bottom - targetSafeAreaBottom)
             latestKeyboardShift = targetShift
-            let options = UIView.AnimationOptions(rawValue: UInt(truncating: curveValue) << 16)
-                .union([.beginFromCurrentState, .allowUserInteraction])
 
             UIView.performWithoutAnimation {
                 webView.transform = .identity
                 webView.frame = bounds
                 webView.transform = CGAffineTransform(translationX: 0, y: -startShift)
             }
-            UIView.animate(withDuration: durationValue.doubleValue, delay: 0, options: options) {
+            UIView.animate(withDuration: duration, delay: 0, options: options) {
                 webView.transform = CGAffineTransform(translationX: 0, y: -targetShift)
             } completion: { [weak self, weak hostView, weak webView] finished in
                 guard let self, let hostView, let webView,
@@ -207,6 +233,9 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
 
         @objc private func becameActive() {
+            DispatchQueue.main.async { [weak self] in
+                self?.reconcileKeyboardGeometry()
+            }
             guard let webView else { return }
             if needsReload || webView.url == nil { restart(webView); return }
             // A page whose content process is gone cannot run script.
