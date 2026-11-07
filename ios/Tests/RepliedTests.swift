@@ -287,6 +287,56 @@ final class RepliedTests: XCTestCase {
         XCTAssertFalse(message.turnIncludesHuman)
     }
 
+    func testRosterEventFramesDecodeFullSessionRows() throws {
+        let spawned = try change(#"{"type":"change","class":"session.spawned","payload":{"sessionKey":"agent:new","displayName":"New agent","state":"active","archetype":"Coder","harness":"codex","model":"gpt-6"}}"#)
+        guard case .sessionSpawned(let newAgent) = spawned else {
+            XCTFail("Expected a spawned session")
+            return
+        }
+        XCTAssertEqual(newAgent.id, "agent:new")
+        XCTAssertEqual(newAgent.name, "New agent")
+
+        let updated = try change(#"{"type":"change","class":"session.updated","payload":{"sessionKey":"agent:new","displayName":"Renamed agent","state":"active","archetype":"Coder","harness":"codex","model":"gpt-6.1"}}"#)
+        guard case .sessionUpdated(let changedAgent) = updated else {
+            XCTFail("Expected an updated session")
+            return
+        }
+        XCTAssertEqual(changedAgent.name, "Renamed agent")
+        XCTAssertEqual(changedAgent.model, "gpt-6.1")
+
+        let harnessChanged = try change(#"{"type":"change","class":"session.harness_changed","payload":{"sessionKey":"agent:new","displayName":"Renamed agent","state":"active","archetype":"Coder","harness":"claude","model":"gpt-6.1"}}"#)
+        guard case .sessionHarnessChanged(let changedHarness) = harnessChanged else {
+            XCTFail("Expected a harness change")
+            return
+        }
+        XCTAssertEqual(changedHarness.harness, "claude")
+        XCTAssertTrue(harnessChanged.changesRoster)
+
+        XCTAssertTrue(spawned.changesRoster)
+        XCTAssertTrue(updated.changesRoster)
+        let retired = try change(#"{"type":"change","class":"session.retired","refs":{"sessionKey":"agent:new"},"payload":{"sessionKey":"agent:new","state":"retired"}}"#)
+        XCTAssertTrue(retired.changesRoster)
+    }
+
+    func testSubscriptionRequestsAllRosterLifecycleEvents() throws {
+        let frame = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(RepliedAPI.subscriptionFrame.utf8)) as? [String: Any]
+        )
+        let filters = try XCTUnwrap(frame["filters"] as? [String: Any])
+        XCTAssertEqual(
+            try XCTUnwrap(filters["classes"] as? [String]),
+            ["message.created", "read_marker.updated", "session.spawned", "session.updated", "session.harness_changed", "session.retired"]
+        )
+    }
+
+    func testReconnectCatchUpRunsAfterAReadySubscriptionIsReestablished() {
+        var state = RepliedSubscriptionState()
+        XCTAssertFalse(state.subscriptionReadyNeedsCatchUp())
+        XCTAssertTrue(state.subscriptionReadyNeedsCatchUp())
+        state.reset()
+        XCTAssertFalse(state.subscriptionReadyNeedsCatchUp())
+    }
+
     func testSessionKeyIsPercentEncodedAsOnePathSegment() throws {
         XCTAssertEqual(RepliedAPI.percentEncodedPathSegment("agent:main:x s_1"), "agent%3Amain%3Ax%20s_1")
         let url = try XCTUnwrap(RepliedAPI.messagesURL(
@@ -300,7 +350,8 @@ final class RepliedTests: XCTestCase {
     private func change(_ json: String, file: StaticString = #filePath, line: UInt = #line) throws -> RepliedFrame {
         let frame = RepliedFrame.decode(Data(json.utf8))
         switch frame {
-        case .message(_), .readMarker(_), .retired(_): return frame
+        case .message(_), .readMarker(_), .sessionSpawned(_), .sessionUpdated(_),
+             .sessionHarnessChanged(_), .retired(_): return frame
         default:
             XCTFail("Expected a change frame", file: file, line: line)
             throw NSError(domain: "RepliedTests", code: 1)

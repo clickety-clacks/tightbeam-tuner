@@ -38,7 +38,17 @@ struct RepliedMarkersPage: Decodable, Sendable {
 }
 
 enum RepliedFrame: Sendable, Equatable {
-    case subscriptionReady, message(RepliedMessage), readMarker(RepliedReadMarker), retired(String), serverError, ignored
+    case subscriptionReady, message(RepliedMessage), readMarker(RepliedReadMarker)
+    case sessionSpawned(Agent), sessionUpdated(Agent), sessionHarnessChanged(Agent)
+    case retired(String), serverError, ignored
+
+    var changesRoster: Bool {
+        switch self {
+        case .sessionSpawned, .sessionUpdated, .sessionHarnessChanged, .retired: return true
+        default: return false
+        }
+    }
+
     static func decode(_ data: Data) -> Self {
         let decoder = JSONDecoder()
         guard let header = try? decoder.decode(FrameHeader.self, from: data) else { return .ignored }
@@ -54,6 +64,15 @@ enum RepliedFrame: Sendable, Equatable {
             case "read_marker.updated":
                 guard let body = try? decoder.decode(Envelope<RepliedReadMarker>.self, from: data) else { return .ignored }
                 return .readMarker(body.payload)
+            case "session.spawned":
+                guard let body = try? decoder.decode(Envelope<Agent>.self, from: data) else { return .ignored }
+                return .sessionSpawned(body.payload)
+            case "session.updated":
+                guard let body = try? decoder.decode(Envelope<Agent>.self, from: data) else { return .ignored }
+                return .sessionUpdated(body.payload)
+            case "session.harness_changed":
+                guard let body = try? decoder.decode(Envelope<Agent>.self, from: data) else { return .ignored }
+                return .sessionHarnessChanged(body.payload)
             case "session.retired":
                 guard let key = header.refs?.sessionKey else { return .ignored }
                 return .retired(key)
@@ -73,6 +92,20 @@ private struct FrameHeader: Decodable {
     private enum CodingKeys: String, CodingKey {
         case type, subscriptionId, refs
         case changeClass = "class"
+    }
+}
+
+struct RepliedSubscriptionState: Sendable {
+    private(set) var hasReceivedReady = false
+
+    mutating func subscriptionReadyNeedsCatchUp() -> Bool {
+        let needsCatchUp = hasReceivedReady
+        hasReceivedReady = true
+        return needsCatchUp
+    }
+
+    mutating func reset() {
+        hasReceivedReady = false
     }
 }
 
@@ -160,6 +193,7 @@ struct RepliedShownChat {
     private let defaults: UserDefaults
     private var stateGateway: String?
     private var stateUser: String?
+    private var subscriptionState = RepliedSubscriptionState()
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -189,11 +223,18 @@ struct RepliedShownChat {
         defaults.set(state.localReadMarkerBySession, forKey: Self.localReadMarkersKey)
     }
 
-    func run(gateway: String, user: String, sessionKeys: [String]) async {
+    func run(
+        gateway: String,
+        user: String,
+        sessionKeys: [String],
+        onRosterEvent: @escaping @MainActor (RepliedFrame) -> Void,
+        onReconnect: @escaping @MainActor () async -> Void
+    ) async {
         if stateGateway != gateway || stateUser != user {
             state = RepliedState(localReadMarkerBySession: Self.localReadMarkers(from: defaults))
             stateGateway = gateway
             stateUser = user
+            subscriptionState.reset()
         }
         guard let url = RepliedAPI.webSocketURL(gateway: gateway) else { return }
         var retry: UInt64 = 1
@@ -205,7 +246,7 @@ struct RepliedShownChat {
             var ready = false
             await withTaskCancellationHandler {
                 do {
-                    try await socket.send(.string(#"{"type":"subscribe","protocolVersion":2,"subscriptionId":"replied","filters":{"classes":["message.created","read_marker.updated","session.retired"]}}"#))
+                    try await socket.send(.string(RepliedAPI.subscriptionFrame))
                     receiveLoop: while !Task.isCancelled {
                         let message = try await socket.receive()
                         guard !Task.isCancelled else { break }
@@ -216,11 +257,14 @@ struct RepliedShownChat {
                             guard !ready else { continue }
                             ready = true
                             retry = 1
+                            if subscriptionState.subscriptionReadyNeedsCatchUp() { await onReconnect() }
                             let limit = firstLoad ? nil : 100
                             firstLoad = false
                             snapshotTask = Task { await self.loadSnapshot(gateway: gateway, user: user, sessionKeys: sessionKeys, limit: limit) }
                         case .serverError: break receiveLoop
-                        default: apply(frame, userID: user)
+                        default:
+                            apply(frame, userID: user)
+                            if frame.changesRoster { onRosterEvent(frame) }
                         }
                     }
                 } catch { }
@@ -268,6 +312,8 @@ struct RepliedShownChat {
 }
 
 enum RepliedAPI {
+    static let subscriptionFrame = #"{"type":"subscribe","protocolVersion":2,"subscriptionId":"replied","filters":{"classes":["message.created","read_marker.updated","session.spawned","session.updated","session.harness_changed","session.retired"]}}"#
+
     static func percentEncodedPathSegment(_ value: String) -> String {
         let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         return value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? ""

@@ -5,6 +5,10 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 48, date: "November 7, 2026", items: [
+            .init(symbol: "person.2", title: "The agent list stays up to date",
+                  detail: "New agents appear, changed details update, and retired agents disappear while Tuner is open, without pulling to refresh."),
+        ]),
         ReleaseNote(version: "1.0", build: 47, date: "November 3, 2026", items: [
             .init(symbol: "text.bubble", title: "Keep the message field full size when the keyboard closes",
                   detail: "When the keyboard closes, the empty message field keeps room for its text and send button while its bottom stays aligned with Filter agents."),
