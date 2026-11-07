@@ -5,9 +5,23 @@ import SwiftUI
 /// a build that new is installed, so guessing one too high is harmless.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
-        ReleaseNote(version: "1.0", build: 48, date: "November 7, 2026", items: [
+        ReleaseNote(version: "1.0", build: 51, date: "November 7, 2026", items: [
             .init(symbol: "person.2", title: "The agent list stays up to date",
                   detail: "New agents appear, changed details update, and retired agents disappear while Tuner is open, without pulling to refresh."),
+        ]),
+        ReleaseNote(version: "1.0", build: 50, date: "November 7, 2026", items: [
+            .init(symbol: "text.bubble", title: "Keep the message field aligned with the keyboard",
+                  detail: "In compact layouts, the message field follows the keyboard's current visibility while it stays focused."),
+            .init(symbol: "sidebar.left", title: "The agent list stays where you left it",
+                  detail: "When you return to Tuner, the list stays open, closed, or floating where it was. Rotating while Tuner is active keeps working as before."),
+        ]),
+        ReleaseNote(version: "1.0", build: 49, date: "November 7, 2026", items: [
+            .init(symbol: "keyboard", title: "Keep Chat's layout in step with the keyboard",
+                  detail: "When Tuner returns to the foreground, Chat refreshes its keyboard layout to match the keyboard's current position."),
+        ]),
+        ReleaseNote(version: "1.0", build: 48, date: "November 7, 2026", items: [
+            .init(symbol: "text.bubble", title: "Keep the compact message field full size",
+                  detail: "The empty or one-line message field keeps its full height and rounded ends in compact layouts."),
         ]),
         ReleaseNote(version: "1.0", build: 47, date: "November 3, 2026", items: [
             .init(symbol: "text.bubble", title: "Keep the message field full size when the keyboard closes",
@@ -20,10 +34,6 @@ enum ReleaseNotes {
         ReleaseNote(version: "1.0", build: 45, date: "November 2, 2026", items: [
             .init(symbol: "line.3.horizontal.decrease.circle", title: "Keep filtered iPad results above the keyboard",
                   detail: "At standard text size on iPad, the last filtered result stays visible above the keyboard, clear of Filter agents, and tappable."),
-        ]),
-        ReleaseNote(version: "1.0", build: 44, date: "November 1, 2026", items: [
-            .init(symbol: "sidebar.left", title: "The agent list stays where you left it",
-                  detail: "When you return to Tuner, the list stays open, closed, or floating where it was. Rotating while Tuner is active keeps working as before."),
         ]),
         ReleaseNote(version: "1.0", build: 43, date: "November 1, 2026", items: [
             .init(symbol: "sidebar.left", title: "Restore the standard agent-list control",
