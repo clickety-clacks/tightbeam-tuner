@@ -56,6 +56,9 @@ final class TunerStore {
     var error: String?
     var isLoading = false
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private var rosterRevision: UInt64 = 0
+    @ObservationIgnored private var refreshInProgress = false
+    @ObservationIgnored private var refreshRequested = false
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -74,6 +77,8 @@ final class TunerStore {
     static let storedRecents = 50
 
     func save(_ value: Connection) {
+        rosterRevision &+= 1
+        if refreshInProgress { refreshRequested = true }
         connection = value
         defaults.set(try? JSONEncoder().encode(value), forKey: Keys.connection)
         selectedID = nil
@@ -94,18 +99,72 @@ final class TunerStore {
         defaults.set(recentIDs, forKey: Keys.recent)
     }
 
+    func applyRosterEvent(_ frame: RepliedFrame) {
+        switch frame {
+        case .sessionSpawned(let agent), .sessionUpdated(let agent), .sessionHarnessChanged(let agent):
+            rosterRevision &+= 1
+            if refreshInProgress { refreshRequested = true }
+            if isVisibleRosterAgent(agent) {
+                if let index = agents.firstIndex(where: { $0.id == agent.id }) {
+                    agents[index] = agent
+                } else {
+                    agents.append(agent)
+                }
+            } else {
+                removeAgent(agent.id)
+            }
+        case .retired(let sessionKey):
+            rosterRevision &+= 1
+            if refreshInProgress { refreshRequested = true }
+            removeAgent(sessionKey)
+        default:
+            break
+        }
+    }
+
+    private func removeAgent(_ sessionKey: String) {
+        agents.removeAll { $0.id == sessionKey }
+        if selectedID == sessionKey { selectedID = nil }
+    }
+
+    private func isVisibleRosterAgent(_ agent: Agent) -> Bool {
+        agent.state == "active" && !agent.id.isEmpty && !agent.name.isEmpty
+    }
+
     func refresh() async {
         guard connection.isComplete else { return }
-        isLoading = true
-        defer { isLoading = false }
-        do {
-            let data = try await SSHRoster.fetch(connection: connection)
-            let roster = try JSONDecoder().decode(Roster.self, from: data)
-            agents = roster.sessions.filter { $0.state == "active" && !$0.id.isEmpty && !$0.name.isEmpty }
-            if let selectedID, !agents.contains(where: { $0.id == selectedID }) { self.selectedID = nil }
-            error = nil
-        } catch {
-            self.error = error.localizedDescription
+        guard !refreshInProgress else {
+            refreshRequested = true
+            return
         }
+        refreshInProgress = true
+        isLoading = true
+        repeat {
+            refreshRequested = false
+            guard connection.isComplete else { break }
+            let requestedConnection = connection
+            let requestedRevision = rosterRevision
+            do {
+                let data = try await SSHRoster.fetch(connection: requestedConnection)
+                guard !Task.isCancelled else { break }
+                guard requestedRevision == rosterRevision else {
+                    refreshRequested = true
+                    continue
+                }
+                let roster = try JSONDecoder().decode(Roster.self, from: data)
+                agents = roster.sessions.filter(isVisibleRosterAgent)
+                if let selectedID, !agents.contains(where: { $0.id == selectedID }) { self.selectedID = nil }
+                error = nil
+            } catch {
+                guard !Task.isCancelled else { break }
+                guard requestedRevision == rosterRevision else {
+                    refreshRequested = true
+                    continue
+                }
+                self.error = error.localizedDescription
+            }
+        } while refreshRequested && !Task.isCancelled
+        refreshInProgress = false
+        isLoading = false
     }
 }

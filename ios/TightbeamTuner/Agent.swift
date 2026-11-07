@@ -10,6 +10,8 @@ struct Agent: Decodable, Identifiable, Hashable, Sendable {
     let state: String
     let parent: String?
     let archetype: String?
+    let harness: String?
+    let model: String?
 
     enum CodingKeys: String, CodingKey {
         case id = "sessionKey"
@@ -18,6 +20,8 @@ struct Agent: Decodable, Identifiable, Hashable, Sendable {
         case currentParent
         case topologyParent
         case archetype
+        case harness
+        case model
     }
 
     init(from decoder: Decoder) throws {
@@ -28,5 +32,7 @@ struct Agent: Decodable, Identifiable, Hashable, Sendable {
         parent = try values.decodeIfPresent(String.self, forKey: .currentParent)
             ?? values.decodeIfPresent(String.self, forKey: .topologyParent)
         archetype = try values.decodeIfPresent(String.self, forKey: .archetype)
+        harness = try? values.decodeIfPresent(String.self, forKey: .harness)
+        model = try? values.decodeIfPresent(String.self, forKey: .model)
     }
 }

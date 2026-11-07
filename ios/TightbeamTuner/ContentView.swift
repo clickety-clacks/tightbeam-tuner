@@ -156,9 +156,11 @@ struct ContentView: View {
             sessionKeys: store.agents.map(\.id).sorted()
         )) {
             let sessionKeys = store.agents.map(\.id).sorted()
-            guard store.connection.isComplete, !sessionKeys.isEmpty else { return }
+            guard store.connection.isComplete else { return }
             await repliedFeed.run(gateway: store.connection.gateway, user: store.connection.tightbeamUser,
-                                  sessionKeys: sessionKeys)
+                                  sessionKeys: sessionKeys,
+                                  onRosterEvent: { frame in store.applyRosterEvent(frame) },
+                                  onReconnect: { await store.refresh() })
         }
         .onChange(of: shownChatSessionKey, initial: true) { _, key in
             repliedFeed.updateShownSessionKey(key)
@@ -191,6 +193,9 @@ struct ContentView: View {
 #if DEBUG
             print("NAVIGATION_SCENE old=\(oldPhase) new=\(newPhase) visibility=\(columnVisibility) portrait=\(portrait) sizeClass=\(String(describing: horizontalSizeClass))")
 #endif
+            if oldPhase != .active && newPhase == .active {
+                Task { await store.refresh() }
+            }
             if oldPhase == .active && newPhase != .active {
                 if visibilityBeforeInactive == nil {
                     visibilityBeforeInactive = columnVisibility
