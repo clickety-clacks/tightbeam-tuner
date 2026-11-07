@@ -246,7 +246,7 @@ struct RepliedShownChat {
             var ready = false
             await withTaskCancellationHandler {
                 do {
-                    try await socket.send(.string(#"{"type":"subscribe","protocolVersion":2,"subscriptionId":"replied","filters":{"classes":["message.created","read_marker.updated","session.retired"]}}"#))
+                    try await socket.send(.string(RepliedAPI.subscriptionFrame))
                     receiveLoop: while !Task.isCancelled {
                         let message = try await socket.receive()
                         guard !Task.isCancelled else { break }
@@ -312,6 +312,8 @@ struct RepliedShownChat {
 }
 
 enum RepliedAPI {
+    static let subscriptionFrame = #"{"type":"subscribe","protocolVersion":2,"subscriptionId":"replied","filters":{"classes":["message.created","read_marker.updated","session.spawned","session.updated","session.harness_changed","session.retired"]}}"#
+
     static func percentEncodedPathSegment(_ value: String) -> String {
         let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         return value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? ""

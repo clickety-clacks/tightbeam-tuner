@@ -318,6 +318,17 @@ final class RepliedTests: XCTestCase {
         XCTAssertTrue(retired.changesRoster)
     }
 
+    func testSubscriptionRequestsAllRosterLifecycleEvents() throws {
+        let frame = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(RepliedAPI.subscriptionFrame.utf8)) as? [String: Any]
+        )
+        let filters = try XCTUnwrap(frame["filters"] as? [String: Any])
+        XCTAssertEqual(
+            try XCTUnwrap(filters["classes"] as? [String]),
+            ["message.created", "read_marker.updated", "session.spawned", "session.updated", "session.harness_changed", "session.retired"]
+        )
+    }
+
     func testReconnectCatchUpRunsAfterAReadySubscriptionIsReestablished() {
         var state = RepliedSubscriptionState()
         XCTAssertFalse(state.subscriptionReadyNeedsCatchUp())
