@@ -24,16 +24,14 @@ struct NativeChatComposer: View {
         (glassHeight ?? Self.standardContentHeight) < Self.standardContentHeight
     }
     private var verticalGap: CGFloat {
-        // Keep the unfocused composer at its standard control height so the Send button
-        // retains its full hit area when the keyboard is down. The compact spacing is
-        // used only for the already-correct keyboard-up layout.
-        guard matchesCompactSearchHeight, focused, let glassHeight else { return Self.standardVerticalGap }
+        // Keep the Send target centered in the measured Filter height in both keyboard states.
+        guard let glassHeight else { return Self.standardVerticalGap }
         return max(0, (glassHeight - Self.buttonSize) / 2)
     }
     private var contentHeight: CGFloat { Self.buttonSize + 2 * verticalGap }
     private var textFieldVerticalPadding: CGFloat {
         guard matchesCompactSearchHeight else { return 11 }
-        return focused ? 3 : 6
+        return 3
     }
     private var glassVerticalInset: CGFloat {
         max(0, ((glassHeight ?? contentHeight) - contentHeight) / 2)
