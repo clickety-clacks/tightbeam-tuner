@@ -1,10 +1,22 @@
 import SwiftUI
 
-/// What changed in each release, newest first. Every release adds an entry here, numbered
-/// with the build it ships as. An entry numbered past the running build stays hidden until
-/// a build that new is installed, so guessing one too high is harmless.
+/// What changed in each release, newest first. Historical entries use their confirmed build
+/// numbers. The current release may use `currentBuild` until its TestFlight number is read back;
+/// replace that marker with the confirmed literal before the next release.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: currentBuild, date: "November 7, 2026", items: [
+            .init(symbol: "text.bubble", title: "Keep the compact message field full size",
+                  detail: "The empty or one-line message field keeps its full height and rounded ends in compact layouts."),
+            .init(symbol: "keyboard", title: "Keep Chat's layout in step with the keyboard",
+                  detail: "When Tuner returns to the foreground, Chat refreshes its keyboard layout to match the keyboard's current position."),
+            .init(symbol: "text.bubble", title: "Keep the message field aligned with the keyboard",
+                  detail: "In compact layouts, the message field follows the keyboard's current visibility while it stays focused."),
+            .init(symbol: "sidebar.left", title: "The agent list stays where you left it",
+                  detail: "When you return to Tuner, the list stays open, closed, or floating where it was. Rotating while Tuner is active keeps working as before."),
+            .init(symbol: "person.2", title: "The agent list stays up to date",
+                  detail: "New agents appear, changed details update, and retired agents disappear while Tuner is open, without pulling to refresh."),
+        ]),
         ReleaseNote(version: "1.0", build: 51, date: "November 7, 2026", items: [
             .init(symbol: "person.2", title: "The agent list stays up to date",
                   detail: "New agents appear, changed details update, and retired agents disappear while Tuner is open, without pulling to refresh."),
