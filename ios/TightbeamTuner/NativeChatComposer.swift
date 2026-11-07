@@ -24,9 +24,9 @@ struct NativeChatComposer: View {
         (glassHeight ?? Self.standardContentHeight) < Self.standardContentHeight
     }
     private var verticalGap: CGFloat {
-        // Keep the Send target centered in the measured Filter height in both keyboard states.
+        // Match a taller Filter when present, while keeping the full standard row height.
         guard let glassHeight else { return Self.standardVerticalGap }
-        return max(0, (glassHeight - Self.buttonSize) / 2)
+        return max(Self.standardVerticalGap, (glassHeight - Self.buttonSize) / 2)
     }
     private var contentHeight: CGFloat { Self.buttonSize + 2 * verticalGap }
     private var textFieldVerticalPadding: CGFloat {
