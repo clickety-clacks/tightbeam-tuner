@@ -264,36 +264,37 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
         var onFrameChange: ((Measurement) -> Void)?
         private var lastMeasurement: Measurement?
         private var keyboardScreenFrame: CGRect?
+        private weak var keyboardFrameScreen: UIScreen?
         private var keyboardObservers: [NSObjectProtocol] = []
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            removeKeyboardObservers()
-            keyboardScreenFrame = nil
-            guard window != nil else {
-                scheduleRead()
-                return
+            if let window, let keyboardFrameScreen, keyboardFrameScreen !== window.screen {
+                keyboardScreenFrame = nil
+                self.keyboardFrameScreen = nil
             }
+            if window != nil { installKeyboardObservers() }
+            scheduleRead()
+        }
 
+        private func installKeyboardObservers() {
+            guard keyboardObservers.isEmpty else { return }
             let center = NotificationCenter.default
             keyboardObservers = [
                 center.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification,
                                   object: nil, queue: .main) { [weak self] notification in
                     let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
                     Task { @MainActor [weak self] in
-                        self?.keyboardScreenFrame = frame
-                        self?.scheduleRead()
+                        self?.keyboardFrameDidChange(frame)
                     }
                 },
                 center.addObserver(forName: UIResponder.keyboardWillHideNotification,
                                   object: nil, queue: .main) { [weak self] _ in
                     Task { @MainActor [weak self] in
-                        self?.keyboardScreenFrame = nil
-                        self?.scheduleRead()
+                        self?.keyboardFrameDidChange(nil)
                     }
                 },
             ]
-            scheduleRead()
         }
 
         override func layoutSubviews() {
@@ -363,10 +364,18 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
         }
 
         private var softwareKeyboardIsVisible: Bool {
-            guard let window, let keyboardScreenFrame else { return false }
+            guard let window, let keyboardScreenFrame,
+                  keyboardFrameScreen === window.screen else { return false }
             let keyboardFrame = window.convert(keyboardScreenFrame, from: window.screen.coordinateSpace)
             let intersection = window.bounds.intersection(keyboardFrame)
             return !intersection.isNull && intersection.width > 1 && intersection.height > 1
+        }
+
+        private func keyboardFrameDidChange(_ frame: CGRect?) {
+            keyboardScreenFrame = frame
+            if let window { keyboardFrameScreen = window.screen }
+            if frame == nil { keyboardFrameScreen = nil }
+            scheduleRead()
         }
 
         private func removeKeyboardObservers() {
