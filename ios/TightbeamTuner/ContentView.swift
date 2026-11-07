@@ -244,6 +244,7 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
         let view = SearchFieldProbeView()
         view.isUserInteractionEnabled = false
         view.backgroundColor = .clear
+        view.keyboardLayoutGuide.followsUndockedKeyboard = true
         view.prompt = prompt
         view.usesCompactFieldFrame = usesCompactFieldFrame
         view.onFrameChange = onFrameChange
@@ -265,33 +266,52 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
         private var lastMeasurement: Measurement?
         private var keyboardScreenFrame: CGRect?
         private weak var keyboardFrameScreen: UIScreen?
+        private var keyboardVisibilitySnapshot: Bool?
+        private var needsKeyboardVisibilityReconciliation = false
+        private var keyboardObserverGeneration = 0
         private var keyboardObservers: [NSObjectProtocol] = []
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            if let window, let keyboardFrameScreen, keyboardFrameScreen !== window.screen {
+            keyboardObserverGeneration += 1
+            removeKeyboardObservers()
+            guard let window else {
+                keyboardScreenFrame = nil
+                keyboardFrameScreen = nil
+                keyboardVisibilitySnapshot = nil
+                needsKeyboardVisibilityReconciliation = false
+                scheduleRead()
+                return
+            }
+
+            if let keyboardFrameScreen, keyboardFrameScreen !== window.screen {
                 keyboardScreenFrame = nil
                 self.keyboardFrameScreen = nil
             }
-            if window != nil { installKeyboardObservers() }
+            installKeyboardObservers()
+            // Notifications received while detached have no reliable window/screen context.
+            // Reconcile from UIKit's current guide after this view has completed its next layout.
+            keyboardVisibilitySnapshot = nil
+            needsKeyboardVisibilityReconciliation = true
             scheduleRead()
         }
 
         private func installKeyboardObservers() {
             guard keyboardObservers.isEmpty else { return }
             let center = NotificationCenter.default
+            let observerGeneration = keyboardObserverGeneration
             keyboardObservers = [
                 center.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification,
                                   object: nil, queue: .main) { [weak self] notification in
                     let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
                     Task { @MainActor [weak self] in
-                        self?.keyboardFrameDidChange(frame)
+                        self?.keyboardFrameDidChange(frame, observerGeneration: observerGeneration)
                     }
                 },
                 center.addObserver(forName: UIResponder.keyboardWillHideNotification,
                                   object: nil, queue: .main) { [weak self] _ in
                     Task { @MainActor [weak self] in
-                        self?.keyboardFrameDidChange(nil)
+                        self?.keyboardFrameDidChange(nil, observerGeneration: observerGeneration)
                     }
                 },
             ]
@@ -307,6 +327,9 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
             // The sidebar may lay out after this view. Read its final frame on the next turn.
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                if self.needsKeyboardVisibilityReconciliation {
+                    self.reconcileKeyboardVisibilityFromLayoutGuide()
+                }
                 let measurement = self.searchMeasurement()
                 guard measurement != self.lastMeasurement else { return }
                 self.lastMeasurement = measurement
@@ -364,6 +387,7 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
         }
 
         private var softwareKeyboardIsVisible: Bool {
+            if let keyboardVisibilitySnapshot { return keyboardVisibilitySnapshot }
             guard let window, let keyboardScreenFrame,
                   keyboardFrameScreen === window.screen else { return false }
             let keyboardFrame = window.convert(keyboardScreenFrame, from: window.screen.coordinateSpace)
@@ -371,11 +395,35 @@ private struct SidebarSearchFrameReader: UIViewRepresentable {
             return !intersection.isNull && intersection.width > 1 && intersection.height > 1
         }
 
-        private func keyboardFrameDidChange(_ frame: CGRect?) {
+        private func keyboardFrameDidChange(_ frame: CGRect?, observerGeneration: Int) {
+            guard self.keyboardObserverGeneration == observerGeneration, let window else { return }
             keyboardScreenFrame = frame
-            if let window { keyboardFrameScreen = window.screen }
-            if frame == nil { keyboardFrameScreen = nil }
+            keyboardFrameScreen = frame == nil ? nil : window.screen
+            keyboardVisibilitySnapshot = nil
+            needsKeyboardVisibilityReconciliation = false
             scheduleRead()
+        }
+
+        private func reconcileKeyboardVisibilityFromLayoutGuide() {
+            guard window != nil else {
+                keyboardVisibilitySnapshot = nil
+                needsKeyboardVisibilityReconciliation = false
+                return
+            }
+            // A newly attached probe can receive this read before its first nonzero layout.
+            // Keep the reconciliation pending until UIKit has usable bounds.
+            guard bounds.width > 1, bounds.height > 1 else { return }
+
+            layoutIfNeeded()
+            let keyboardArea = keyboardLayoutGuide.layoutFrame
+            let intersection = bounds.intersection(keyboardArea)
+            // With no keyboard, UIKit places this guide at the bottom safe area.
+            // Require space beyond that inset so the home-indicator area is not
+            // mistaken for a visible software keyboard.
+            keyboardVisibilitySnapshot = !intersection.isNull
+                && intersection.width > 1
+                && intersection.height > safeAreaInsets.bottom + 1
+            needsKeyboardVisibilityReconciliation = false
         }
 
         private func removeKeyboardObservers() {
