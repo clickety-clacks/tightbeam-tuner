@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// What changed in each release, newest first. Historical entries use their confirmed build
-/// numbers. The current release may use `currentBuild` until its TestFlight number is read back;
-/// replace that marker with the confirmed literal before the next release.
+/// What changed in each release, newest first. Each build number identifies the app build
+/// associated with that entry.
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
-        ReleaseNote(version: "1.0", build: currentBuild, date: "November 7, 2026", items: [
+        ReleaseNote(version: "1.0", build: 52, date: "November 7, 2026", items: [
             .init(symbol: "text.bubble", title: "Keep the compact message field full size",
                   detail: "The empty or one-line message field keeps its full height and rounded ends in compact layouts."),
             .init(symbol: "keyboard", title: "Keep Chat's layout in step with the keyboard",
@@ -46,6 +45,10 @@ enum ReleaseNotes {
         ReleaseNote(version: "1.0", build: 45, date: "November 2, 2026", items: [
             .init(symbol: "line.3.horizontal.decrease.circle", title: "Keep filtered iPad results above the keyboard",
                   detail: "At standard text size on iPad, the last filtered result stays visible above the keyboard, clear of Filter agents, and tappable."),
+        ]),
+        ReleaseNote(version: "1.0", build: 44, date: "November 1, 2026", items: [
+            .init(symbol: "sidebar.left", title: "The agent list stays where you left it",
+                  detail: "When you return to Tuner, the list stays open, closed, or floating where it was. Rotating while Tuner is active keeps working as before."),
         ]),
         ReleaseNote(version: "1.0", build: 43, date: "November 1, 2026", items: [
             .init(symbol: "sidebar.left", title: "Restore the standard agent-list control",
