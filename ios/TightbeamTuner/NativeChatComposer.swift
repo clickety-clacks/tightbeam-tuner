@@ -39,6 +39,8 @@ struct NativeChatComposer: View {
     private var cornerRadius: CGFloat { Self.buttonSize / 2 + verticalGap + glassVerticalInset }
     /// Used by the enclosing chat layout to locate the glass edge from the view's bottom.
     static let bottomPadding: CGFloat = 8
+    /// Reserve the standard row before the first geometry measurement arrives.
+    static let minimumLayoutHeight: CGFloat = standardContentHeight + bottomPadding
 
     init(
         draft: Binding<String>,
