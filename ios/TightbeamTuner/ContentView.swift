@@ -597,9 +597,12 @@ private struct AgentChatView: View {
             let composerOffset = searchFrame.map {
                 $0.maxY - (detailFrame.maxY - NativeChatComposer.bottomPadding) - compactGlassBottomCorrection
             } ?? 0
-            let topComposerClearance = bridge.hostComposerActive && composerIsTopAligned ? composerHeight : 0
+            // The native row can be positioned before onGeometryChange reports its height.
+            // Keep Chat's controls clear during that first layout as well as after measurement.
+            let composerClearance = max(composerHeight, NativeChatComposer.minimumLayoutHeight)
+            let topComposerClearance = bridge.hostComposerActive && composerIsTopAligned ? composerClearance : 0
             let floatingBottomInset = bridge.hostComposerActive && !composerIsTopAligned
-                ? max(0, composerHeight - composerOffset) : 0
+                ? max(0, composerClearance - composerOffset) : 0
             ZStack(alignment: .bottom) {
                 ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
                             floatingBottomInset: floatingBottomInset)
