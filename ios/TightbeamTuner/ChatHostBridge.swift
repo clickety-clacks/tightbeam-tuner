@@ -36,6 +36,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     /// delivered or replaced, so it can be retried.
     struct Outgoing: Equatable {
         let correlationId: String
+        let sessionKey: String
         let content: String
         var lifetimeId: String
         var attempt: Int?
@@ -43,6 +44,10 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         /// Chat may have started an attempt for this message (any later send of it is a retry).
         var attempted = false
     }
+
+    typealias OutgoingObserver = @MainActor (Outgoing) -> Void
+
+    @ObservationIgnored private let outgoingObserver: OutgoingObserver?
 
     private(set) var phase: Phase = .waiting
     private(set) var outgoing: Outgoing?
@@ -104,12 +109,16 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     private let allowedOrigin: String
     weak var webView: WKWebView?
 
-    init(chatURL: URL) {
+    init(
+        chatURL: URL,
+        outgoingObserver: OutgoingObserver? = nil
+    ) {
         var parts = URLComponents()
         parts.scheme = chatURL.scheme
         parts.host = chatURL.host
         parts.port = chatURL.port
         allowedOrigin = parts.url?.absoluteString ?? ""
+        self.outgoingObserver = outgoingObserver
     }
 
     /// Document-start script that declares Tuner as a host, only on the configured Chat origin.
@@ -213,7 +222,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             }
         }
         if let previous = outgoing, previous.status == .accepted { earlier.append(previous) }
-        outgoing = Outgoing(correlationId: correlationId, content: text, lifetimeId: lifetimeId,
+        outgoing = Outgoing(correlationId: correlationId, sessionKey: sessionKey, content: text, lifetimeId: lifetimeId,
                             attempt: nil, status: .sending, attempted: retry)
         var command: [String: Any] = [
             "type": "send",
@@ -238,6 +247,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
               current.status == .sending, current.attempt == nil else { return }
         current.status = .failed("unreachable")
         outgoing = current
+        outgoingObserver?(current)
     }
 
     /// An earlier message that failed or may not have sent becomes the current one, so its words
@@ -312,17 +322,20 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             let reason = event["reason"] as? String ?? "rejected"
             current.status = reason == "already-delivered" || reason == "local-command" ? .delivered : .failed(reason)
             outgoing = current
+            outgoingObserver?(current)
         case "accepted", "delivered", "failed", "uncertain":
             if let index = earlier.firstIndex(where: { matches($0, event) }) {
                 var message = earlier[index]
                 Self.apply(type: type, event: event, to: &message)
                 if message.status == .delivered { earlier.remove(at: index) } else { earlier[index] = message }
+                outgoingObserver?(message)
                 surfaceEarlierProblem()
                 return
             }
             guard var current = matching(event) else { return }
             Self.apply(type: type, event: event, to: &current)
             outgoing = current
+            outgoingObserver?(current)
             surfaceEarlierProblem()
         default:
             break

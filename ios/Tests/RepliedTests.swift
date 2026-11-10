@@ -131,6 +131,267 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(afterReply, ["agent:alpha"])
     }
 
+    @MainActor func testAcceptedPromptMovesIntoRepliesWithWaitingIndicator() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+    }
+
+    @MainActor func testAssistantReplyRestoresRepliesArrow() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+
+        feed.apply(try change(#"{"type":"change","class":"message.created","payload":{"seq":3,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}}"#), userID: "reader")
+        feed.apply(try change(#"{"type":"change","class":"message.created","payload":{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#), userID: "reader")
+
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+    }
+
+    @MainActor func testReplayedAssistantHistoryDoesNotEndPendingPrompt() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let priorReply = try message(#"{"seq":10,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)
+        feed.apply(.message(priorReply), userID: "reader")
+
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+
+        let prompt = try message(#"{"seq":11,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}"#)
+
+        let marker = try JSONDecoder().decode(
+            RepliedReadMarker.self,
+            from: Data(#"{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":8,"updatedAt":1}"#.utf8)
+        )
+        let requestedPromptIDs = FetchPromptIDsRecorder()
+        await feed.loadSnapshot(
+            gateway: "https://gateway.example.test",
+            user: "reader",
+            sessionKeys: ["agent:alpha"],
+            limit: 100,
+            fetchMarkers: { _, _ in [marker] },
+            fetchPendingMessages: { _, _, promptIDs in
+                await requestedPromptIDs.record(promptIDs)
+                return [priorReply, prompt]
+            }
+        )
+
+        let recordedRequests = await requestedPromptIDs.values
+        XCTAssertEqual(recordedRequests, [Set([outgoing.correlationId])])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+
+        feed.apply(try change(#"{"type":"change","class":"message.created","payload":{"seq":12,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#), userID: "reader")
+
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+    }
+
+    @MainActor func testCatchUpBeforePromptEchoKeepsOlderReplyWaitingAndDoesNotAdvanceReadMarker() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(["agent:alpha": 5], forKey: "repliedLocalReadMarkers")
+        let feed = RepliedFeed(defaults: defaults)
+        feed.updateShownSessionKey("agent:alpha")
+        let roster = try makeAgents(["agent:alpha"])
+        feed.apply(.message(try message(#"{"seq":5,"sessionKey":"agent:alpha","role":"user","clientMessageId":"c_previous"}"#)), userID: "reader")
+
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+
+        let priorReply = try message(#"{"seq":10,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)
+        let prompt = try message(#"{"seq":11,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}"#)
+        let requestedPromptIDs = FetchPromptIDsRecorder()
+        await feed.loadSnapshot(
+            gateway: "https://gateway.example.test",
+            user: "reader",
+            sessionKeys: ["agent:alpha"],
+            limit: 100,
+            fetchMarkers: { _, _ in [] },
+            fetchPendingMessages: { _, _, promptIDs in
+                await requestedPromptIDs.record(promptIDs)
+                return [priorReply, prompt]
+            }
+        )
+
+        let recordedRequests = await requestedPromptIDs.values
+        XCTAssertEqual(recordedRequests, [Set([outgoing.correlationId])])
+        XCTAssertTrue(feed.state.isWaitingForReply("agent:alpha"))
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 5)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+
+        feed.apply(try change(#"{"type":"change","class":"message.created","payload":{"seq":12,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#), userID: "reader")
+        XCTAssertFalse(feed.state.isWaitingForReply("agent:alpha"))
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 12)
+    }
+
+    @MainActor func testCatchUpReplyEndsPromptWhenNoEarlierFeedPositionWasKnown() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+
+        let prompt = try message(#"{"seq":20,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}"#)
+        let reply = try message(#"{"seq":21,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)
+        let requestedPromptIDs = FetchPromptIDsRecorder()
+        await feed.loadSnapshot(
+            gateway: "https://gateway.example.test",
+            user: "reader",
+            sessionKeys: ["agent:alpha"],
+            limit: 100,
+            fetchMarkers: { _, _ in [] },
+            fetchPendingMessages: { _, _, promptIDs in
+                await requestedPromptIDs.record(promptIDs)
+                return [prompt, reply]
+            }
+        )
+
+        let recordedRequests = await requestedPromptIDs.values
+        guard let recordedPromptIDs = recordedRequests.first else {
+            XCTFail("Expected a pending-prompt catch-up request")
+            return
+        }
+        XCTAssertEqual(recordedRequests.count, 1)
+        XCTAssertEqual(recordedPromptIDs, Set([outgoing.correlationId]))
+        XCTAssertFalse(feed.state.isWaitingForReply("agent:alpha"))
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+    }
+
+    @MainActor func testSendFailureDoesNotMoveAgentIntoReplies() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+
+        bridge.handle(type: "rejected", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId,
+            "reason": "offline"
+        ])
+
+        XCTAssertEqual(bridge.outgoing?.status, .failed("offline"))
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+    }
+
+    @MainActor func testFailureAfterAcceptanceClearsWaitingIndicator() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+
+        bridge.handle(type: "failed", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId,
+            "reason": "synthetic failure"
+        ])
+
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+    }
+
+    @MainActor func testLifetimeEndDoesNotClearWaitingIndicator() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+
+        bridge.handle(type: "unavailable", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "reason": "lifetime-ended"
+        ])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+
+        bridge.handle(type: "lifetime-ended", event: ["lifetimeId": outgoing.lifetimeId])
+
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+    }
+
+    @MainActor func testPendingReplySurvivesRosterRemovalAndReturn() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+
+        feed.apply(try change(#"{"type":"change","class":"session.retired","refs":{"sessionKey":"agent:alpha"},"payload":{"sessionKey":"agent:alpha","state":"retired"}}"#), userID: "reader")
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+
+        feed.apply(try change(#"{"type":"change","class":"session.spawned","payload":{"sessionKey":"agent:alpha","displayName":"agent:alpha","state":"active"}}"#), userID: "reader")
+
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+    }
+
     @MainActor func testNonEmptyMarkersStillReadMessageHistory() async throws {
         let (defaults, suiteName) = try testDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -347,6 +608,24 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(components.queryItems?.map(\.name), ["tail"])
     }
 
+    func testOlderMessagePagesUseTheOldestCursorInsteadOfTheTailAnchor() throws {
+        let url = try XCTUnwrap(RepliedAPI.messagesURL(
+            gateway: "https://gateway.example.test",
+            sessionKey: "agent:alpha",
+            limit: 500,
+            before: "cursor /+"
+        ))
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(components.queryItems?.map(\.name), ["before", "limit"])
+        XCTAssertEqual(components.queryItems?.first?.value, "cursor /+")
+
+        let page = try JSONDecoder().decode(RepliedMessagesPage.self, from: Data(#"""
+        {"items": [], "page": {"oldestCursor": "older", "hasMoreBefore": true}}
+        """#.utf8))
+        XCTAssertEqual(page.page?.oldestCursor, "older")
+        XCTAssertEqual(page.page?.hasMoreBefore, true)
+    }
+
     private func change(_ json: String, file: StaticString = #filePath, line: UInt = #line) throws -> RepliedFrame {
         let frame = RepliedFrame.decode(Data(json.utf8))
         switch frame {
@@ -377,8 +656,29 @@ final class RepliedTests: XCTestCase {
         return (try XCTUnwrap(UserDefaults(suiteName: suiteName)), suiteName)
     }
 
+    @MainActor private func makeReplyBridge(sessionKey: String, feed: RepliedFeed) -> ChatHostBridge {
+        let bridge = ChatHostBridge(
+            chatURL: URL(string: "https://chat.example.test/")!,
+            outgoingObserver: { outgoing in
+                feed.observePromptStatus(outgoing.status, sessionKey: outgoing.sessionKey,
+                                        correlationID: outgoing.correlationId)
+            }
+        )
+        bridge.handle(type: "ready", event: [
+            "version": 1,
+            "lifetimeId": "l_test",
+            "sessionKey": sessionKey
+        ])
+        return bridge
+    }
+
     private actor FetchCounter {
         private(set) var messageFetches = 0
         func recordMessageFetch() { messageFetches += 1 }
+    }
+
+    private actor FetchPromptIDsRecorder {
+        private(set) var values: [Set<String>] = []
+        func record(_ value: Set<String>) { values.append(value) }
     }
 }

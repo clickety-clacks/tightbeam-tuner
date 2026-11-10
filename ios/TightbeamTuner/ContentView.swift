@@ -98,6 +98,7 @@ struct ContentView: View {
             Group {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
                     AgentChatView(url: url, reloadToken: reloadToken, draft: draftBinding(for: agent.id),
+                                  repliedFeed: repliedFeed,
                                   sidebarSearchFrame: sidebarSearchFrame,
                                   compactSearchKeyboardDownFrame: compactSearchKeyboardDownFrame,
                                   compactSearchKeyboardUpFrame: compactSearchKeyboardUpFrame,
@@ -554,6 +555,7 @@ private struct AgentChatView: View {
     let url: URL
     let reloadToken: Int
     @Binding var draft: String
+    let repliedFeed: RepliedFeed
     let sidebarSearchFrame: CGRect?
     let compactSearchKeyboardDownFrame: CGRect?
     let compactSearchKeyboardUpFrame: CGRect?
@@ -567,6 +569,7 @@ private struct AgentChatView: View {
         url: URL,
         reloadToken: Int,
         draft: Binding<String>,
+        repliedFeed: RepliedFeed,
         sidebarSearchFrame: CGRect?,
         compactSearchKeyboardDownFrame: CGRect?,
         compactSearchKeyboardUpFrame: CGRect?,
@@ -576,12 +579,19 @@ private struct AgentChatView: View {
         self.url = url
         self.reloadToken = reloadToken
         _draft = draft
+        self.repliedFeed = repliedFeed
         self.sidebarSearchFrame = sidebarSearchFrame
         self.compactSearchKeyboardDownFrame = compactSearchKeyboardDownFrame
         self.compactSearchKeyboardUpFrame = compactSearchKeyboardUpFrame
         self.softwareKeyboardVisible = softwareKeyboardVisible
         self.isCompact = isCompact
-        _bridge = State(initialValue: ChatHostBridge(chatURL: url))
+        _bridge = State(initialValue: ChatHostBridge(
+            chatURL: url,
+            outgoingObserver: { outgoing in
+                repliedFeed.observePromptStatus(outgoing.status, sessionKey: outgoing.sessionKey,
+                                                correlationID: outgoing.correlationId)
+            }
+        ))
     }
 
     var body: some View {
@@ -679,6 +689,7 @@ private struct AgentRowLabel: View {
     let agent: Agent
     var contextOnly = false
     var symbol: String?
+    var waitingForReply = false
 
     var body: some View {
         let text = VStack(alignment: .leading, spacing: 1) {
@@ -690,7 +701,14 @@ private struct AgentRowLabel: View {
                     .foregroundStyle(Color.nordicSecondaryText)
             }
         }
-        if let symbol {
+        if waitingForReply {
+            Label { text } icon: {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 16, height: 16)
+                    .accessibilityLabel("Waiting for reply")
+            }
+        } else if let symbol {
             Label { text } icon: { Image(systemName: symbol) }
         } else {
             text
@@ -829,13 +847,16 @@ private struct AgentSidebar: View {
             if !replied.isEmpty {
                 Section(isExpanded: $repliedSectionExpanded) {
                     ForEach(matchingReplied) { agent in
+                        let waitingForReply = repliedFeed.state.rowIndicator(for: agent.id) == .waiting
                         NavigationLink(value: agent.id) {
-                            AgentRowLabel(agent: agent, symbol: "arrowshape.turn.up.left")
+                            AgentRowLabel(agent: agent,
+                                          symbol: waitingForReply ? nil : "arrowshape.turn.up.left",
+                                          waitingForReply: waitingForReply)
                         }
                         .simultaneousGesture(TapGesture().onEnded { openRepliedAgent(agent.id) })
                     }
                 } header: {
-                    AgentSectionHeader(title: "Replied", count: counts.replied)
+                    AgentSectionHeader(title: "Replies", count: counts.replied)
                 }
             }
             if !recents.isEmpty {
