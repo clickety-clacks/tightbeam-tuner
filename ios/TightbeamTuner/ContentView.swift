@@ -197,6 +197,8 @@ struct ContentView: View {
                 Task { await store.refresh() }
             }
             if oldPhase == .active && newPhase != .active {
+                // Coalesce live roster changes into one snapshot when leaving the foreground.
+                store.persistRosterSnapshotIfAvailable()
                 if visibilityBeforeInactive == nil {
                     visibilityBeforeInactive = columnVisibility
                 }
@@ -815,6 +817,15 @@ private struct AgentSidebar: View {
             let matchingRecents = recents.filter { filter.matches($0) }
             let counts = AgentSectionCounts(replied: replied, recent: Array(recents),
                                             agents: store.agents, filter: filter)
+            if store.isLoading { ProgressView("Loading agents…") }
+            if store.isRosterStale {
+                Label("Agent list may be out of date", systemImage: "clock.arrow.circlepath")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = store.error {
+                ContentUnavailableView("Could not load agents", systemImage: "wifi.exclamationmark", description: Text(error))
+            }
             if !replied.isEmpty {
                 Section(isExpanded: $repliedSectionExpanded) {
                     ForEach(matchingReplied) { agent in
@@ -854,15 +865,6 @@ private struct AgentSidebar: View {
                 }
             } header: {
                 AgentSectionHeader(title: "Agents", count: counts.agents)
-            }
-            if store.isLoading { ProgressView("Loading agents…") }
-            if store.isRosterStale {
-                Label("Agent list may be out of date", systemImage: "clock.arrow.circlepath")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            if let error = store.error {
-                ContentUnavailableView("Could not load agents", systemImage: "wifi.exclamationmark", description: Text(error))
             }
         }
         .nordicListStyle()

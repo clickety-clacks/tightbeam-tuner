@@ -145,12 +145,10 @@ final class TunerStore {
             } else {
                 removeAgent(agent.id)
             }
-            persistRosterSnapshotIfAvailable()
         case .retired(let sessionKey):
             rosterRevision &+= 1
             if refreshInProgress { refreshRequested = true }
             removeAgent(sessionKey)
-            persistRosterSnapshotIfAvailable()
         default:
             break
         }
@@ -165,7 +163,7 @@ final class TunerStore {
         agent.state == "active" && !agent.id.isEmpty && !agent.name.isEmpty
     }
 
-    private func persistRosterSnapshotIfAvailable() {
+    func persistRosterSnapshotIfAvailable() {
         guard hasRosterSnapshot else { return }
         let snapshot = RosterSnapshot(
             schemaVersion: Self.rosterSnapshotSchemaVersion,

@@ -34,15 +34,31 @@ final class RosterCacheTests: XCTestCase {
         XCTAssertFalse(store.isRosterStale)
         XCTAssertNil(store.error)
         XCTAssertFalse(store.isLoading)
+    }
 
+    @MainActor
+    func testLiveRosterEventIsPersistedAtSnapshotBoundary() async throws {
+        let connection = completeConnection()
+        let (defaults, suiteName) = try makeDefaults(connection: connection)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let cached = roster("agent:cached", "Cached")
+        let seed = TunerStore(defaults: defaults, rosterFetcher: { _ in cached })
+        await seed.refresh()
+
+        let store = TunerStore(defaults: defaults, rosterFetcher: { _ in cached })
         let eventUpdate = try JSONDecoder().decode(
             Roster.self,
-            from: roster("agent:fresh", "Fresh after event", model: "gpt-6.1")
+            from: roster("agent:cached", "Updated from live event")
         ).sessions[0]
         store.applyRosterEvent(.sessionUpdated(eventUpdate))
-        let nextLaunch = TunerStore(defaults: defaults, rosterFetcher: { _ in refreshed })
-        XCTAssertEqual(nextLaunch.agents.first?.name, "Fresh after event")
-        XCTAssertTrue(nextLaunch.isRosterStale)
+
+        let beforeSnapshot = TunerStore(defaults: defaults, rosterFetcher: { _ in cached })
+        XCTAssertEqual(beforeSnapshot.agents.first?.name, "Cached")
+
+        store.persistRosterSnapshotIfAvailable()
+        let afterSnapshot = TunerStore(defaults: defaults, rosterFetcher: { _ in cached })
+        XCTAssertEqual(afterSnapshot.agents.first?.name, "Updated from live event")
+        XCTAssertTrue(afterSnapshot.isRosterStale)
     }
 
     @MainActor
