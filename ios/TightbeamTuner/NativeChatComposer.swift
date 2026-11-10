@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Native message field that floats over the transcript, shaped like Chat's own composer:
-/// a rounded field with the agent's name as placeholder and a round send button inside it.
+/// a rounded field with the agent's name as placeholder and a separate send button beside it.
 struct NativeChatComposer: View {
     @Binding var draft: String
     let bridge: ChatHostBridge
@@ -17,6 +17,8 @@ struct NativeChatComposer: View {
     // so use the visible capsule measurement for the composer instead of those transformed bounds.
     static let compactSearchHeight: CGFloat = 38
     private static let horizontalGap: CGFloat = 5
+    // Keep adjacent glass shapes separate; the visible gap beside Send is 5 pt.
+    private static let glassMergeSpacing: CGFloat = 4
     private static let buttonSize: CGFloat = 34
     private static let standardVerticalGap: CGFloat = 5
     private static let standardContentHeight = buttonSize + 2 * standardVerticalGap
@@ -61,7 +63,7 @@ struct NativeChatComposer: View {
     }
 
     var body: some View {
-        GlassEffectContainer(spacing: 8) {
+        GlassEffectContainer(spacing: Self.glassMergeSpacing) {
             VStack(alignment: .leading, spacing: 8) {
                 if let notice {
                     Label(notice, systemImage: "exclamationmark.circle")
@@ -73,34 +75,39 @@ struct NativeChatComposer: View {
                         .transition(.opacity)
                 }
                 HStack(alignment: .bottom, spacing: 0) {
-                    // Connection status, the same dot Chat's own composer shows at its left.
-                    Button {
-                        showingStatus = true
-                    } label: {
-                        Circle()
-                            .fill(bridge.connection.color)
-                            .frame(width: 11.5, height: 11.5)
-                            .frame(width: Self.buttonSize, height: Self.buttonSize)
-                            .contentShape(.circle)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, Self.horizontalGap)
-                    .padding(.vertical, verticalGap)
-                    .accessibilityLabel("Connection status: \(bridge.connection.label). Show details")
-                    .popover(isPresented: $showingStatus) {
-                        ConnectionDetails(bridge: bridge) { showingStatus = false }
-                            .presentationCompactAdaptation(.popover)
-                    }
+                    HStack(alignment: .bottom, spacing: 0) {
+                        // Connection status, the same dot Chat's own composer shows at its left.
+                        Button {
+                            showingStatus = true
+                        } label: {
+                            Circle()
+                                .fill(bridge.connection.color)
+                                .frame(width: 11.5, height: 11.5)
+                                .frame(width: Self.buttonSize, height: Self.buttonSize)
+                                .contentShape(.circle)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, Self.horizontalGap)
+                        .padding(.vertical, verticalGap)
+                        .accessibilityLabel("Connection status: \(bridge.connection.label). Show details")
+                        .popover(isPresented: $showingStatus) {
+                            ConnectionDetails(bridge: bridge) { showingStatus = false }
+                                .presentationCompactAdaptation(.popover)
+                        }
 
-                    TextField(bridge.agentName ?? "Message", text: $draft, axis: .vertical)
-                        .lineLimit(1...6)
-                        .foregroundStyle(Color.nordicText)
-                        .focused($focused)
-                        .padding(.trailing, 4)
-                        .padding(.vertical, textFieldVerticalPadding)
-                        .frame(minHeight: contentHeight, alignment: .center)
-                        .accessibilityLabel("Message")
+                        TextField(bridge.agentName ?? "Message", text: $draft, axis: .vertical)
+                            .lineLimit(1...6)
+                            .foregroundStyle(Color.nordicText)
+                            .focused($focused)
+                            .padding(.trailing, 4)
+                            .padding(.vertical, textFieldVerticalPadding)
+                            .frame(minHeight: contentHeight, alignment: .center)
+                            .accessibilityLabel("Message")
+                    }
+                    .padding(.vertical, glassVerticalInset)
+                    .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius, style: .continuous))
 
+                    // Keep the 34 pt visible button and its 44 pt hit area separate from the field glass.
                     Button(action: send) {
                         Image(systemName: isRetry ? "arrow.clockwise" : "arrow.up")
                             .frame(width: 20, height: 20)
@@ -118,9 +125,8 @@ struct NativeChatComposer: View {
                         .disabled(!canSend)
                         .padding(.horizontal, Self.horizontalGap)
                         .padding(.vertical, verticalGap)
+                        .contentShape(Rectangle())
                 }
-                .padding(.vertical, glassVerticalInset)
-                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius, style: .continuous))
             }
         }
         .frame(maxWidth: maxWidth)
