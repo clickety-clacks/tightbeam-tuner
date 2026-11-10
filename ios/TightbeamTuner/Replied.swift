@@ -109,11 +109,19 @@ struct RepliedSubscriptionState: Sendable {
     }
 }
 
+enum RepliesRowIndicator: Equatable {
+    case waiting
+    case reply
+}
+
 struct RepliedState: Sendable {
     private(set) var latestReplyBySession: [String: Int] = [:]
     private(set) var readMarkerBySession: [String: RepliedReadMarker] = [:]
     private(set) var localReadMarkerBySession: [String: Int]
     private(set) var retiredSessionKeys: Set<String> = []
+    private(set) var pendingPromptIDsBySession: [String: Set<String>] = [:]
+    private(set) var pendingOrderBySession: [String: Int] = [:]
+    private var nextPendingOrder = 0
     init(localReadMarkerBySession: [String: Int] = [:]) {
         self.localReadMarkerBySession = localReadMarkerBySession
     }
@@ -127,6 +135,9 @@ struct RepliedState: Sendable {
         _ = apply(message, shownSessionKey: nil)
     }
     mutating func apply(_ message: RepliedMessage, shownSessionKey: String?) -> Bool {
+        if message.role == "assistant" {
+            clearPendingReplies(for: message.sessionKey)
+        }
         guard message.role == "assistant", message.turnIncludesHuman else { return false }
         latestReplyBySession[message.sessionKey] = max(latestReplyBySession[message.sessionKey] ?? Int.min, message.seq)
         guard message.sessionKey == shownSessionKey else { return false }
@@ -150,20 +161,61 @@ struct RepliedState: Sendable {
         switch frame {
         case .message(let message): return apply(message, shownSessionKey: shownSessionKey)
         case .readMarker(let marker): apply(marker, userID: userID)
-        case .retired(let key): retiredSessionKeys.insert(key)
+        case .retired(let key):
+            retiredSessionKeys.insert(key)
+            clearPendingReplies(for: key)
         default: break
         }
         return false
     }
-    func agents(from roster: [Agent]) -> [Agent] {
-        roster.compactMap { agent -> (Agent, Int)? in
-            guard !retiredSessionKeys.contains(agent.id), let reply = latestReplyBySession[agent.id] else { return nil }
-            let marker = max(readMarkerBySession[agent.id]?.marker ?? Int.min,
-                             localReadMarkerBySession[agent.id] ?? Int.min)
-            if reply <= marker { return nil }
-            return (agent, reply)
+
+    mutating func acceptPrompt(sessionKey: String, correlationID: String) {
+        guard !retiredSessionKeys.contains(sessionKey) else { return }
+        if pendingPromptIDsBySession[sessionKey, default: []].isEmpty {
+            nextPendingOrder += 1
+            pendingOrderBySession[sessionKey] = nextPendingOrder
         }
-        .sorted { $0.1 == $1.1 ? $0.0.id < $1.0.id : $0.1 > $1.1 }
+        pendingPromptIDsBySession[sessionKey, default: []].insert(correlationID)
+    }
+
+    mutating func failPrompt(sessionKey: String, correlationID: String) {
+        pendingPromptIDsBySession[sessionKey]?.remove(correlationID)
+        if pendingPromptIDsBySession[sessionKey]?.isEmpty == true {
+            pendingPromptIDsBySession.removeValue(forKey: sessionKey)
+            pendingOrderBySession.removeValue(forKey: sessionKey)
+        }
+    }
+
+    mutating func clearPendingReplies(for sessionKey: String) {
+        pendingPromptIDsBySession.removeValue(forKey: sessionKey)
+        pendingOrderBySession.removeValue(forKey: sessionKey)
+    }
+
+    func isWaitingForReply(_ sessionKey: String) -> Bool {
+        !(pendingPromptIDsBySession[sessionKey]?.isEmpty ?? true)
+    }
+
+    func rowIndicator(for sessionKey: String) -> RepliesRowIndicator? {
+        guard !retiredSessionKeys.contains(sessionKey) else { return nil }
+        if isWaitingForReply(sessionKey) { return .waiting }
+        guard let reply = latestReplyBySession[sessionKey] else { return nil }
+        let marker = max(readMarkerBySession[sessionKey]?.marker ?? Int.min,
+                         localReadMarkerBySession[sessionKey] ?? Int.min)
+        return reply > marker ? .reply : nil
+    }
+
+    func agents(from roster: [Agent]) -> [Agent] {
+        roster.compactMap { agent -> (Agent, RepliesRowIndicator, Int, Int)? in
+            guard let indicator = rowIndicator(for: agent.id) else { return nil }
+            return (agent, indicator, pendingOrderBySession[agent.id] ?? Int.min,
+                    latestReplyBySession[agent.id] ?? Int.min)
+        }
+        .sorted {
+            if $0.1 != $1.1 { return $0.1 == .waiting }
+            let leftOrder = $0.1 == .waiting ? $0.2 : $0.3
+            let rightOrder = $1.1 == .waiting ? $1.2 : $1.3
+            return leftOrder == rightOrder ? $0.0.id < $1.0.id : leftOrder > rightOrder
+        }
         .map { $0.0 }
     }
 }
@@ -217,6 +269,21 @@ struct RepliedShownChat {
         if state.apply(frame, userID: userID, shownSessionKey: shownSessionKey) {
             persistLocalReadMarkers()
         }
+    }
+
+    func observePromptStatus(_ status: ChatHostBridge.Status, sessionKey: String, correlationID: String) {
+        switch status {
+        case .accepted:
+            state.acceptPrompt(sessionKey: sessionKey, correlationID: correlationID)
+        case .failed(_):
+            state.failPrompt(sessionKey: sessionKey, correlationID: correlationID)
+        case .sending, .delivered, .uncertain, .interrupted:
+            break
+        }
+    }
+
+    func clearPendingReplies(for sessionKey: String) {
+        state.clearPendingReplies(for: sessionKey)
     }
 
     private func persistLocalReadMarkers() {

@@ -131,6 +131,109 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(afterReply, ["agent:alpha"])
     }
 
+    @MainActor func testAcceptedPromptMovesIntoRepliesWithWaitingIndicator() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+    }
+
+    @MainActor func testAssistantReplyRestoresRepliesArrow() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+
+        feed.apply(try change(#"{"type":"change","class":"message.created","payload":{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#), userID: "reader")
+
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+    }
+
+    @MainActor func testSendFailureDoesNotMoveAgentIntoReplies() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+
+        bridge.handle(type: "rejected", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId,
+            "reason": "offline"
+        ])
+
+        XCTAssertEqual(bridge.outgoing?.status, .failed("offline"))
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+    }
+
+    @MainActor func testFailureAfterAcceptanceClearsWaitingIndicator() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+
+        bridge.handle(type: "failed", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId,
+            "reason": "synthetic failure"
+        ])
+
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+    }
+
+    @MainActor func testExplicitLifetimeEndClearsWaitingIndicator() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha"])
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+
+        bridge.handle(type: "lifetime-ended", event: ["lifetimeId": outgoing.lifetimeId])
+
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+    }
+
     @MainActor func testNonEmptyMarkersStillReadMessageHistory() async throws {
         let (defaults, suiteName) = try testDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -375,6 +478,25 @@ final class RepliedTests: XCTestCase {
     private func testDefaults() throws -> (UserDefaults, String) {
         let suiteName = "RepliedTests.\(UUID().uuidString)"
         return (try XCTUnwrap(UserDefaults(suiteName: suiteName)), suiteName)
+    }
+
+    @MainActor private func makeReplyBridge(sessionKey: String, feed: RepliedFeed) -> ChatHostBridge {
+        let bridge = ChatHostBridge(
+            chatURL: URL(string: "https://chat.example.test/")!,
+            outgoingObserver: { outgoing in
+                feed.observePromptStatus(outgoing.status, sessionKey: outgoing.sessionKey,
+                                        correlationID: outgoing.correlationId)
+            },
+            lifetimeEndedObserver: { endedSessionKey in
+                feed.clearPendingReplies(for: endedSessionKey)
+            }
+        )
+        bridge.handle(type: "ready", event: [
+            "version": 1,
+            "lifetimeId": "l_test",
+            "sessionKey": sessionKey
+        ])
+        return bridge
     }
 
     private actor FetchCounter {
