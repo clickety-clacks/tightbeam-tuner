@@ -1,6 +1,6 @@
 import Foundation
 
-struct Connection: Codable, Equatable {
+struct Connection: Codable, Equatable, Sendable {
     var chatServer = ""
     var gateway = ""
     var sshHost = ""
@@ -47,7 +47,17 @@ final class TunerStore {
     private enum Keys {
         static let connection = "connection.v1"
         static let recent = "recentAgents.v1"
+        static let roster = "rosterSnapshot.v1"
     }
+
+    private struct RosterSnapshot: Codable {
+        let schemaVersion: Int
+        let connection: Connection
+        let agents: [Agent]
+    }
+
+    private static let rosterSnapshotSchemaVersion = 1
+    typealias RosterFetcher = @Sendable (Connection) async throws -> Data
 
     var connection: Connection
     var agents: [Agent] = []
@@ -55,16 +65,35 @@ final class TunerStore {
     var recentIDs: [String]
     var error: String?
     var isLoading = false
+    var isRosterStale = false
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let rosterFetcher: RosterFetcher
+    @ObservationIgnored private var hasRosterSnapshot = false
     @ObservationIgnored private var rosterRevision: UInt64 = 0
     @ObservationIgnored private var refreshInProgress = false
     @ObservationIgnored private var refreshRequested = false
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        rosterFetcher: @escaping RosterFetcher = { connection in
+            try await SSHRoster.fetch(connection: connection)
+        }
+    ) {
         self.defaults = defaults
+        self.rosterFetcher = rosterFetcher
         connection = defaults.data(forKey: Keys.connection)
             .flatMap { try? JSONDecoder().decode(Connection.self, from: $0) } ?? Connection()
         recentIDs = defaults.stringArray(forKey: Keys.recent) ?? []
+
+        if connection.isComplete,
+           let data = defaults.data(forKey: Keys.roster),
+           let snapshot = try? JSONDecoder().decode(RosterSnapshot.self, from: data),
+           snapshot.schemaVersion == Self.rosterSnapshotSchemaVersion,
+           snapshot.connection == connection {
+            agents = snapshot.agents.filter(Self.isVisibleRosterAgent)
+            hasRosterSnapshot = true
+            isRosterStale = true
+        }
     }
 
     var selectedAgent: Agent? { agents.first { $0.id == selectedID } }
@@ -81,9 +110,12 @@ final class TunerStore {
         if refreshInProgress { refreshRequested = true }
         connection = value
         defaults.set(try? JSONEncoder().encode(value), forKey: Keys.connection)
+        defaults.removeObject(forKey: Keys.roster)
+        hasRosterSnapshot = false
         selectedID = nil
         agents = []
         error = nil
+        isRosterStale = false
     }
 
     func select(_ agent: Agent) {
@@ -104,7 +136,7 @@ final class TunerStore {
         case .sessionSpawned(let agent), .sessionUpdated(let agent), .sessionHarnessChanged(let agent):
             rosterRevision &+= 1
             if refreshInProgress { refreshRequested = true }
-            if isVisibleRosterAgent(agent) {
+            if Self.isVisibleRosterAgent(agent) {
                 if let index = agents.firstIndex(where: { $0.id == agent.id }) {
                     agents[index] = agent
                 } else {
@@ -127,8 +159,19 @@ final class TunerStore {
         if selectedID == sessionKey { selectedID = nil }
     }
 
-    private func isVisibleRosterAgent(_ agent: Agent) -> Bool {
+    private static func isVisibleRosterAgent(_ agent: Agent) -> Bool {
         agent.state == "active" && !agent.id.isEmpty && !agent.name.isEmpty
+    }
+
+    func persistRosterSnapshotIfAvailable() {
+        guard hasRosterSnapshot else { return }
+        let snapshot = RosterSnapshot(
+            schemaVersion: Self.rosterSnapshotSchemaVersion,
+            connection: connection,
+            agents: agents
+        )
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(data, forKey: Keys.roster)
     }
 
     func refresh() async {
@@ -145,16 +188,19 @@ final class TunerStore {
             let requestedConnection = connection
             let requestedRevision = rosterRevision
             do {
-                let data = try await SSHRoster.fetch(connection: requestedConnection)
+                let data = try await rosterFetcher(requestedConnection)
                 guard !Task.isCancelled else { break }
                 guard requestedRevision == rosterRevision else {
                     refreshRequested = true
                     continue
                 }
                 let roster = try JSONDecoder().decode(Roster.self, from: data)
-                agents = roster.sessions.filter(isVisibleRosterAgent)
+                agents = roster.sessions.filter(Self.isVisibleRosterAgent)
                 if let selectedID, !agents.contains(where: { $0.id == selectedID }) { self.selectedID = nil }
                 error = nil
+                isRosterStale = false
+                hasRosterSnapshot = true
+                persistRosterSnapshotIfAvailable()
             } catch {
                 guard !Task.isCancelled else { break }
                 guard requestedRevision == rosterRevision else {
@@ -162,6 +208,7 @@ final class TunerStore {
                     continue
                 }
                 self.error = error.localizedDescription
+                isRosterStale = hasRosterSnapshot
             }
         } while refreshRequested && !Task.isCancelled
         refreshInProgress = false
