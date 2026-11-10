@@ -114,12 +114,22 @@ enum RepliesRowIndicator: Equatable {
     case reply
 }
 
+enum RepliedMessageOrigin: Equatable, Sendable {
+    case live
+    case history
+}
+
 struct RepliedState: Sendable {
     private(set) var latestReplyBySession: [String: Int] = [:]
+    private(set) var latestMessageSequenceBySession: [String: Int] = [:]
     private(set) var readMarkerBySession: [String: RepliedReadMarker] = [:]
     private(set) var localReadMarkerBySession: [String: Int]
     private(set) var retiredSessionKeys: Set<String> = []
-    private(set) var pendingPromptIDsBySession: [String: Set<String>] = [:]
+    private struct PendingPrompt: Sendable {
+        let sessionKey: String
+        let acceptedAfterSequence: Int?
+    }
+    private var pendingPromptsByID: [String: PendingPrompt] = [:]
     private(set) var pendingOrderBySession: [String: Int] = [:]
     private var nextPendingOrder = 0
     init(localReadMarkerBySession: [String: Int] = [:]) {
@@ -132,12 +142,32 @@ struct RepliedState: Sendable {
         return marker
     }
     mutating func apply(_ message: RepliedMessage) {
-        _ = apply(message, shownSessionKey: nil)
+        _ = apply(message, shownSessionKey: nil, origin: .history)
     }
-    mutating func apply(_ message: RepliedMessage, shownSessionKey: String?) -> Bool {
+    mutating func apply(
+        _ message: RepliedMessage,
+        shownSessionKey: String?,
+        origin: RepliedMessageOrigin
+    ) -> Bool {
         if message.role == "assistant" {
-            clearPendingReplies(for: message.sessionKey)
+            let completedPrompts = pendingPromptsByID.compactMap { correlationID, prompt -> String? in
+                guard prompt.sessionKey == message.sessionKey else { return nil }
+                if let baseline = prompt.acceptedAfterSequence {
+                    return message.seq > baseline ? correlationID : nil
+                }
+                return origin == .live ? correlationID : nil
+            }
+            for correlationID in completedPrompts {
+                pendingPromptsByID.removeValue(forKey: correlationID)
+            }
+            if !pendingPromptsByID.values.contains(where: { $0.sessionKey == message.sessionKey }) {
+                pendingOrderBySession.removeValue(forKey: message.sessionKey)
+            }
         }
+        latestMessageSequenceBySession[message.sessionKey] = max(
+            latestMessageSequenceBySession[message.sessionKey] ?? Int.min,
+            message.seq
+        )
         guard message.role == "assistant", message.turnIncludesHuman else { return false }
         latestReplyBySession[message.sessionKey] = max(latestReplyBySession[message.sessionKey] ?? Int.min, message.seq)
         guard message.sessionKey == shownSessionKey else { return false }
@@ -155,15 +185,22 @@ struct RepliedState: Sendable {
         readMarkerBySession[key] = marker
     }
     mutating func apply(_ frame: RepliedFrame, userID: String) {
-        _ = apply(frame, userID: userID, shownSessionKey: nil)
+        _ = apply(frame, userID: userID, shownSessionKey: nil, messageOrigin: .live)
     }
-    mutating func apply(_ frame: RepliedFrame, userID: String, shownSessionKey: String?) -> Bool {
+    mutating func apply(
+        _ frame: RepliedFrame,
+        userID: String,
+        shownSessionKey: String?,
+        messageOrigin: RepliedMessageOrigin
+    ) -> Bool {
         switch frame {
-        case .message(let message): return apply(message, shownSessionKey: shownSessionKey)
+        case .message(let message):
+            return apply(message, shownSessionKey: shownSessionKey, origin: messageOrigin)
         case .readMarker(let marker): apply(marker, userID: userID)
+        case .sessionSpawned(let agent), .sessionUpdated(let agent), .sessionHarnessChanged(let agent):
+            retiredSessionKeys.remove(agent.id)
         case .retired(let key):
             retiredSessionKeys.insert(key)
-            clearPendingReplies(for: key)
         default: break
         }
         return false
@@ -171,28 +208,27 @@ struct RepliedState: Sendable {
 
     mutating func acceptPrompt(sessionKey: String, correlationID: String) {
         guard !retiredSessionKeys.contains(sessionKey) else { return }
-        if pendingPromptIDsBySession[sessionKey, default: []].isEmpty {
+        guard pendingPromptsByID[correlationID] == nil else { return }
+        if !pendingPromptsByID.values.contains(where: { $0.sessionKey == sessionKey }) {
             nextPendingOrder += 1
             pendingOrderBySession[sessionKey] = nextPendingOrder
         }
-        pendingPromptIDsBySession[sessionKey, default: []].insert(correlationID)
+        pendingPromptsByID[correlationID] = PendingPrompt(
+            sessionKey: sessionKey,
+            acceptedAfterSequence: latestMessageSequenceBySession[sessionKey]
+        )
     }
 
     mutating func failPrompt(sessionKey: String, correlationID: String) {
-        pendingPromptIDsBySession[sessionKey]?.remove(correlationID)
-        if pendingPromptIDsBySession[sessionKey]?.isEmpty == true {
-            pendingPromptIDsBySession.removeValue(forKey: sessionKey)
+        guard pendingPromptsByID[correlationID]?.sessionKey == sessionKey else { return }
+        pendingPromptsByID.removeValue(forKey: correlationID)
+        if !pendingPromptsByID.values.contains(where: { $0.sessionKey == sessionKey }) {
             pendingOrderBySession.removeValue(forKey: sessionKey)
         }
     }
 
-    mutating func clearPendingReplies(for sessionKey: String) {
-        pendingPromptIDsBySession.removeValue(forKey: sessionKey)
-        pendingOrderBySession.removeValue(forKey: sessionKey)
-    }
-
     func isWaitingForReply(_ sessionKey: String) -> Bool {
-        !(pendingPromptIDsBySession[sessionKey]?.isEmpty ?? true)
+        pendingPromptsByID.values.contains(where: { $0.sessionKey == sessionKey })
     }
 
     func rowIndicator(for sessionKey: String) -> RepliesRowIndicator? {
@@ -266,7 +302,12 @@ struct RepliedShownChat {
     }
 
     func apply(_ frame: RepliedFrame, userID: String) {
-        if state.apply(frame, userID: userID, shownSessionKey: shownSessionKey) {
+        apply(frame, userID: userID, messageOrigin: .live)
+    }
+
+    private func apply(_ frame: RepliedFrame, userID: String, messageOrigin: RepliedMessageOrigin) {
+        if state.apply(frame, userID: userID, shownSessionKey: shownSessionKey,
+                       messageOrigin: messageOrigin) {
             persistLocalReadMarkers()
         }
     }
@@ -280,10 +321,6 @@ struct RepliedShownChat {
         case .sending, .delivered, .uncertain, .interrupted:
             break
         }
-    }
-
-    func clearPendingReplies(for sessionKey: String) {
-        state.clearPendingReplies(for: sessionKey)
     }
 
     private func persistLocalReadMarkers() {
@@ -365,7 +402,7 @@ struct RepliedShownChat {
                 guard !Task.isCancelled else { group.cancelAll(); return }
                 if let messages {
                     for message in messages where message.sessionKey == key {
-                        apply(.message(message), userID: user)
+                        apply(.message(message), userID: user, messageOrigin: .history)
                     }
                 }
                 if next < sessionKeys.count {

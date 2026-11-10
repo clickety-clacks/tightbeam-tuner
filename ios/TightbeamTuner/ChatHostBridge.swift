@@ -46,10 +46,8 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     }
 
     typealias OutgoingObserver = @MainActor (Outgoing) -> Void
-    typealias LifetimeEndedObserver = @MainActor (String) -> Void
 
     @ObservationIgnored private let outgoingObserver: OutgoingObserver?
-    @ObservationIgnored private let lifetimeEndedObserver: LifetimeEndedObserver?
 
     private(set) var phase: Phase = .waiting
     private(set) var outgoing: Outgoing?
@@ -113,8 +111,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
 
     init(
         chatURL: URL,
-        outgoingObserver: OutgoingObserver? = nil,
-        lifetimeEndedObserver: LifetimeEndedObserver? = nil
+        outgoingObserver: OutgoingObserver? = nil
     ) {
         var parts = URLComponents()
         parts.scheme = chatURL.scheme
@@ -122,7 +119,6 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         parts.port = chatURL.port
         allowedOrigin = parts.url?.absoluteString ?? ""
         self.outgoingObserver = outgoingObserver
-        self.lifetimeEndedObserver = lifetimeEndedObserver
     }
 
     /// Document-start script that declares Tuner as a host, only on the configured Chat origin.
@@ -293,20 +289,16 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             reconnectSupported = (event["capabilities"] as? [String: Any])?["reconnect"] as? Bool ?? false
             hostComposerActive = true
         case "unavailable":
-            if let lifetimeId, case let .ready(current, sessionKey) = phase, current == lifetimeId {
-                let reason = event["reason"] as? String
-                unavailableReason = reason
+            if let lifetimeId, case let .ready(current, _) = phase, current == lifetimeId {
+                unavailableReason = event["reason"] as? String
                 phase = .unavailable(lifetimeId: lifetimeId)
-                if reason == "lifetime-ended" { lifetimeEndedObserver?(sessionKey) }
             }
         case "lifetime-ended":
-            if hostComposerActive, let lifetimeId,
-               case let .ready(current, sessionKey) = phase, lifetimeId == current {
+            if hostComposerActive, let lifetimeId {
                 unavailableReason = "lifetime-ended"
                 phase = .unavailable(lifetimeId: lifetimeId)
                 reconnectSupported = false
                 reportedConnection = nil
-                lifetimeEndedObserver?(sessionKey)
             }
         case "declined":
             phase = .waiting

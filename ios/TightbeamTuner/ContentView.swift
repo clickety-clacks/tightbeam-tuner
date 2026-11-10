@@ -590,9 +590,6 @@ private struct AgentChatView: View {
             outgoingObserver: { outgoing in
                 repliedFeed.observePromptStatus(outgoing.status, sessionKey: outgoing.sessionKey,
                                                 correlationID: outgoing.correlationId)
-            },
-            lifetimeEndedObserver: { sessionKey in
-                repliedFeed.clearPendingReplies(for: sessionKey)
             }
         ))
     }
