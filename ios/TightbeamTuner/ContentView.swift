@@ -856,6 +856,11 @@ private struct AgentSidebar: View {
                 AgentSectionHeader(title: "Agents", count: counts.agents)
             }
             if store.isLoading { ProgressView("Loading agents…") }
+            if store.isRosterStale {
+                Label("Agent list may be out of date", systemImage: "clock.arrow.circlepath")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             if let error = store.error {
                 ContentUnavailableView("Could not load agents", systemImage: "wifi.exclamationmark", description: Text(error))
             }

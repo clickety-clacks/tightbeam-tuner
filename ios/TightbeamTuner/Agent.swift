@@ -4,7 +4,7 @@ struct Roster: Decodable {
     let sessions: [Agent]
 }
 
-struct Agent: Decodable, Identifiable, Hashable, Sendable {
+struct Agent: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let name: String
     let state: String
@@ -34,5 +34,16 @@ struct Agent: Decodable, Identifiable, Hashable, Sendable {
         archetype = try values.decodeIfPresent(String.self, forKey: .archetype)
         harness = try? values.decodeIfPresent(String.self, forKey: .harness)
         model = try? values.decodeIfPresent(String.self, forKey: .model)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(name, forKey: .name)
+        try values.encode(state, forKey: .state)
+        try values.encodeIfPresent(parent, forKey: .currentParent)
+        try values.encodeIfPresent(archetype, forKey: .archetype)
+        try values.encodeIfPresent(harness, forKey: .harness)
+        try values.encodeIfPresent(model, forKey: .model)
     }
 }
