@@ -1,8 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-// Button in the Nordic palette. Prominent buttons fill with the moss accent, like Chat's
-// send button; others use the glass surface of Chat's floating controls.
+// Quiet action button shared by Tuner's desktop settings and picker affordances.
 Button {
     id: control
     property var theme
@@ -11,22 +10,34 @@ Button {
     padding: 8
     leftPadding: 14
     rightPadding: 14
-    opacity: enabled ? 1 : 0.55
+    font.family: control.theme.fontFamily
 
     contentItem: Text {
         text: control.text
         font: control.font
-        color: control.prominent ? control.theme.onAccent : control.theme.foreground
+        color: control.enabled
+               ? (control.prominent ? control.theme.onAccent : control.theme.foreground)
+               : control.theme.disabledText
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
     }
 
     background: Rectangle {
-        radius: height / 2
-        color: control.prominent ? control.theme.accent
-             : control.hovered ? control.theme.hover : control.theme.button
+        radius: control.theme.smallRadius
+        color: !control.enabled ? control.theme.disabledButton
+             : control.prominent ? (control.down ? control.theme.accentPressed
+                                  : control.hovered ? control.theme.accentHover : control.theme.accent)
+             : control.down ? control.theme.buttonPressed
+             : control.hovered ? control.theme.buttonHover : control.theme.button
         border.color: control.visualFocus ? control.theme.focus
                     : control.prominent ? "transparent" : control.theme.buttonBorder
         border.width: control.visualFocus ? 2 : 1
+        Behavior on border.color {
+            ColorAnimation { duration: 200; easing.type: Easing.InOutQuad }
+        }
+
+        Behavior on color {
+            ColorAnimation { duration: 200; easing.type: Easing.InOutQuad }
+        }
     }
 }
