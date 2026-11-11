@@ -218,14 +218,36 @@ enum ReleaseNotes {
     static func takeUnseen(firstInstall: Bool) -> [ReleaseNote] {
         let defaults = UserDefaults.standard
         let current = currentBuild
-        let released = all.filter { $0.build <= current }
+        let lastSeen: Int?
+        if defaults.object(forKey: lastSeenKey) != nil {
+            lastSeen = defaults.integer(forKey: lastSeenKey)
+        } else {
+            lastSeen = nil
+        }
         defer { defaults.set(max(current, defaults.integer(forKey: lastSeenKey)), forKey: lastSeenKey) }
-        guard defaults.object(forKey: lastSeenKey) != nil else {
+        return unseenNotes(
+            in: all,
+            currentBuild: current,
+            lastSeenBuild: lastSeen,
+            firstInstall: firstInstall
+        )
+    }
+
+    /// Selects notes for the first screen after an update. This accepts the app bundle's
+    /// exact CFBundleVersion and the prior marker, so a new numbered entry is selected on
+    /// the first launch that contains it.
+    static func unseenNotes(
+        in notes: [ReleaseNote],
+        currentBuild: Int,
+        lastSeenBuild: Int?,
+        firstInstall: Bool
+    ) -> [ReleaseNote] {
+        let released = notes.filter { $0.build <= currentBuild }
+        guard let lastSeenBuild else {
             // Updated from a build that kept no record: show the latest release only.
             return firstInstall ? [] : Array(released.prefix(1))
         }
-        let lastSeen = defaults.integer(forKey: lastSeenKey)
-        return released.filter { $0.build > lastSeen }
+        return released.filter { $0.build > lastSeenBuild }
     }
 }
 
