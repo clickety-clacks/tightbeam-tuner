@@ -51,7 +51,7 @@ Keep primary text on primary surfaces at or above 4.5:1 contrast. The muted role
 
 ### Typography
 
-Clawline’s reference family is DM Sans, variable from weight 300 to 700, with a system sans-serif fallback. Tuner has no bundled font file today. Keep native UI type accessible: use SwiftUI text styles and Dynamic Type on iOS, and the Qt/system UI sans on desktop unless a later implementation deliberately packages the reference font.
+DM Sans, variable from weight 300 to 700, is Tuner’s UI typeface on both desktop and iOS and is a signature Clawline trait. Package and register the font for both applications. On iOS, map the type roles to relative SwiftUI text styles in DM Sans so Dynamic Type continues to scale them. On desktop, use DM Sans under the existing persisted 0.7–2.0 text-size control. Tuner’s Qt Quick and SwiftUI platforms support packaged fonts, so there is no current platform constraint that justifies another intended family; retain a system sans-serif fallback only for a font-registration failure.
 
 | Role | Reference treatment | Tuner use |
 | --- | --- | --- |
@@ -81,13 +81,13 @@ Use 12-unit spacing for compact iPhone transcript rhythm and 16 for iPad transcr
 
 ### Shape and radii
 
-Use continuous, soft corners for Tuner-owned cards and panels: 12 units for compact fields, 16 for cards and selected row backgrounds, and 24 for larger overlays. This keeps dense roster and settings controls compact while carrying Clawline’s rounded forms into larger surfaces. Use capsules for count pills, compact chips, and the composer field; circular controls remain circular. Preserve system-provided shapes for iOS navigation, forms, menus, sheets, and glass controls.
+Use continuous, soft corners for Tuner-owned surfaces: 12 units for compact fields and controls, 16 for cards and selected row backgrounds, and 24 for larger overlays. This intentionally departs from Clawline’s 28-unit squircle: Tuner’s dense roster, compact search and settings controls, and resizable desktop panels need smaller shapes that preserve visible hierarchy without squeezing content. Use capsules for count pills, compact chips, and the composer field; circular controls remain circular. Preserve system-provided shapes for iOS navigation, forms, menus, sheets, and glass controls.
 
 Clawline’s 24–28 unit rounded message corners with a 4-unit directional corner, and its 28–32 unit organic bubble variations, apply to Chat message bubbles only. Do not put directional bubble corners on agent rows or Tuner panels.
 
 ### Elevation and material
 
-Keep ordinary rows, list sections, and sidebar surfaces flat. Apply the warm, downward top-lit shadows only to floating desktop panels:
+Keep ordinary rows, list sections, and sidebar surfaces flat so depth does not compete with scanning the agent hierarchy. Apply the warm, downward top-lit shadows only to floating desktop overlays, where they separate the bounded panel from the app surface:
 
 | Role | Light | Dark |
 | --- | --- | --- |
@@ -102,7 +102,21 @@ The native iOS composer uses the system glass effect directly over Chat content,
 
 Use a 200 ms ease transition for custom control feedback and a 300 ms ease transition for custom color-theme changes. A desktop hover may lift a floating panel by 2 units while deepening its shadow. Do not add hover movement to list rows or controls that are not interactive. iOS touch controls use native pressed and navigation feedback.
 
-Respect reduced-motion preferences: remove lifts and optional ambient motion while keeping state changes immediate and visible. Tuner’s roster and settings do not need Clawline’s animated dust, noise overlay, or custom caustic shader; they are reading and navigation surfaces. Avoid motion that distracts from scanning names or status.
+Respect reduced-motion preferences: remove lifts and optional ambient motion while keeping state changes immediate and visible. Tuner’s roster and settings do not need Clawline’s animated dust or custom caustic shader; they are reading and navigation surfaces. The subtle static grain is limited to Canvas, as described below. Avoid motion that distracts from scanning names or status.
+
+## Current-to-target mapping
+
+This short map records representative current values from the shared desktop palette and iOS named colors, then points to the semantic target above. It is a restyle guide; the current values remain in the app until a separately reviewed implementation.
+
+| Area | Current Tuner appearance | Target |
+| --- | --- | --- |
+| Window background | Qt `window` and iOS `NordicBackground`: #F1EEE9 light / #161514 dark | Clawline Canvas gradient: #E8E0D4 to #D4C8BC light / #0F0E0D to #1A1816 dark; subtle grain on Canvas only |
+| Sidebar and plain surfaces | Qt sidebar #E6E1D8 / #201F1D; Qt surface #F1EEE9 / #201F1D; iOS `NordicSurface` #E6E1D8 / #24221F | Surface #F7F3EB / #1C1917; Raised surface only for bounded desktop overlays |
+| Primary text | Qt foreground and iOS `NordicText`: #31302D / #DDD9D1 | Primary text #3D3429 / #E8E4E0; use the semantic Secondary and Muted roles for supporting text |
+| Accent and selection | Qt focus/accent and iOS `AccentColor`: #526657 / #A5BAA9; desktop selection #DCE3DA / #26302A | Sage for actions and selection; Terracotta for focus and small action accents, using the light/dark semantic values above |
+| Desktop corners | Rows and sidebar/settings fields 7 units; Spotlight field and sidebar toggle 8; Spotlight and settings panels 14; buttons are capsules | Fields and compact controls 12; rows/cards 16; overlays 24; keep capsules and circles, and native iOS shapes |
+
+The map does not force native iOS lists or forms to use desktop surface colors or geometry. Their system-controlled materials and shapes remain platform-owned.
 
 ## Component inventory
 
@@ -122,11 +136,11 @@ The states and token roles below describe the target appearance. Platform contro
 
 **Sidebar resize divider.** A narrow full-height drag target separates sidebar and detail. Keep it visually quiet at rest, use Warm accent only while hovered or keyboard-focused, and show the platform split cursor. It changes sidebar width without changing selection or filters; its range remains 190–480 logical units.
 
-**Sidebar toggle.** A compact floating control at the upper-left of the detail pane toggles the sidebar and changes its menu/close symbol. Use a quiet translucent Surface and Subtle border with an 8-unit corner; show focus clearly. It is hidden while settings are open and follows light/dark surfaces.
+**Sidebar toggle.** A compact floating control at the upper-left of the detail pane toggles the sidebar and changes its menu/close symbol. Use a quiet translucent Surface and Subtle border with a 12-unit corner; show focus clearly. It is hidden while settings are open and follows light/dark surfaces.
 
 **Chat detail and empty/loading states.** With a selected agent, the existing Chat page fills the detail pane. Without one, Tuner shows “Choose an agent to open Chat”; while reading the roster it shows “Reading agents…”, and connection-settings startup has a separate loading message. Errors remain readable text on a calm surface. Tuner owns the host background, reload trigger, zoom preference, and external-link handoff; the embedded page owns all transcript styling. Use Canvas/Primary text for Tuner placeholders in both themes.
 
-**Spotlight picker.** A centered, bounded dialog has a scrim, search field, up to 12 matching rows, and a no-match or roster-error message. Use Raised surface, 24-unit panel corners, Floating panel elevation, 12-unit interior padding, and Selection for the keyboard-highlighted result. The field has a clear focus boundary; row states are ordinary, hovered, keyboard-highlighted, and pressed. Query changes reset the active result. Up/Down changes the highlight, Enter selects, Escape closes when a chat is already selected, and an outside click dismisses when possible. Ctrl+Space opens the picker and focuses its field.
+**Spotlight picker.** A centered, bounded dialog has a scrim, search field, up to 12 matching rows, and a no-match or roster-error message. Use Raised surface, 24-unit panel corners, Floating panel elevation, 12-unit interior padding, and Selection for the keyboard-highlighted result. The field has a 12-unit corner and clear focus boundary; row states are ordinary, hovered, keyboard-highlighted, and pressed. Query changes reset the active result. Up/Down changes the highlight, Enter selects, Escape closes when a chat is already selected, and an outside click dismisses when possible. Ctrl+Space opens the picker and focuses its field.
 
 **Connection settings panel.** First-run setup and later connection settings use a centered scrollable panel with a title, explanatory copy, Chat server URL, gateway URL, Tightbeam CLI location, Tightbeam user, feedback message, and action row. Use Raised surface, 24-unit panel corners, 12-unit field corners, Body for input values, Supporting label for field labels, and Error for visible connection feedback. Field states are empty, editing, focused, and populated; validation and discovery failures appear in the shared feedback message rather than an inline field error. “Find from Chat” has idle/checking/disabled/error states; “Save and connect” has enabled/connecting/disabled states; “Back to chat” appears only after setup. Preserve the existing desktop field set; device key and SSH host-key settings belong to iOS.
 
@@ -178,12 +192,15 @@ There is no Spotlight picker on iOS. The Chat page may navigate within its own w
 | --- | --- |
 | Tuner is a roster browser, not a transcript | Keep the parent/child tree, section counts, names, and archetype captions. Do not add Clawline avatar waypoints, message flow packing, sender-side bubble corners, or conversation-only link cards to the roster. |
 | Chat owns its embedded page | Style only Tuner’s WebKit host and native composer. Chat controls message bubbles, transcript layout, and in-page typography. |
-| Native iOS controls | Use SwiftUI NavigationSplitView, List, searchable, Form, system menus, sheets, popovers, and iOS 26+ Liquid Glass. Native controls adapt shape, keyboard, safe area, accessibility, and platform appearance; do not replace them with web-sized replicas. |
-| Dynamic Type versus fixed web sizes | Treat Clawline’s pixel values as reference sizes. Map UI roles to system text styles on iOS and keep desktop’s persisted text-size control. |
+| DM Sans with platform scaling | Keep DM Sans on both platforms as a defining Clawline trait. Scale its semantic roles through Dynamic Type on iOS and Tuner’s existing text-size control on desktop instead of freezing the reference pixel sizes. |
+| Native iOS controls | Use SwiftUI NavigationSplitView, List, searchable, Form, system menus, sheets, popovers, and iOS 26+ Liquid Glass. Native controls adapt shape, keyboard, safe area, accessibility, and platform appearance; preserve their system behavior rather than replacing them with web-sized replicas. |
 | Desktop density and input model | Qt Quick uses logical coordinates, hover and pointer interaction, resizable panes, and keyboard shortcuts. Keep the 190–480 unit sidebar range and allow window resizing rather than using phone-sized fixed layouts. |
 | System appearance | Desktop follows the current desktop color scheme. iOS defaults to System and exposes explicit Light and Dark overrides in Settings. Every semantic surface and status token must have both variants. |
+| Compact radii | Clawline’s reference uses a 28-unit squircle. Tuner’s target uses 12/16/24-unit radii for fields and compact controls, rows/cards, and overlays to fit the dense roster and compact settings while keeping hierarchy clear. |
+| Selective elevation | Use Clawline’s warm shadows on bounded desktop overlays only. Flat rows and sidebars keep the roster easy to scan; iOS sheets, popovers, and composer glass keep system-owned elevation and material. |
 | Focus and status contrast | Keep primary and secondary text readable, use muted text only for nonessential metadata, and pair status colors with names or symbols. Warm accent outlines focus; it does not replace focus indication. |
-| Texture and ambient effects | Clawline’s subtle page grain and demo particles are not applied to the dense agent tree or settings. They would compete with names, hierarchy, filters, and status. Native glass remains limited to the iOS composer. |
+| Canvas texture and ambient effects | Apply Clawline’s subtle grain to the Canvas background only. Leave sidebar rows, forms, fields, and cards clear so texture does not interfere with scanning labels and hierarchy. Omit the demo particles and caustic shader across Tuner’s reading and navigation surfaces; they would compete with roster status and controls. |
+| Reduced motion | Honor reduced-motion settings by dropping optional lifts and ambient effects while keeping feedback and state changes visible. This keeps repeated roster and settings interactions legible without removing essential feedback. |
 
 Desktop is implemented with Quickshell/Qt Quick and Qt WebEngine; iOS uses SwiftUI with a WebKit-hosted Chat page. The iOS app targets iOS 26 or later for its native glass controls and adapts to available size classes and split-view geometry, including iPhone Duo layouts. Preserve safe areas, keyboard visibility, Dynamic Type, VoiceOver labels, and native navigation when applying this system.
 
