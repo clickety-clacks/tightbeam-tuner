@@ -18,7 +18,10 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
     def _draft_copy(self, root):
         path = root / "CurrentBuildReleaseNote.json"
-        path.write_bytes(self.current_source.read_bytes())
+        data = json.loads(self.current_source.read_text(encoding="utf-8"))
+        data["build"] = 0
+        data["date"] = ""
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return path
 
     def _numbered_note_copy(self, root, build_number):
@@ -59,6 +62,19 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             self.assertEqual(data["build"], 57)
             self.assertTrue(note.items)
             self.assertEqual(source.read_bytes(), original)
+
+    def test_current_proof_note_is_selected_only_for_build_58(self):
+        note = release_notes.note_for_build(
+            self.current_source, self.history_source, 58
+        )
+        self.assertEqual(note.build, 58)
+        self.assertEqual(len(note.items), 6)
+
+        with self.assertRaisesRegex(
+            release_notes.ReleaseNoteError,
+            "current draft is assigned to build 58",
+        ):
+            release_notes.note_for_build(self.current_source, self.history_source, 57)
 
     def test_two_sequential_archive_workspaces_refuse_a_reused_note_draft(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
