@@ -4,7 +4,11 @@ import QtQuick
 // Alpha colors use Qt's #AARRGGBB form.
 QtObject {
     readonly property bool light: Application.styleHints.colorScheme === Qt.Light
-    readonly property string fontFamily: "DM Sans"
+    readonly property FontLoader dmSansFont: FontLoader {
+        source: Qt.resolvedUrl("ios/TightbeamTuner/Fonts/DM-Sans-Variable.ttf")
+    }
+    readonly property string fontFamily: dmSansFont.status === FontLoader.Ready
+                                       ? dmSansFont.name : "sans-serif"
 
     // Canvas and surfaces
     readonly property color canvasTop: light ? "#E8E0D4" : "#0F0E0D"
