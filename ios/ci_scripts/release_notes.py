@@ -309,31 +309,62 @@ def note_for_build(source_path: Path, history_path: Path, build_number: int) -> 
         )
 
 
-def _app_info_plist_path(archive_path: Path) -> Path:
-    """Locate the app bundle plist in a signed app path or exported archive."""
-    if archive_path.suffix == ".app":
-        app_bundles = [archive_path]
-    else:
-        app_bundles: list[Path] = []
-        for directory in (
-            archive_path,
-            archive_path / "Products" / "Applications",
-            archive_path / "Applications",
-            archive_path / "Payload",
-        ):
-            if directory.is_dir():
-                app_bundles.extend(
-                    child
-                    for child in directory.iterdir()
-                    if child.is_dir() and child.suffix == ".app"
-                )
+def _entry_names(names: list[str]) -> str:
+    """Format names only for refusal diagnostics, keeping CI logs bounded."""
+    ordered = sorted(set(names))
+    shown = ordered[:40]
+    summary = ", ".join(shown) if shown else "(none)"
+    if len(ordered) > len(shown):
+        summary += f", ... ({len(ordered) - len(shown)} more entries)"
+    return summary
 
-    unique_bundles = list(dict.fromkeys(app_bundles))
-    if len(unique_bundles) != 1:
+
+def _archived_app_info(archive_path: Path) -> dict:
+    """Read the sole app's Info.plist from Xcode Cloud's .xcarchive."""
+    if not archive_path.is_dir():
+        raise ReleaseNoteError("the Xcode Cloud archive path is not a directory")
+    try:
+        archive_entries = sorted(entry.name for entry in archive_path.iterdir())
+    except OSError as error:
+        raise ReleaseNoteError("could not list the Xcode Cloud archive directory") from error
+
+    applications_path = archive_path / "Products" / "Applications"
+    try:
+        application_entries = sorted(entry.name for entry in applications_path.iterdir())
+    except OSError as error:
         raise ReleaseNoteError(
-            "the signed app path does not contain exactly one app bundle"
+            "the Xcode Cloud archive has no readable Products/Applications directory; "
+            f"archive entries: {_entry_names(archive_entries)}"
+        ) from error
+
+    app_bundles = [
+        applications_path / name
+        for name in application_entries
+        if name.endswith(".app") and (applications_path / name).is_dir()
+    ]
+    if len(app_bundles) != 1:
+        raise ReleaseNoteError(
+            "the Xcode Cloud archive must contain exactly one app bundle under "
+            "Products/Applications; "
+            f"found {len(app_bundles)}; archive entries: {_entry_names(archive_entries)}; "
+            f"Products/Applications entries: {_entry_names(application_entries)}"
         )
-    return unique_bundles[0] / "Info.plist"
+
+    info_path = app_bundles[0] / "Info.plist"
+    try:
+        with info_path.open("rb") as info_file:
+            info = plistlib.load(info_file)
+    except (OSError, plistlib.InvalidFileException, ValueError) as error:
+        raise ReleaseNoteError(
+            "could not read the app Info.plist in the Xcode Cloud archive; "
+            f"Products/Applications entries: {_entry_names(application_entries)}"
+        ) from error
+    if not isinstance(info, dict):
+        raise ReleaseNoteError(
+            "the app Info.plist in the Xcode Cloud archive is not a dictionary; "
+            f"Products/Applications entries: {_entry_names(application_entries)}"
+        )
+    return info
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -354,13 +385,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         note = note_for_build(args.source, args.history, args.build_number)
         if args.archive_path is not None:
-            info_path = _app_info_plist_path(args.archive_path)
-            try:
-                with info_path.open("rb") as info_file:
-                    info = plistlib.load(info_file)
-            except (OSError, plistlib.InvalidFileException, ValueError) as error:
-                raise ReleaseNoteError(f"could not read archived app Info.plist: {error}") from error
-            app_build = info.get("CFBundleVersion") if isinstance(info, dict) else None
+            info = _archived_app_info(args.archive_path)
+            app_build = info.get("CFBundleVersion")
             if not isinstance(app_build, str) or not app_build.isdigit() or int(app_build) <= 0:
                 raise ReleaseNoteError("the archived app has no numeric CFBundleVersion")
             if app_build != str(args.build_number):
