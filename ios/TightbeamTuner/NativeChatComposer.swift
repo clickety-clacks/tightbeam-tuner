@@ -19,18 +19,23 @@ struct NativeChatComposer: View {
     private static let horizontalGap: CGFloat = 5
     // Keep adjacent glass shapes separate; the visible gap beside Send is 5 pt.
     private static let glassMergeSpacing: CGFloat = 4
-    private static let buttonSize: CGFloat = 34
+    private static let statusButtonSize: CGFloat = 34
+    // The glass button's natural circle around the 20 pt icon is 34 pt.
+    private static let sendButtonBaseCircleSize: CGFloat = 34
     private static let standardVerticalGap: CGFloat = 5
-    private static let standardContentHeight = buttonSize + 2 * standardVerticalGap
+    private static let standardContentHeight = statusButtonSize + 2 * standardVerticalGap
     private var matchesCompactSearchHeight: Bool {
         (glassHeight ?? Self.standardContentHeight) < Self.standardContentHeight
     }
-    private var verticalGap: CGFloat {
-        // Match a taller Filter when present, while keeping the full standard row height.
-        guard let glassHeight else { return Self.standardVerticalGap }
-        return max(Self.standardVerticalGap, (glassHeight - Self.buttonSize) / 2)
+    private var contentHeight: CGFloat {
+        max(Self.standardContentHeight, glassHeight ?? Self.standardContentHeight)
     }
-    private var contentHeight: CGFloat { Self.buttonSize + 2 * verticalGap }
+    private var statusVerticalGap: CGFloat {
+        max(Self.standardVerticalGap, (contentHeight - Self.statusButtonSize) / 2)
+    }
+    private var sendLabelPadding: CGFloat {
+        max(0, (contentHeight - Self.sendButtonBaseCircleSize) / 2)
+    }
     private var textFieldVerticalPadding: CGFloat {
         guard matchesCompactSearchHeight else { return 11 }
         return 3
@@ -38,7 +43,7 @@ struct NativeChatComposer: View {
     private var glassVerticalInset: CGFloat {
         max(0, ((glassHeight ?? contentHeight) - contentHeight) / 2)
     }
-    private var cornerRadius: CGFloat { Self.buttonSize / 2 + verticalGap + glassVerticalInset }
+    private var cornerRadius: CGFloat { contentHeight / 2 + glassVerticalInset }
     /// Used by the enclosing chat layout to locate the glass edge from the view's bottom.
     static let bottomPadding: CGFloat = 8
     /// Reserve the standard row before the first geometry measurement arrives.
@@ -74,7 +79,7 @@ struct NativeChatComposer: View {
                         .glassEffect(.regular, in: .capsule)
                         .transition(.opacity)
                 }
-                HStack(alignment: .bottom, spacing: 0) {
+                HStack(alignment: .bottom, spacing: Self.horizontalGap) {
                     HStack(alignment: .bottom, spacing: 0) {
                         // Connection status, the same dot Chat's own composer shows at its left.
                         Button {
@@ -83,12 +88,14 @@ struct NativeChatComposer: View {
                             Circle()
                                 .fill(bridge.connection.color)
                                 .frame(width: 11.5, height: 11.5)
-                                .frame(width: Self.buttonSize, height: Self.buttonSize)
+                                .frame(width: Self.statusButtonSize, height: Self.statusButtonSize)
                                 .contentShape(.circle)
                         }
                         .buttonStyle(.plain)
-                        .padding(.horizontal, Self.horizontalGap)
-                        .padding(.vertical, verticalGap)
+                        // Keep the status dot centered as before; its trailing inset is now the
+                        // external 5 pt gap before Send, preserving the text field's usable width.
+                        .padding(.leading, Self.horizontalGap)
+                        .padding(.vertical, statusVerticalGap)
                         .accessibilityLabel("Connection status: \(bridge.connection.label). Show details")
                         .popover(isPresented: $showingStatus) {
                             ConnectionDetails(bridge: bridge) { showingStatus = false }
@@ -107,10 +114,11 @@ struct NativeChatComposer: View {
                     .padding(.vertical, glassVerticalInset)
                     .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius, style: .continuous))
 
-                    // Keep the 34 pt visible button and its 44 pt hit area separate from the field glass.
+                    // Size the label so the glass style draws its circle at contentHeight.
                     Button(action: send) {
                         Image(systemName: isRetry ? "arrow.clockwise" : "arrow.up")
                             .frame(width: 20, height: 20)
+                            .padding(sendLabelPadding)
                     }
                         .accessibilityLabel(sendTitle)
                         .fontWeight(.semibold)
@@ -121,10 +129,8 @@ struct NativeChatComposer: View {
                         .buttonBorderShape(.circle)
                         // The glass style pads wider than tall and centers its circle in that
                         // width; pin the layout to the circle so the gap is the same on every side.
-                        .frame(width: Self.buttonSize, height: Self.buttonSize)
+                        .frame(width: contentHeight, height: contentHeight)
                         .disabled(!canSend)
-                        .padding(.horizontal, Self.horizontalGap)
-                        .padding(.vertical, verticalGap)
                         .contentShape(Rectangle())
                 }
             }
