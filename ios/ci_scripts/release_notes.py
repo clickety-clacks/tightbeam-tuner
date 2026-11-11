@@ -9,6 +9,7 @@ import os
 import plistlib
 import re
 import sys
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -319,50 +320,63 @@ def _entry_names(names: list[str]) -> str:
     return summary
 
 
-def _archived_app_info(archive_path: Path) -> dict:
-    """Read the sole app's Info.plist from Xcode Cloud's .xcarchive."""
-    if not archive_path.is_dir():
-        raise ReleaseNoteError("the Xcode Cloud archive path is not a directory")
+def _signed_export_app_info(signed_app_path: Path) -> dict:
+    """Read the sole app Info.plist from Xcode Cloud's TestFlight-signed IPA."""
+    if not signed_app_path.is_dir():
+        raise ReleaseNoteError("the Xcode Cloud signed-app export path is not a directory")
     try:
-        archive_entries = sorted(entry.name for entry in archive_path.iterdir())
+        export_entries = sorted(entry.name for entry in signed_app_path.iterdir())
     except OSError as error:
-        raise ReleaseNoteError("could not list the Xcode Cloud archive directory") from error
+        raise ReleaseNoteError("could not list the Xcode Cloud signed-app export directory") from error
 
-    applications_path = archive_path / "Products" / "Applications"
-    try:
-        application_entries = sorted(entry.name for entry in applications_path.iterdir())
-    except OSError as error:
-        raise ReleaseNoteError(
-            "the Xcode Cloud archive has no readable Products/Applications directory; "
-            f"archive entries: {_entry_names(archive_entries)}"
-        ) from error
-
-    app_bundles = [
-        applications_path / name
-        for name in application_entries
-        if name.endswith(".app") and (applications_path / name).is_dir()
+    ipa_paths = [
+        signed_app_path / name
+        for name in export_entries
+        if name.lower().endswith(".ipa") and (signed_app_path / name).is_file()
     ]
-    if len(app_bundles) != 1:
+    if len(ipa_paths) != 1:
         raise ReleaseNoteError(
-            "the Xcode Cloud archive must contain exactly one app bundle under "
-            "Products/Applications; "
-            f"found {len(app_bundles)}; archive entries: {_entry_names(archive_entries)}; "
-            f"Products/Applications entries: {_entry_names(application_entries)}"
+            "the Xcode Cloud signed-app export must contain exactly one IPA; "
+            f"found {len(ipa_paths)}; export entries: {_entry_names(export_entries)}"
         )
 
-    info_path = app_bundles[0] / "Info.plist"
+    ipa_path = ipa_paths[0]
+    ipa_entries: list[str] = []
     try:
-        with info_path.open("rb") as info_file:
-            info = plistlib.load(info_file)
-    except (OSError, plistlib.InvalidFileException, ValueError) as error:
+        with zipfile.ZipFile(ipa_path) as ipa:
+            ipa_entries = ipa.namelist()
+            app_info_entries = sorted({
+                name
+                for name in ipa_entries
+                if name.startswith("Payload/")
+                and name.endswith(".app/Info.plist")
+                and name.count("/") == 2
+            })
+            app_bundles = [name.rsplit("/", 1)[0] for name in app_info_entries]
+            if len(app_bundles) != 1:
+                raise ReleaseNoteError(
+                    "the Xcode Cloud signed IPA must contain exactly one app bundle; "
+                    f"found {len(app_bundles)}; export entries: {_entry_names(export_entries)}; "
+                    f"IPA entries: {_entry_names(ipa_entries)}"
+                )
+            with ipa.open(app_info_entries[0]) as info_file:
+                info = plistlib.load(info_file)
+    except zipfile.BadZipFile as error:
         raise ReleaseNoteError(
-            "could not read the app Info.plist in the Xcode Cloud archive; "
-            f"Products/Applications entries: {_entry_names(application_entries)}"
+            "the Xcode Cloud signed app is not a readable IPA; "
+            f"export entries: {_entry_names(export_entries)}"
+        ) from error
+    except ReleaseNoteError:
+        raise
+    except (OSError, KeyError, RuntimeError, plistlib.InvalidFileException, ValueError) as error:
+        raise ReleaseNoteError(
+            "could not read the app Info.plist in the Xcode Cloud signed IPA; "
+            f"IPA entries: {_entry_names(ipa_entries)}"
         ) from error
     if not isinstance(info, dict):
         raise ReleaseNoteError(
-            "the app Info.plist in the Xcode Cloud archive is not a dictionary; "
-            f"Products/Applications entries: {_entry_names(application_entries)}"
+            "the app Info.plist in the Xcode Cloud signed IPA is not a dictionary; "
+            f"IPA entries: {_entry_names(ipa_entries)}"
         )
     return info
 
@@ -373,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-number", required=True, type=int)
     parser.add_argument("--source", type=Path, default=_default_current_source())
     parser.add_argument("--history", type=Path, default=_default_source())
-    parser.add_argument("--archive-path", type=Path)
+    parser.add_argument("--signed-app-path", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
 
@@ -384,14 +398,14 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         note = note_for_build(args.source, args.history, args.build_number)
-        if args.archive_path is not None:
-            info = _archived_app_info(args.archive_path)
+        if args.signed_app_path is not None:
+            info = _signed_export_app_info(args.signed_app_path)
             app_build = info.get("CFBundleVersion")
             if not isinstance(app_build, str) or not app_build.isdigit() or int(app_build) <= 0:
-                raise ReleaseNoteError("the archived app has no numeric CFBundleVersion")
+                raise ReleaseNoteError("the signed app has no numeric CFBundleVersion")
             if app_build != str(args.build_number):
                 raise ReleaseNoteError(
-                    f"archive CFBundleVersion {app_build} does not match build {args.build_number}"
+                    f"signed app CFBundleVersion {app_build} does not match build {args.build_number}"
                 )
         text = note.tester_text()
         if not text.strip():
