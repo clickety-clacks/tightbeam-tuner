@@ -309,13 +309,40 @@ def note_for_build(source_path: Path, history_path: Path, build_number: int) -> 
         )
 
 
+def _app_info_plist_path(archive_path: Path) -> Path:
+    """Locate the app bundle plist in a signed app path or exported archive."""
+    if archive_path.suffix == ".app":
+        app_bundles = [archive_path]
+    else:
+        app_bundles: list[Path] = []
+        for directory in (
+            archive_path,
+            archive_path / "Products" / "Applications",
+            archive_path / "Applications",
+            archive_path / "Payload",
+        ):
+            if directory.is_dir():
+                app_bundles.extend(
+                    child
+                    for child in directory.iterdir()
+                    if child.is_dir() and child.suffix == ".app"
+                )
+
+    unique_bundles = list(dict.fromkeys(app_bundles))
+    if len(unique_bundles) != 1:
+        raise ReleaseNoteError(
+            "the signed app path does not contain exactly one app bundle"
+        )
+    return unique_bundles[0] / "Info.plist"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("validate", "render"))
     parser.add_argument("--build-number", required=True, type=int)
     parser.add_argument("--source", type=Path, default=_default_current_source())
     parser.add_argument("--history", type=Path, default=_default_source())
-    parser.add_argument("--app-path", type=Path)
+    parser.add_argument("--archive-path", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
 
@@ -326,8 +353,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         note = note_for_build(args.source, args.history, args.build_number)
-        if args.app_path is not None:
-            info_path = args.app_path / "Info.plist"
+        if args.archive_path is not None:
+            info_path = _app_info_plist_path(args.archive_path)
             try:
                 with info_path.open("rb") as info_file:
                     info = plistlib.load(info_file)

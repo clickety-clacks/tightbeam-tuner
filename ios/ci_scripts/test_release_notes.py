@@ -173,7 +173,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
             status = release_notes.main([
                 "render", "--build-number", "57", "--source", str(source),
-                "--history", str(self.history_source), "--app-path", str(app),
+                "--history", str(self.history_source), "--archive-path", str(app),
                 "--output", str(output),
             ])
 
@@ -192,12 +192,35 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
             status = release_notes.main([
                 "render", "--build-number", "57", "--source", str(source),
-                "--history", str(self.history_source), "--app-path", str(app),
+                "--history", str(self.history_source), "--archive-path", str(app),
                 "--output", str(output),
             ])
 
             self.assertEqual(status, 1)
             self.assertFalse(output.exists())
+
+    def test_render_reads_app_bundle_inside_exported_xcode_archive(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = self._numbered_note_copy(root, 57)
+            archive = root / "TightbeamTuner.xcarchive"
+            app = archive / "Products" / "Applications" / "TightbeamTuner.app"
+            app.mkdir(parents=True)
+            with (archive / "Info.plist").open("wb") as info_file:
+                plistlib.dump({"ApplicationProperties": {"CFBundleVersion": "56"}}, info_file)
+            with (app / "Info.plist").open("wb") as info_file:
+                plistlib.dump({"CFBundleVersion": "57"}, info_file)
+            output = root / "WhatToTest.en-US.txt"
+
+            status = release_notes.main([
+                "render", "--build-number", "57", "--source", str(source),
+                "--history", str(self.history_source), "--archive-path", str(archive),
+                "--output", str(output),
+            ])
+
+            self.assertEqual(status, 0)
+            note = release_notes.note_for_build(source, self.history_source, 57)
+            self.assertEqual(output.read_text(encoding="utf-8"), note.tester_text())
 
     def test_duplicate_historical_build_numbers_fail_closed(self):
         source = self.history_source.read_text(encoding="utf-8")
