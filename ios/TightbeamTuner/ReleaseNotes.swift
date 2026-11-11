@@ -3,7 +3,7 @@ import SwiftUI
 /// What changed in each release, newest first. Each build number identifies the app build
 /// associated with that entry.
 enum ReleaseNotes {
-    static let all: [ReleaseNote] = [
+    static let history: [ReleaseNote] = [
         ReleaseNote(version: "1.0", build: 52, date: "November 7, 2026", items: [
             .init(symbol: "text.bubble", title: "Keep the compact message field full size",
                   detail: "The empty or one-line message field keeps its full height and rounded ends in compact layouts."),
@@ -204,6 +204,31 @@ enum ReleaseNotes {
 
     private static let lastSeenKey = "releaseNotesLastSeenBuild"
 
+    /// The bundled author-written note is included only when it names this exact build.
+    /// Local development keeps an unnumbered draft out of the release list.
+    static var all: [ReleaseNote] {
+        notes(including: currentBuildNote())
+    }
+
+    static func notes(including currentBuildNote: ReleaseNote?) -> [ReleaseNote] {
+        ([currentBuildNote].compactMap { $0 } + history).sorted { $0.build > $1.build }
+    }
+
+    private static func currentBuildNote(bundle: Bundle = .main) -> ReleaseNote? {
+        guard
+            let url = bundle.url(forResource: "CurrentBuildReleaseNote", withExtension: "json"),
+            let data = try? Data(contentsOf: url),
+            let note = try? JSONDecoder().decode(ReleaseNote.self, from: data),
+            note.build > 0,
+            note.build == (Int(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0),
+            note.build > (history.map(\.build).max() ?? 0),
+            !note.items.isEmpty
+        else {
+            return nil
+        }
+        return note
+    }
+
     static var currentBuild: Int {
         Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
     }
@@ -218,19 +243,41 @@ enum ReleaseNotes {
     static func takeUnseen(firstInstall: Bool) -> [ReleaseNote] {
         let defaults = UserDefaults.standard
         let current = currentBuild
-        let released = all.filter { $0.build <= current }
+        let lastSeen: Int?
+        if defaults.object(forKey: lastSeenKey) != nil {
+            lastSeen = defaults.integer(forKey: lastSeenKey)
+        } else {
+            lastSeen = nil
+        }
         defer { defaults.set(max(current, defaults.integer(forKey: lastSeenKey)), forKey: lastSeenKey) }
-        guard defaults.object(forKey: lastSeenKey) != nil else {
+        return unseenNotes(
+            in: all,
+            currentBuild: current,
+            lastSeenBuild: lastSeen,
+            firstInstall: firstInstall
+        )
+    }
+
+    /// Selects notes for the first screen after an update. This accepts the app bundle's
+    /// exact CFBundleVersion and the prior marker, so a new numbered entry is selected on
+    /// the first launch that contains it.
+    static func unseenNotes(
+        in notes: [ReleaseNote],
+        currentBuild: Int,
+        lastSeenBuild: Int?,
+        firstInstall: Bool
+    ) -> [ReleaseNote] {
+        let released = notes.filter { $0.build <= currentBuild }
+        guard let lastSeenBuild else {
             // Updated from a build that kept no record: show the latest release only.
             return firstInstall ? [] : Array(released.prefix(1))
         }
-        let lastSeen = defaults.integer(forKey: lastSeenKey)
-        return released.filter { $0.build > lastSeen }
+        return released.filter { $0.build > lastSeenBuild }
     }
 }
 
-struct ReleaseNote: Identifiable {
-    struct Item: Identifiable {
+struct ReleaseNote: Identifiable, Decodable {
+    struct Item: Identifiable, Decodable {
         let symbol: String
         let title: String
         let detail: String

@@ -1,0 +1,37 @@
+{
+  "version": "1.0",
+  "build": 58,
+  "date": "November 11, 2026",
+  "items": [
+    {
+      "symbol": "text.bubble",
+      "title": "Keep Chat clear during its first layout",
+      "detail": "Tuner reserves space for its message field before Chat's first layout measurement, keeping the conversation controls clear."
+    },
+    {
+      "symbol": "person.2",
+      "title": "See your saved agents at launch",
+      "detail": "Tuner shows the saved agent list as soon as it opens, then reconciles it with the current roster."
+    },
+    {
+      "symbol": "arrow.up.circle",
+      "title": "Send sits beside the message field",
+      "detail": "Send is a separate control beside the field and stays aligned with the last line as the field grows."
+    },
+    {
+      "symbol": "arrowshape.turn.up.left",
+      "title": "See when an agent is replying",
+      "detail": "After you send a prompt, its row moves to Replies with a spinner until a new assistant message arrives. If sending fails, the row stays where it was."
+    },
+    {
+      "symbol": "arrow.up.circle",
+      "title": "Send matches the message field",
+      "detail": "The one-line Send control matches the 44-point field height, while multiline drafts keep it aligned with the last line."
+    },
+    {
+      "symbol": "checkmark.circle",
+      "title": "Release notes match the build",
+      "detail": "Each numbered archive requires notes for that exact build. Tuner's What's Changed and TestFlight use the same authored notes."
+    }
+  ]
+}
