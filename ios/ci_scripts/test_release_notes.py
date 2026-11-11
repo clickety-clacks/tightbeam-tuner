@@ -1,5 +1,7 @@
 import json
 import plistlib
+from contextlib import redirect_stderr
+from io import StringIO
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +21,14 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
         path.write_bytes(self.current_source.read_bytes())
         return path
 
+    def _numbered_note_copy(self, root, build_number):
+        path = self._draft_copy(root)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["build"] = build_number
+        data["date"] = "January 1, 2027"
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return path
+
     def test_selects_only_the_exact_historical_build(self):
         note = release_notes.exact_note(self.history, 52)
         self.assertEqual(note.build, 52)
@@ -36,28 +46,51 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             self.assertIn(item.title, text)
             self.assertIn(item.detail, text)
 
-    def test_binds_the_authored_note_to_the_assigned_build_number(self):
+    def test_selects_the_authored_note_only_for_its_exact_build_number(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            source = self._draft_copy(Path(temporary_directory))
+            source = self._numbered_note_copy(Path(temporary_directory), 57)
+            original = source.read_bytes()
 
-            note = release_notes.bind_current_note(source, self.history_source, 57)
+            note = release_notes.note_for_build(source, self.history_source, 57)
             selected, data = release_notes.load_current_note(source, expected_build=57)
 
             self.assertEqual(note.build, 57)
             self.assertEqual(selected, note)
             self.assertEqual(data["build"], 57)
             self.assertTrue(note.items)
+            self.assertEqual(source.read_bytes(), original)
 
-    def test_repeated_binding_is_idempotent_only_for_the_same_build(self):
+    def test_two_sequential_archive_workspaces_refuse_a_reused_note_draft(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            source = self._draft_copy(Path(temporary_directory))
+            root = Path(temporary_directory)
+            committed_draft = self._numbered_note_copy(root, 57).read_bytes()
+            first_workspace = root / "archive-one"
+            second_workspace = root / "archive-two"
+            first_workspace.mkdir()
+            second_workspace.mkdir()
+            first_source = first_workspace / "CurrentBuildReleaseNote.json"
+            second_source = second_workspace / "CurrentBuildReleaseNote.json"
+            first_source.write_bytes(committed_draft)
+            second_source.write_bytes(committed_draft)
 
-            first = release_notes.bind_current_note(source, self.history_source, 57)
-            second = release_notes.bind_current_note(source, self.history_source, 57)
+            first_errors = StringIO()
+            with redirect_stderr(first_errors):
+                first_status = release_notes.main([
+                    "validate", "--build-number", "57", "--source", str(first_source),
+                    "--history", str(self.history_source),
+                ])
+            second_errors = StringIO()
+            with redirect_stderr(second_errors):
+                second_status = release_notes.main([
+                    "validate", "--build-number", "58", "--source", str(second_source),
+                    "--history", str(self.history_source),
+                ])
 
-            self.assertEqual(second, first)
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "already bound to build 57"):
-                release_notes.bind_current_note(source, self.history_source, 58)
+            self.assertEqual(first_status, 0)
+            self.assertEqual(second_status, 1)
+            self.assertIn("current draft is assigned to build 57", second_errors.getvalue())
+            self.assertEqual(first_source.read_bytes(), committed_draft)
+            self.assertEqual(second_source.read_bytes(), committed_draft)
 
     def test_empty_author_notes_are_refused(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -67,17 +100,19 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             source.write_text(json.dumps(data), encoding="utf-8")
 
             with self.assertRaisesRegex(release_notes.ReleaseNoteError, "no user-facing release notes"):
-                release_notes.bind_current_note(source, self.history_source, 57)
+                release_notes.note_for_build(source, self.history_source, 57)
 
-    def test_existing_exact_historical_note_is_reused_without_rebinding(self):
+    def test_existing_exact_historical_note_is_selected_without_mutating_the_draft(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = self._draft_copy(Path(temporary_directory))
-            note = release_notes.bind_current_note(source, self.history_source, 52)
+            original = source.read_bytes()
+            note = release_notes.note_for_build(source, self.history_source, 52)
             selected, data = release_notes.load_current_note(source)
 
             self.assertEqual(note, release_notes.exact_note(self.history, 52))
             self.assertEqual(selected.build, 0)
             self.assertEqual(data["build"], 0)
+            self.assertEqual(source.read_bytes(), original)
 
     def test_selection_uses_exact_history_before_the_unbound_current_draft(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -97,17 +132,23 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(release_notes.ReleaseNoteError, "no user-facing release notes"):
                 release_notes.note_for_build(source, self.history_source, 57)
 
-    def test_binding_rejects_an_unnoted_build_below_history(self):
+    def test_unbound_draft_cannot_be_used_for_an_archive(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = self._draft_copy(Path(temporary_directory))
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "current draft is not assigned"):
+                release_notes.note_for_build(source, self.history_source, 57)
+
+    def test_numbered_current_note_must_follow_history(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = self._numbered_note_copy(Path(temporary_directory), 12)
             with self.assertRaisesRegex(release_notes.ReleaseNoteError, "does not follow latest"):
-                release_notes.bind_current_note(source, self.history_source, 12)
+                release_notes.note_for_build(source, self.history_source, 12)
 
     def test_render_uses_the_same_exact_note_as_the_app_resource(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._draft_copy(root)
-            note = release_notes.bind_current_note(source, self.history_source, 57)
+            source = self._numbered_note_copy(root, 57)
+            note = release_notes.note_for_build(source, self.history_source, 57)
             app = root / "TightbeamTuner.app"
             app.mkdir()
             with (app / "Info.plist").open("wb") as info_file:
@@ -126,8 +167,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_render_rejects_a_different_bundle_build(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._draft_copy(root)
-            release_notes.bind_current_note(source, self.history_source, 57)
+            source = self._numbered_note_copy(root, 57)
             app = root / "TightbeamTuner.app"
             app.mkdir()
             with (app / "Info.plist").open("wb") as info_file:

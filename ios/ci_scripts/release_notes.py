@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
 import os
 import plistlib
@@ -278,38 +277,10 @@ def _validate_current_build_against_history(note: Note, history_path: Path) -> N
         )
 
 
-def bind_current_note(source_path: Path, history_path: Path, build_number: int) -> Note:
+def note_for_build(source_path: Path, history_path: Path, build_number: int) -> Note:
     if build_number <= 0:
         raise ReleaseNoteError("Xcode Cloud build number must be positive")
 
-    history = load_notes(history_path)
-    try:
-        return exact_note(history, build_number)
-    except ReleaseNoteError:
-        pass
-
-    note, data = load_current_note(source_path)
-    if note.build == build_number:
-        _validate_current_build_against_history(note, history_path)
-        return note
-    if note.build != 0:
-        raise ReleaseNoteError(
-            f"current-build release-note draft is already bound to build {note.build}, "
-            f"not build {build_number}"
-        )
-
-    data["build"] = build_number
-    data["date"] = datetime.now(timezone.utc).strftime("%B %d, %Y").replace(" 0", " ")
-    bound_note = _note_from_data(data, expected_build=build_number)
-    _validate_current_build_against_history(bound_note, history_path)
-
-    temporary = source_path.with_name(f"{source_path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, source_path)
-    return bound_note
-
-
-def note_for_build(source_path: Path, history_path: Path, build_number: int) -> Note:
     history = load_notes(history_path)
     try:
         return exact_note(history, build_number)
@@ -323,7 +294,8 @@ def note_for_build(source_path: Path, history_path: Path, build_number: int) -> 
 
     if current.build == 0:
         raise ReleaseNoteError(
-            f"no user-facing release notes are recorded for build {build_number}"
+            f"no exact user-facing release notes are recorded for build {build_number}; "
+            "the current draft is not assigned to a numbered build"
         )
     _validate_current_build_against_history(current, history_path)
     if current.build == build_number:
@@ -332,13 +304,14 @@ def note_for_build(source_path: Path, history_path: Path, build_number: int) -> 
         return exact_note(history, build_number)
     except ReleaseNoteError:
         raise ReleaseNoteError(
-            f"no user-facing release notes are recorded for build {build_number}"
+            f"no exact user-facing release notes are recorded for build {build_number}; "
+            f"the current draft is assigned to build {current.build}"
         )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("bind", "validate", "render"))
+    parser.add_argument("action", choices=("validate", "render"))
     parser.add_argument("--build-number", required=True, type=int)
     parser.add_argument("--source", type=Path, default=_default_current_source())
     parser.add_argument("--history", type=Path, default=_default_source())
@@ -352,11 +325,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("render requires --output")
 
     try:
-        if args.action == "bind":
-            note = bind_current_note(args.source, args.history, args.build_number)
-            print(f"Found exact user-facing release notes for Xcode Cloud build {args.build_number}.")
-            return 0
-
         note = note_for_build(args.source, args.history, args.build_number)
         if args.app_path is not None:
             info_path = args.app_path / "Info.plist"

@@ -204,8 +204,8 @@ enum ReleaseNotes {
 
     private static let lastSeenKey = "releaseNotesLastSeenBuild"
 
-    /// Xcode Cloud binds the author-written release note to its assigned build number
-    /// before compiling. Local development keeps the unbound draft out of the release list.
+    /// The bundled author-written note is included only when it names this exact build.
+    /// Local development keeps an unnumbered draft out of the release list.
     static var all: [ReleaseNote] {
         notes(including: currentBuildNote())
     }
