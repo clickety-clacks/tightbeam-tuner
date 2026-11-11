@@ -4,6 +4,7 @@ from contextlib import redirect_stderr
 from io import StringIO
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 import release_notes
@@ -31,6 +32,28 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
         data["date"] = "January 1, 2027"
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return path
+
+    def _signed_export_copy(self, root, app_bundles):
+        signed_export = root / "signed-export"
+        signed_export.mkdir()
+        ipa_path = signed_export / "TightbeamTuner.ipa"
+        with zipfile.ZipFile(ipa_path, "w", compression=zipfile.ZIP_DEFLATED) as ipa:
+            for app_name, build_number in app_bundles:
+                info = plistlib.dumps({
+                    "CFBundleVersion": str(build_number),
+                    "ContentSentinel": "CONTENT_SENTINEL_MUST_NOT_BE_LOGGED",
+                })
+                ipa.writestr(f"Payload/{app_name}.app/Info.plist", info)
+            if not app_bundles:
+                ipa.writestr("ExportMetadata/empty.txt", "CONTENT_SENTINEL_MUST_NOT_BE_LOGGED")
+        return signed_export
+
+    def _render_signed_export(self, source, signed_export, output):
+        return release_notes.main([
+            "render", "--build-number", "57", "--source", str(source),
+            "--history", str(self.history_source), "--signed-app-path", str(signed_export),
+            "--output", str(output),
+        ])
 
     def test_selects_only_the_exact_historical_build(self):
         note = release_notes.exact_note(self.history, 52)
@@ -63,18 +86,18 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             self.assertTrue(note.items)
             self.assertEqual(source.read_bytes(), original)
 
-    def test_current_proof_note_is_selected_only_for_build_58(self):
+    def test_current_proof_note_is_selected_only_for_build_59(self):
         note = release_notes.note_for_build(
-            self.current_source, self.history_source, 58
+            self.current_source, self.history_source, 59
         )
-        self.assertEqual(note.build, 58)
+        self.assertEqual(note.build, 59)
         self.assertEqual(len(note.items), 6)
 
         with self.assertRaisesRegex(
             release_notes.ReleaseNoteError,
-            "current draft is assigned to build 58",
+            "current draft is assigned to build 59",
         ):
-            release_notes.note_for_build(self.current_source, self.history_source, 57)
+            release_notes.note_for_build(self.current_source, self.history_source, 58)
 
     def test_two_sequential_archive_workspaces_refuse_a_reused_note_draft(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -160,43 +183,73 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(release_notes.ReleaseNoteError, "does not follow latest"):
                 release_notes.note_for_build(source, self.history_source, 12)
 
-    def test_render_uses_the_same_exact_note_as_the_app_resource(self):
+    def test_render_reads_the_app_version_from_the_exported_testflight_ipa(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             source = self._numbered_note_copy(root, 57)
-            note = release_notes.note_for_build(source, self.history_source, 57)
-            app = root / "TightbeamTuner.app"
-            app.mkdir()
-            with (app / "Info.plist").open("wb") as info_file:
-                plistlib.dump({"CFBundleVersion": "57"}, info_file)
+            signed_export = self._signed_export_copy(root, [("TightbeamTuner", 57)])
             output = root / "WhatToTest.en-US.txt"
 
-            status = release_notes.main([
-                "render", "--build-number", "57", "--source", str(source),
-                "--history", str(self.history_source), "--app-path", str(app),
-                "--output", str(output),
-            ])
+            status = self._render_signed_export(source, signed_export, output)
 
             self.assertEqual(status, 0)
-            self.assertEqual(output.read_text(encoding="utf-8"), note.tester_text())
+            self.assertEqual(
+                output.read_text(encoding="utf-8"),
+                release_notes.note_for_build(source, self.history_source, 57).tester_text(),
+            )
 
-    def test_render_rejects_a_different_bundle_build(self):
+    def test_render_rejects_an_exported_ipa_with_a_different_bundle_build(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             source = self._numbered_note_copy(root, 57)
-            app = root / "TightbeamTuner.app"
-            app.mkdir()
-            with (app / "Info.plist").open("wb") as info_file:
-                plistlib.dump({"CFBundleVersion": "56"}, info_file)
+            signed_export = self._signed_export_copy(root, [("TightbeamTuner", 56)])
             output = root / "WhatToTest.en-US.txt"
+            errors = StringIO()
 
-            status = release_notes.main([
-                "render", "--build-number", "57", "--source", str(source),
-                "--history", str(self.history_source), "--app-path", str(app),
-                "--output", str(output),
-            ])
+            with redirect_stderr(errors):
+                status = self._render_signed_export(source, signed_export, output)
 
             self.assertEqual(status, 1)
+            self.assertIn("signed app CFBundleVersion 56 does not match build 57", errors.getvalue())
+            self.assertFalse(output.exists())
+
+    def test_render_refuses_signed_ipa_with_no_app_bundles_and_lists_names_only(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = self._numbered_note_copy(root, 57)
+            signed_export = self._signed_export_copy(root, [])
+            output = root / "WhatToTest.en-US.txt"
+            errors = StringIO()
+
+            with redirect_stderr(errors):
+                status = self._render_signed_export(source, signed_export, output)
+
+            diagnostic = errors.getvalue()
+            self.assertEqual(status, 1)
+            self.assertIn("found 0", diagnostic)
+            self.assertIn("ExportMetadata/empty.txt", diagnostic)
+            self.assertNotIn("CONTENT_SENTINEL_MUST_NOT_BE_LOGGED", diagnostic)
+            self.assertFalse(output.exists())
+
+    def test_render_refuses_signed_ipa_with_multiple_app_bundles_and_lists_names_only(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = self._numbered_note_copy(root, 57)
+            signed_export = self._signed_export_copy(
+                root, [("TightbeamTuner", 57), ("UnexpectedApp", 57)]
+            )
+            output = root / "WhatToTest.en-US.txt"
+            errors = StringIO()
+
+            with redirect_stderr(errors):
+                status = self._render_signed_export(source, signed_export, output)
+
+            diagnostic = errors.getvalue()
+            self.assertEqual(status, 1)
+            self.assertIn("found 2", diagnostic)
+            self.assertIn("Payload/TightbeamTuner.app/Info.plist", diagnostic)
+            self.assertIn("Payload/UnexpectedApp.app/Info.plist", diagnostic)
+            self.assertNotIn("CONTENT_SENTINEL_MUST_NOT_BE_LOGGED", diagnostic)
             self.assertFalse(output.exists())
 
     def test_duplicate_historical_build_numbers_fail_closed(self):
