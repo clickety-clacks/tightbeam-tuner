@@ -86,18 +86,18 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             self.assertTrue(note.items)
             self.assertEqual(source.read_bytes(), original)
 
-    def test_current_proof_note_is_selected_only_for_build_58(self):
+    def test_current_proof_note_is_selected_only_for_build_59(self):
         note = release_notes.note_for_build(
-            self.current_source, self.history_source, 58
+            self.current_source, self.history_source, 59
         )
-        self.assertEqual(note.build, 58)
+        self.assertEqual(note.build, 59)
         self.assertEqual(len(note.items), 6)
 
         with self.assertRaisesRegex(
             release_notes.ReleaseNoteError,
-            "current draft is assigned to build 58",
+            "current draft is assigned to build 59",
         ):
-            release_notes.note_for_build(self.current_source, self.history_source, 57)
+            release_notes.note_for_build(self.current_source, self.history_source, 58)
 
     def test_two_sequential_archive_workspaces_refuse_a_reused_note_draft(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
