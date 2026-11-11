@@ -117,7 +117,7 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.nordicBackground)
+            .background(Color.chatBackground)
         }
         .background {
             // SwiftUI does not expose the visible .searchable capsule's frame. Find it from
