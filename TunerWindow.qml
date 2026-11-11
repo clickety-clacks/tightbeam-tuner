@@ -578,7 +578,7 @@ FloatingWindow {
             Rectangle {
                 anchors.fill: parent
                 visible: !win.settingsKnown
-                color: colors.loading
+                color: colors.window
                 Text {
                     anchors.centerIn: parent
                     text: "Loading connection settings…"
