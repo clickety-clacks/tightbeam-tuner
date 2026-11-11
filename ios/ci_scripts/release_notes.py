@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 import plistlib
@@ -178,9 +179,9 @@ def _parse_entry(entry_source: str) -> Note:
 
 def load_notes(source_path: Path) -> tuple[Note, ...]:
     source = source_path.read_text(encoding="utf-8")
-    marker = re.search(r"static\s+let\s+all\s*:\s*\[ReleaseNote\]\s*=\s*\[", source)
+    marker = re.search(r"static\s+let\s+history\s*:\s*\[ReleaseNote\]\s*=\s*\[", source)
     if marker is None:
-        raise ReleaseNoteError("could not find ReleaseNotes.all in the Swift source")
+        raise ReleaseNoteError("could not find ReleaseNotes.history in the Swift source")
     array_open = marker.end() - 1
     array_close = _balanced_end(source, array_open, "[", "]")
     array_source = source[array_open + 1 : array_close]
@@ -194,12 +195,12 @@ def load_notes(source_path: Path) -> tuple[Note, ...]:
         notes.append(_parse_entry(array_source[offset : call_close + 1]))
 
     if not notes:
-        raise ReleaseNoteError("ReleaseNotes.all contains no numbered notes")
+        raise ReleaseNoteError("ReleaseNotes.history contains no numbered notes")
     builds = [note.build for note in notes]
     if len(set(builds)) != len(builds):
-        raise ReleaseNoteError("ReleaseNotes.all contains duplicate build numbers")
+        raise ReleaseNoteError("ReleaseNotes.history contains duplicate build numbers")
     if builds != sorted(builds, reverse=True):
-        raise ReleaseNoteError("ReleaseNotes.all must remain sorted newest build first")
+        raise ReleaseNoteError("ReleaseNotes.history must remain sorted newest build first")
     return tuple(notes)
 
 
@@ -214,11 +215,133 @@ def _default_source() -> Path:
     return Path(__file__).resolve().parent.parent / "TightbeamTuner" / "ReleaseNotes.swift"
 
 
+def _default_current_source() -> Path:
+    return Path(__file__).resolve().parent.parent / "TightbeamTuner" / "CurrentBuildReleaseNote.json"
+
+
+def _note_from_data(
+    data: dict, expected_build: int | None = None, allow_unbound: bool = False
+) -> Note:
+    if not isinstance(data, dict):
+        raise ReleaseNoteError("current-build release note must be a JSON object")
+
+    version = data.get("version")
+    date = data.get("date")
+    build = data.get("build")
+    items_value = data.get("items")
+    if not isinstance(version, str) or not version.strip():
+        raise ReleaseNoteError("release-note version must not be empty")
+    if not isinstance(date, str):
+        raise ReleaseNoteError("release-note date must be a string")
+    if not isinstance(build, int) or isinstance(build, bool) or build < 0:
+        raise ReleaseNoteError("release-note build must be a nonnegative integer")
+    if not isinstance(items_value, list) or not items_value:
+        raise ReleaseNoteError("no user-facing release notes are recorded for this build")
+
+    items: list[NoteItem] = []
+    for item in items_value:
+        if not isinstance(item, dict):
+            raise ReleaseNoteError("release-note item must be a JSON object")
+        symbol, title, detail = item.get("symbol"), item.get("title"), item.get("detail")
+        if not all(isinstance(value, str) and value.strip() for value in (symbol, title, detail)):
+            raise ReleaseNoteError("release-note symbols, titles, and details must not be empty")
+        items.append(NoteItem(title=title.strip(), detail=detail.strip()))
+
+    if expected_build is not None and build != expected_build:
+        raise ReleaseNoteError(
+            f"current-build release note is bound to build {build}, not build {expected_build}"
+        )
+    if build > 0 and not date.strip():
+        raise ReleaseNoteError("numbered release notes must include a date")
+    if build == 0 and not allow_unbound:
+        raise ReleaseNoteError("current-build release note is not bound to a numbered build")
+    return Note(build=build, items=tuple(items))
+
+
+def load_current_note(source_path: Path, expected_build: int | None = None) -> tuple[Note, dict]:
+    try:
+        data = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ReleaseNoteError(f"could not read the current-build release note: {error}") from error
+    note = _note_from_data(data, expected_build=expected_build, allow_unbound=expected_build is None)
+    return note, data
+
+
+def _validate_current_build_against_history(note: Note, history_path: Path) -> None:
+    history = load_notes(history_path)
+    builds = {entry.build for entry in history}
+    if note.build in builds:
+        raise ReleaseNoteError(f"build {note.build} already has a historical release-note entry")
+    if note.build <= history[0].build:
+        raise ReleaseNoteError(
+            f"build {note.build} does not follow latest historical note {history[0].build}"
+        )
+
+
+def bind_current_note(source_path: Path, history_path: Path, build_number: int) -> Note:
+    if build_number <= 0:
+        raise ReleaseNoteError("Xcode Cloud build number must be positive")
+
+    history = load_notes(history_path)
+    try:
+        return exact_note(history, build_number)
+    except ReleaseNoteError:
+        pass
+
+    note, data = load_current_note(source_path)
+    if note.build == build_number:
+        _validate_current_build_against_history(note, history_path)
+        return note
+    if note.build != 0:
+        raise ReleaseNoteError(
+            f"current-build release-note draft is already bound to build {note.build}, "
+            f"not build {build_number}"
+        )
+
+    data["build"] = build_number
+    data["date"] = datetime.now(timezone.utc).strftime("%B %d, %Y").replace(" 0", " ")
+    bound_note = _note_from_data(data, expected_build=build_number)
+    _validate_current_build_against_history(bound_note, history_path)
+
+    temporary = source_path.with_name(f"{source_path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, source_path)
+    return bound_note
+
+
+def note_for_build(source_path: Path, history_path: Path, build_number: int) -> Note:
+    history = load_notes(history_path)
+    try:
+        return exact_note(history, build_number)
+    except ReleaseNoteError:
+        pass
+
+    try:
+        current, _ = load_current_note(source_path)
+    except ReleaseNoteError:
+        raise
+
+    if current.build == 0:
+        raise ReleaseNoteError(
+            f"no user-facing release notes are recorded for build {build_number}"
+        )
+    _validate_current_build_against_history(current, history_path)
+    if current.build == build_number:
+        return current
+    try:
+        return exact_note(history, build_number)
+    except ReleaseNoteError:
+        raise ReleaseNoteError(
+            f"no user-facing release notes are recorded for build {build_number}"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("validate", "render"))
+    parser.add_argument("action", choices=("bind", "validate", "render"))
     parser.add_argument("--build-number", required=True, type=int)
-    parser.add_argument("--source", type=Path, default=_default_source())
+    parser.add_argument("--source", type=Path, default=_default_current_source())
+    parser.add_argument("--history", type=Path, default=_default_source())
     parser.add_argument("--app-path", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
@@ -229,8 +352,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("render requires --output")
 
     try:
-        notes = load_notes(args.source)
-        note = exact_note(notes, args.build_number)
+        if args.action == "bind":
+            note = bind_current_note(args.source, args.history, args.build_number)
+            print(f"Found exact user-facing release notes for Xcode Cloud build {args.build_number}.")
+            return 0
+
+        note = note_for_build(args.source, args.history, args.build_number)
         if args.app_path is not None:
             info_path = args.app_path / "Info.plist"
             try:
@@ -253,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
             temporary = args.output.with_name(args.output.name + ".tmp")
             temporary.write_text(text, encoding="utf-8")
             os.replace(temporary, args.output)
-            print(f"Generated TestFlight notes for build {args.build_number} from ReleaseNotes.swift.")
+            print(f"Generated TestFlight notes for build {args.build_number} from the bundled release-note data.")
         else:
             print(f"Found {len(note.items)} user-facing note item(s) for build {args.build_number}.")
     except (OSError, ReleaseNoteError) as error:

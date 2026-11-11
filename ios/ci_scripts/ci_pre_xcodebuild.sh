@@ -7,7 +7,7 @@ case "${CI_XCODE_CLOUD:-${CI:-}}" in
 esac
 
 # Only numbered archives can become TestFlight builds. Ordinary build, test, and
-# analyze actions continue without requiring release-note entries.
+# analyze actions continue without binding the authored draft to a build number.
 [ "${CI_XCODEBUILD_ACTION:-}" = "archive" ] || exit 0
 
 case "${CI_BUILD_NUMBER:-}" in
@@ -18,4 +18,4 @@ case "${CI_BUILD_NUMBER:-}" in
 esac
 
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
-python3 "$SCRIPT_DIR/release_notes.py" validate --build-number "$CI_BUILD_NUMBER"
+python3 "$SCRIPT_DIR/release_notes.py" bind --build-number "$CI_BUILD_NUMBER"

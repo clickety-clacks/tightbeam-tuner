@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "build": 0,
+  "date": "",
+  "items": [
+    {
+      "symbol": "arrowshape.turn.up.left",
+      "title": "See when an agent is replying",
+      "detail": "After you send a prompt, its row moves to Replies with a spinner until a new assistant message arrives. If sending fails, the row stays where it was."
+    },
+    {
+      "symbol": "person.2",
+      "title": "The agent list stays up to date",
+      "detail": "New agents appear, changed details update, and retired agents disappear while Tuner is open."
+    },
+    {
+      "symbol": "arrow.up.circle",
+      "title": "Send matches the message field",
+      "detail": "Send matches the one-line field height and stays aligned with the last line as the field grows."
+    },
+    {
+      "symbol": "text.bubble",
+      "title": "Keep the compact message field full size",
+      "detail": "The empty or one-line message field keeps its full height and rounded ends in compact layouts."
+    },
+    {
+      "symbol": "keyboard",
+      "title": "Keep Chat's layout in step with the keyboard",
+      "detail": "When Tuner returns to the foreground, Chat refreshes its keyboard layout to match the keyboard's current position."
+    },
+    {
+      "symbol": "text.bubble",
+      "title": "Keep the message field aligned with the keyboard",
+      "detail": "In compact layouts, the message field follows the keyboard's current visibility while it stays focused."
+    },
+    {
+      "symbol": "sidebar.left",
+      "title": "The agent list stays where you left it",
+      "detail": "When you return to Tuner, the list stays open, closed, or floating where it was. Rotating while Tuner is active keeps working as before."
+    },
+    {
+      "symbol": "checkmark.circle",
+      "title": "Release notes match the build",
+      "detail": "The What's Changed screen in Tuner and TestFlight show the same notes for this build."
+    }
+  ]
+}

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A6D00A582FF44B85A9D6F71C /* CurrentBuildReleaseNote.json in Resources */ = {isa = PBXBuildFile; fileRef = 6AB6D19B7DDF4E3B96CC31AE /* CurrentBuildReleaseNote.json */; };
 		09450AF22E32E08A35B1B364 /* ChatWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D03D0E09B76E27FDCF1396B1 /* ChatWebView.swift */; };
 		F0135A6D0E244792A610CC6B /* AgentSectionCountsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6D87C79351548CB9A4E2DE8 /* AgentSectionCountsTests.swift */; };
 		19741202E7C1549C5598796F /* Connection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F356E541109E44BB67E5912B /* Connection.swift */; };
@@ -42,6 +43,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		6AB6D19B7DDF4E3B96CC31AE /* CurrentBuildReleaseNote.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = CurrentBuildReleaseNote.json; sourceTree = "<group>"; };
 		053DD6AA4E4E5A915C9F2B1E /* TightbeamTunerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TightbeamTunerApp.swift; sourceTree = "<group>"; };
 		28664AC3B51AC348AEFA363D /* NordicStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NordicStyle.swift; sourceTree = "<group>"; };
 		3A6346F05A278BDFB5CD929E /* NativeChatComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatComposer.swift; sourceTree = "<group>"; };
@@ -115,6 +117,7 @@
 			isa = PBXGroup;
 			children = (
 				B0025914401F3E615BEC3509 /* Agent.swift */,
+				6AB6D19B7DDF4E3B96CC31AE /* CurrentBuildReleaseNote.json */,
 				E849A636E74EE986F0D51A87 /* Assets.xcassets */,
 				53D3923635A58ACEFD594A57 /* ChatHostBridge.swift */,
 				D03D0E09B76E27FDCF1396B1 /* ChatWebView.swift */,
@@ -220,6 +223,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EB8E4B2E042974BA420B82EE /* Assets.xcassets in Resources */,
+				A6D00A582FF44B85A9D6F71C /* CurrentBuildReleaseNote.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

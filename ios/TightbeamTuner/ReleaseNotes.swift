@@ -3,7 +3,7 @@ import SwiftUI
 /// What changed in each release, newest first. Each build number identifies the app build
 /// associated with that entry.
 enum ReleaseNotes {
-    static let all: [ReleaseNote] = [
+    static let history: [ReleaseNote] = [
         ReleaseNote(version: "1.0", build: 52, date: "November 7, 2026", items: [
             .init(symbol: "text.bubble", title: "Keep the compact message field full size",
                   detail: "The empty or one-line message field keeps its full height and rounded ends in compact layouts."),
@@ -204,6 +204,31 @@ enum ReleaseNotes {
 
     private static let lastSeenKey = "releaseNotesLastSeenBuild"
 
+    /// Xcode Cloud binds the author-written release note to its assigned build number
+    /// before compiling. Local development keeps the unbound draft out of the release list.
+    static var all: [ReleaseNote] {
+        notes(including: currentBuildNote())
+    }
+
+    static func notes(including currentBuildNote: ReleaseNote?) -> [ReleaseNote] {
+        ([currentBuildNote].compactMap { $0 } + history).sorted { $0.build > $1.build }
+    }
+
+    private static func currentBuildNote(bundle: Bundle = .main) -> ReleaseNote? {
+        guard
+            let url = bundle.url(forResource: "CurrentBuildReleaseNote", withExtension: "json"),
+            let data = try? Data(contentsOf: url),
+            let note = try? JSONDecoder().decode(ReleaseNote.self, from: data),
+            note.build > 0,
+            note.build == (Int(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0),
+            note.build > (history.map(\.build).max() ?? 0),
+            !note.items.isEmpty
+        else {
+            return nil
+        }
+        return note
+    }
+
     static var currentBuild: Int {
         Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
     }
@@ -251,8 +276,8 @@ enum ReleaseNotes {
     }
 }
 
-struct ReleaseNote: Identifiable {
-    struct Item: Identifiable {
+struct ReleaseNote: Identifiable, Decodable {
+    struct Item: Identifiable, Decodable {
         let symbol: String
         let title: String
         let detail: String

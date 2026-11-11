@@ -2,6 +2,24 @@ import XCTest
 @testable import TightbeamTuner
 
 final class ReleaseNotesTests: XCTestCase {
+    func testBoundCurrentBuildNoteParticipatesInFirstLaunchSelection() {
+        let current = ReleaseNote(version: "1.0", build: 987654, date: "November 11, 2026", items: [
+            .init(symbol: "text.bubble", title: "Current release", detail: "Current details.")
+        ])
+        let notes = ReleaseNotes.notes(including: current)
+
+        let unseen = ReleaseNotes.unseenNotes(
+            in: notes,
+            currentBuild: 987654,
+            lastSeenBuild: 52,
+            firstInstall: false
+        )
+
+        XCTAssertEqual(unseen.map(\.build), [987654])
+        XCTAssertEqual(unseen.first?.items.map(\.title), ["Current release"])
+        XCTAssertEqual(unseen.first?.items.map(\.detail), ["Current details."])
+    }
+
     func testCanonicalNoteAppearsOnFirstLaunchAfterAnUpgrade() throws {
         let latest = try XCTUnwrap(ReleaseNotes.all.first)
 
