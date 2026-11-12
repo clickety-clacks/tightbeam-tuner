@@ -318,15 +318,15 @@ private struct ReleaseNoteRow: View {
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title).font(.headline)
+                Text(item.title).font(TunerTypography.title)
                 Text(item.detail)
-                    .font(.subheadline)
+                    .font(TunerTypography.compactBody)
                     .foregroundStyle(Color.nordicSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } icon: {
             Image(systemName: item.symbol)
-                .font(.title2)
+                .font(TunerTypography.symbolTitle)
                 .foregroundStyle(Color(.accent))
                 .frame(width: 36)
         }
@@ -349,9 +349,10 @@ struct WhatsNewView: View {
                 .frame(maxWidth: 520, alignment: .leading)
                 .padding(24)
                 .frame(maxWidth: .infinity)
+                .font(TunerTypography.body)
             }
             .foregroundStyle(Color.nordicText)
-            .background(Color.nordicBackground)
+            .background(Color.nordicSurface)
             .navigationTitle("What's New")
             .safeAreaInset(edge: .bottom) {
                 Button {

@@ -72,8 +72,8 @@ struct NativeChatComposer: View {
             VStack(alignment: .leading, spacing: 8) {
                 if let notice {
                     Label(notice, systemImage: "exclamationmark.circle")
-                        .font(.footnote)
-                        .foregroundStyle(Color.nordicText)
+                        .font(TunerTypography.supporting)
+                        .foregroundStyle(Color.chatDanger)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .glassEffect(.regular, in: .capsule)
@@ -124,7 +124,7 @@ struct NativeChatComposer: View {
                         .fontWeight(.semibold)
                         .foregroundStyle(canSend ? Color.chatOnAccent : Color.nordicSecondaryText)
                         // Grey whenever a tap would not send, so Send never looks available when it is not.
-                        .tint(canSend ? Color.chatAccent : Color.nordicSecondaryText.opacity(0.25))
+                        .tint(canSend ? Color.chatAccent : Color.nordicSecondaryText)
                         .buttonStyle(.glassProminent)
                         .buttonBorderShape(.circle)
                         // The glass style pads wider than tall and centers its circle in that
@@ -237,7 +237,7 @@ private struct ConnectionDetails: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label {
-                Text(bridge.connection.label).font(.headline)
+                Text(bridge.connection.label).font(TunerTypography.title)
             } icon: {
                 Circle().fill(bridge.connection.color).frame(width: 11.5, height: 11.5)
             }
@@ -246,7 +246,7 @@ private struct ConnectionDetails: View {
                 row("Session", bridge.sessionKey)
                 row("Agent", bridge.agentName)
             }
-            .font(.subheadline)
+            .font(TunerTypography.compactBody)
             if bridge.connection.isDown {
                 Button("Connect", systemImage: "arrow.clockwise") {
                     dismiss()

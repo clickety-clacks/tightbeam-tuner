@@ -21,13 +21,17 @@ Rectangle {
     radius: pane.theme.overlayRadius
     border.color: pane.theme.strongBorder
     Behavior on border.color { ColorAnimation { duration: 300; easing.type: Easing.InOutQuad } }
+    property bool panelHovered: panelHover.hovered
     layer.enabled: true
     layer.effect: MultiEffect {
         shadowEnabled: true
-        shadowColor: pane.theme.panelShadow
-        shadowBlur: 0.65
-        blurMax: 20
-        shadowVerticalOffset: 4
+        shadowColor: pane.panelHovered ? pane.theme.panelShadowHover : pane.theme.panelShadow
+        shadowBlur: pane.panelHovered ? 1.0 : 0.67
+        blurMax: 30
+        shadowVerticalOffset: pane.panelHovered ? 8 : 4
+        Behavior on shadowColor { ColorAnimation { duration: 200; easing.type: Easing.InOutQuad } }
+        Behavior on shadowBlur { NumberAnimation { duration: 200; easing.type: Easing.InOutQuad } }
+        Behavior on shadowVerticalOffset { NumberAnimation { duration: 200; easing.type: Easing.InOutQuad } }
     }
 
     property real textScale: 1.0
@@ -35,6 +39,7 @@ Rectangle {
     property bool setupRequired: false
     property bool saving: false
     property string message: ""
+    property bool messageIsError: false
     property alias chatBase: chatInput.text
     property alias gatewayOrigin: gatewayInput.text
     property alias cliCommand: cliInput.text
@@ -45,6 +50,7 @@ Rectangle {
     signal discoverRequested()
 
     MouseArea { anchors.fill: parent; onClicked: {} }
+    HoverHandler { id: panelHover }
 
     function focusFirst() {
         Qt.callLater(() => chatInput.forceActiveFocus())
@@ -176,7 +182,7 @@ Rectangle {
                 visible: pane.message.length > 0
                 wrapMode: Text.WordWrap
                 text: pane.message
-                color: pane.theme.error
+                color: pane.messageIsError ? pane.theme.errorText : pane.theme.secondary
                 font.family: pane.theme.fontFamily
                 font.pixelSize: Math.round(13 * pane.textScale)
             }

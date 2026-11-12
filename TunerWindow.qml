@@ -178,6 +178,7 @@ FloatingWindow {
             settingsPane.cliCommand = currentSettings.cliCommand || "tightbeam"
             settingsPane.rosterUser = currentSettings.rosterUser || ""
             settingsPane.message = ""
+            settingsPane.messageIsError = false
         }
         pickerOpen = false
         settingsOpen = true
@@ -199,6 +200,7 @@ FloatingWindow {
         connecting = true
         settingsPane.saving = true
         settingsPane.message = "Reading agents…"
+        settingsPane.messageIsError = false
         rosterProcess.running = false
         Qt.callLater(() => rosterProcess.running = true)
     }
@@ -213,12 +215,14 @@ FloatingWindow {
         }
         settingsPane.saving = true
         settingsPane.message = ""
+        settingsPane.messageIsError = false
         settingsSave.running = true
     }
 
     function discoverGateway() {
         if (settingsDiscover.running) return
         settingsPane.message = "Checking Chat server…"
+        settingsPane.messageIsError = false
         settingsDiscover.running = true
     }
 
@@ -263,11 +267,13 @@ FloatingWindow {
                     }
                     else {
                         settingsPane.message = data.error || "Enter your connection settings to start."
+                        settingsPane.messageIsError = !!data.error
                         win.openSettings()
                     }
                 } catch (error) {
                     win.settingsKnown = true
                     settingsPane.message = "Could not read connection settings"
+                    settingsPane.messageIsError = true
                     win.openSettings()
                 }
             }
@@ -285,6 +291,7 @@ FloatingWindow {
                     const data = JSON.parse(this.text)
                     if (data.error) {
                         settingsPane.message = data.error
+                        settingsPane.messageIsError = true
                         settingsPane.saving = false
                     } else {
                         win.configured = true
@@ -311,6 +318,7 @@ FloatingWindow {
                     }
                 } catch (error) {
                     settingsPane.message = "Could not save connection settings"
+                    settingsPane.messageIsError = true
                     settingsPane.saving = false
                 }
             }
@@ -326,15 +334,20 @@ FloatingWindow {
             onStreamFinished: {
                 try {
                     const data = JSON.parse(this.text)
-                    if (data.error) settingsPane.message = data.error
+                    if (data.error) {
+                        settingsPane.message = data.error
+                        settingsPane.messageIsError = true
+                    }
                     else {
                         settingsPane.gatewayOrigin = data.gatewayOrigin
                         if (!settingsPane.rosterUser && data.rosterUser)
                             settingsPane.rosterUser = data.rosterUser
                         settingsPane.message = ""
+                        settingsPane.messageIsError = false
                     }
                 } catch (error) {
                     settingsPane.message = "Could not read Chat server settings"
+                    settingsPane.messageIsError = true
                 }
             }
         }
@@ -355,6 +368,7 @@ FloatingWindow {
                             settingsPane.saving = false
                             win.openSettings()
                             settingsPane.message = data.error
+                            settingsPane.messageIsError = true
                         }
                     } else {
                         win.agents = data.agents
@@ -363,6 +377,7 @@ FloatingWindow {
                             win.connecting = false
                             settingsPane.saving = false
                             settingsPane.message = ""
+                            settingsPane.messageIsError = false
                             win.showPicker()
                         }
                     }
@@ -373,6 +388,7 @@ FloatingWindow {
                         settingsPane.saving = false
                         win.openSettings()
                         settingsPane.message = win.rosterError
+                        settingsPane.messageIsError = true
                     }
                 }
             }
@@ -453,7 +469,7 @@ FloatingWindow {
                     Layout.fillWidth: true
                     Text { text: "AGENTS"; color: colors.secondary; font.family: colors.fontFamily; font.pixelSize: Math.round(12 * win.textScale); font.bold: true; font.letterSpacing: 1.5 }
                     Item { Layout.fillWidth: true }
-                    Text { text: String(win.visibleRows.length); color: colors.secondary; font.family: colors.fontFamily; font.pixelSize: Math.round(12 * win.textScale) }
+                    Text { text: String(win.visibleRows.length); color: colors.infoCount; font.family: colors.fontFamily; font.pixelSize: Math.round(12 * win.textScale) }
                 }
 
                 ListView {
@@ -551,7 +567,7 @@ FloatingWindow {
                         Rectangle {
                             id: archetypeHeader
                             width: parent.width; height: 32 * win.textScale
-                            radius: 8
+                            radius: colors.smallRadius
                             color: archetypeHeaderMouse.pressed ? colors.buttonPressed
                                  : archetypeHeaderMouse.containsMouse ? colors.hover : "transparent"
                             Behavior on color { ColorAnimation { duration: 200; easing.type: Easing.InOutQuad } }
@@ -593,18 +609,16 @@ FloatingWindow {
                                     implicitWidth: 16
                                     implicitHeight: 16
                                     radius: 4
-                                    color: archetypeCheckBox.checked
-                                           ? (archetypeCheckBox.down ? colors.accentPressed : colors.accent)
-                                           : colors.surface
+                                    color: archetypeCheckBox.checked ? colors.selection : colors.surface
                                     border.color: archetypeCheckBox.visualFocus ? colors.focus
-                                                  : archetypeCheckBox.checked ? colors.accent : colors.border
+                                                  : archetypeCheckBox.checked ? colors.selection : colors.border
                                     border.width: archetypeCheckBox.visualFocus ? 2 : 1
                                     Behavior on color { ColorAnimation { duration: 200; easing.type: Easing.InOutQuad } }
                                     Text {
                                         anchors.centerIn: parent
                                         visible: archetypeCheckBox.checked
                                         text: "✓"
-                                        color: colors.onAccent
+                                        color: colors.foreground
                                         font.family: colors.fontFamily
                                         font.pixelSize: 11
                                     }
@@ -614,13 +628,13 @@ FloatingWindow {
                                     anchors.fill: parent
                                     text: archetypeCheckBox.text
                                     font: archetypeCheckBox.font
-                                    color: archetypeCheckBox.enabled ? colors.foreground : colors.disabledText
+                                    color: archetypeCheckBox.enabled ? colors.secondary : colors.disabledText
                                     verticalAlignment: Text.AlignVCenter
                                     leftPadding: archetypeCheckBox.indicator.width + archetypeCheckBox.spacing
                                     elide: Text.ElideRight
                                 }
                                 background: Rectangle {
-                                    radius: 8
+                                    radius: colors.smallRadius
                                     color: archetypeCheckBox.down ? colors.buttonPressed
                                          : archetypeCheckBox.hovered ? colors.hover : "transparent"
                                     Behavior on color { ColorAnimation { duration: 200; easing.type: Easing.InOutQuad } }
@@ -684,7 +698,7 @@ FloatingWindow {
                     anchors.centerIn: parent
                     text: win.rosterError ? win.rosterError :
                           win.connecting ? "Reading agents…" : "Choose an agent to open Chat"
-                    color: win.rosterError ? colors.error : colors.secondary
+                    color: win.rosterError ? colors.errorText : colors.secondary
                     font.family: colors.fontFamily
                     font.pixelSize: Math.round(17 * win.textScale)
                 }
@@ -731,6 +745,32 @@ FloatingWindow {
                 radius: colors.overlayRadius
                 color: colors.raisedSurface
                 gradient: Gradient {
+                    GradientStop { position: 0; color: colors.raisedSurfaceTop }
+                    GradientStop { position: 1; color: colors.raisedSurfaceBottom }
+                }
+                layer.enabled: true
+                layer.effect: MultiEffect {
+                    shadowEnabled: true
+                    shadowColor: pickerPanel.panelHovered ? colors.panelShadowContactHover : colors.panelShadowContact
+                    shadowBlur: pickerPanel.panelHovered ? 1.0 : 0.5
+                    blurMax: 6
+                    shadowVerticalOffset: pickerPanel.panelHovered ? 2 : 1
+                    Behavior on shadowColor { ColorAnimation { duration: 200; easing.type: Easing.InOutQuad } }
+                    Behavior on shadowBlur { NumberAnimation { duration: 200; easing.type: Easing.InOutQuad } }
+                    Behavior on shadowVerticalOffset { NumberAnimation { duration: 200; easing.type: Easing.InOutQuad } }
+                }
+            }
+
+            Rectangle {
+                id: pickerPanel
+                property bool panelHovered: pickerHover.hovered
+                width: Math.min(parent.width - 48, 600)
+                height: Math.min(parent.height - 70, pickerColumn.implicitHeight + 48)
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: Math.min(110, parent.height * 0.16)
+                radius: colors.overlayRadius
+                color: colors.raisedSurface
+                gradient: Gradient {
                     GradientStop {
                         position: 0
                         color: colors.raisedSurfaceTop
@@ -748,11 +788,16 @@ FloatingWindow {
                 layer.enabled: true
                 layer.effect: MultiEffect {
                     shadowEnabled: true
-                    shadowColor: colors.panelShadow
-                    shadowBlur: 0.65
-                    blurMax: 20
-                    shadowVerticalOffset: 4
+                    shadowColor: pickerPanel.panelHovered ? colors.panelShadowHover : colors.panelShadow
+                    shadowBlur: pickerPanel.panelHovered ? 1.0 : 0.67
+                    blurMax: 30
+                    shadowVerticalOffset: pickerPanel.panelHovered ? 8 : 4
+                    Behavior on shadowColor { ColorAnimation { duration: 200; easing.type: Easing.InOutQuad } }
+                    Behavior on shadowBlur { NumberAnimation { duration: 200; easing.type: Easing.InOutQuad } }
+                    Behavior on shadowVerticalOffset { NumberAnimation { duration: 200; easing.type: Easing.InOutQuad } }
                 }
+
+                HoverHandler { id: pickerHover }
 
                 Column {
                     id: pickerColumn
@@ -822,7 +867,7 @@ FloatingWindow {
                     Text {
                         visible: win.pickerMatches.length === 0
                         text: win.rosterError ? win.rosterError : "No matching agents"
-                        color: win.rosterError ? colors.error : colors.secondary
+                        color: win.rosterError ? colors.errorText : colors.secondary
                         font.family: colors.fontFamily
                         font.pixelSize: Math.round(15 * win.textScale)
                         leftPadding: 10; topPadding: 9; bottomPadding: 9
@@ -837,6 +882,29 @@ FloatingWindow {
             z: 20
             color: colors.scrim
             MouseArea { anchors.fill: parent; onClicked: {} }
+
+            Rectangle {
+                width: Math.min(parent.width - 48, 720)
+                height: Math.min(parent.height - 48, 640)
+                anchors.centerIn: parent
+                radius: colors.overlayRadius
+                color: colors.raisedSurface
+                gradient: Gradient {
+                    GradientStop { position: 0; color: colors.raisedSurfaceTop }
+                    GradientStop { position: 1; color: colors.raisedSurfaceBottom }
+                }
+                layer.enabled: true
+                layer.effect: MultiEffect {
+                    shadowEnabled: true
+                    shadowColor: settingsPane.panelHovered ? colors.panelShadowContactHover : colors.panelShadowContact
+                    shadowBlur: settingsPane.panelHovered ? 1.0 : 0.5
+                    blurMax: 6
+                    shadowVerticalOffset: settingsPane.panelHovered ? 2 : 1
+                    Behavior on shadowColor { ColorAnimation { duration: 200; easing.type: Easing.InOutQuad } }
+                    Behavior on shadowBlur { NumberAnimation { duration: 200; easing.type: Easing.InOutQuad } }
+                    Behavior on shadowVerticalOffset { NumberAnimation { duration: 200; easing.type: Easing.InOutQuad } }
+                }
+            }
 
             SettingsPane {
                 id: settingsPane

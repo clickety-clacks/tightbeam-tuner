@@ -117,7 +117,13 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.chatBackground)
+            .background {
+                if store.selectedAgent.flatMap({ store.connection.chatURL(for: $0) }) != nil {
+                    Color.chatBackground
+                } else {
+                    TunerCanvasBackground()
+                }
+            }
         }
         .background {
             // SwiftUI does not expose the visible .searchable capsule's frame. Find it from
@@ -137,6 +143,7 @@ struct ContentView: View {
             }
             .accessibilityHidden(true)
         }
+        .font(TunerTypography.body)
         .preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
         .sheet(isPresented: $showingSettings) {
             SettingsView(store: store, showing: $showingSettings)
@@ -697,7 +704,7 @@ private struct AgentRowLabel: View {
                 .foregroundStyle(contextOnly ? Color.nordicSecondaryText : Color.nordicText)
             if let archetype = agent.archetype, !archetype.isEmpty {
                 Text(archetype)
-                    .font(.caption)
+                    .font(TunerTypography.caption)
                     .foregroundStyle(Color.nordicSecondaryText)
             }
         }
@@ -726,6 +733,7 @@ private struct AgentBranch: View {
             NavigationLink(value: node.id) {
                 AgentRowLabel(agent: node.agent, contextOnly: node.contextOnly)
             }
+            .listRowBackground(Color.nordicSurface)
         } else {
             DisclosureGroup(isExpanded: Binding(
                 get: { filtering || !collapsed.contains(node.id) },
@@ -739,6 +747,7 @@ private struct AgentBranch: View {
                     AgentRowLabel(agent: node.agent, contextOnly: node.contextOnly)
                 }
             }
+            .listRowBackground(Color.nordicSurface)
         }
     }
 }
@@ -751,13 +760,14 @@ private struct AgentSectionHeader: View {
         HStack(spacing: 8) {
             Text(title)
             Text(count, format: .number)
-                .font(.caption.weight(.semibold))
+                .font(TunerTypography.caption)
                 .monospacedDigit()
-                .foregroundStyle(Color(.accent))
+                .foregroundStyle(Color.nordicInfoCount)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(Color(.accent).opacity(0.16), in: Capsule())
+                .background(Color.nordicSelection, in: Capsule())
         }
+        .font(TunerTypography.caption)
         .foregroundStyle(Color.nordicSecondaryText)
     }
 }
@@ -839,14 +849,28 @@ private struct AgentSidebar: View {
             let matchingRecents = recents.filter { filter.matches($0) }
             let counts = AgentSectionCounts(replied: replied, recent: Array(recents),
                                             agents: mainSectionAgents, filter: filter)
-            if store.isLoading { ProgressView("Loading agents…") }
+            if store.isLoading {
+                ProgressView("Loading agents…")
+                    .listRowBackground(Color.nordicSurface)
+            }
             if store.isRosterStale {
-                Label("Agent list may be out of date", systemImage: "clock.arrow.circlepath")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                Label {
+                    Text("Agent list may be out of date")
+                        .foregroundStyle(Color.nordicSecondaryText)
+                } icon: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .foregroundStyle(Color.nordicCaution)
+                }
+                    .font(TunerTypography.supporting)
+                    .listRowBackground(Color.nordicSurface)
             }
             if let error = store.error {
-                ContentUnavailableView("Could not load agents", systemImage: "wifi.exclamationmark", description: Text(error))
+                ContentUnavailableView(
+                    "Could not load agents",
+                    systemImage: "wifi.exclamationmark",
+                    description: Text(error).foregroundStyle(Color.nordicDanger)
+                )
+                    .listRowBackground(Color.nordicSurface)
             }
             if !replied.isEmpty {
                 Section(isExpanded: $repliedSectionExpanded) {
@@ -858,6 +882,7 @@ private struct AgentSidebar: View {
                                           waitingForReply: waitingForReply)
                         }
                         .simultaneousGesture(TapGesture().onEnded { openRepliedAgent(agent.id) })
+                        .listRowBackground(Color.nordicSurface)
                     }
                 } header: {
                     AgentSectionHeader(title: "Replies", count: counts.replied)
@@ -869,6 +894,7 @@ private struct AgentSidebar: View {
                         NavigationLink(value: agent.id) {
                             AgentRowLabel(agent: agent, symbol: "clock")
                         }
+                        .listRowBackground(Color.nordicSurface)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
                                 store.removeRecent(agent.id)
