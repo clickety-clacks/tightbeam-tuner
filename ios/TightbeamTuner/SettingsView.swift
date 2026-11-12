@@ -63,7 +63,7 @@ struct SettingsView: View {
                         if publicKey.isEmpty {
                             Text("Could not create a device key").foregroundStyle(Color.nordicDanger)
                         } else {
-                            Text(publicKey).font(.caption.monospaced()).textSelection(.enabled)
+                            Text(publicKey).font(TunerTypography.caption.monospaced()).textSelection(.enabled)
                             Button("Copy public key") { UIPasteboard.general.string = publicKey }
                         }
                     } header: {

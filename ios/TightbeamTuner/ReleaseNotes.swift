@@ -4,6 +4,10 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 63, date: "November 12, 2026", items: [
+            .init(symbol: "circle.lefthalf.filled", title: "Match Chat colors across appearances",
+                  detail: "Chat's background, composer accents, and connection indicator now match Chat in both light and dark appearances."),
+        ]),
         ReleaseNote(version: "1.0", build: 62, date: "November 12, 2026", items: [
             .init(symbol: "arrowshape.turn.up.left", title: "See when an agent is replying",
                   detail: "After an accepted prompt, the agent moves from Agents to Replies with a spinner until a new assistant message arrives. If sending fails, the agent stays in Agents."),
@@ -318,15 +322,15 @@ private struct ReleaseNoteRow: View {
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title).font(.headline)
+                Text(item.title).font(TunerTypography.title)
                 Text(item.detail)
-                    .font(.subheadline)
+                    .font(TunerTypography.compactBody)
                     .foregroundStyle(Color.nordicSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } icon: {
             Image(systemName: item.symbol)
-                .font(.title2)
+                .font(TunerTypography.symbolTitle)
                 .foregroundStyle(Color(.accent))
                 .frame(width: 36)
         }
@@ -349,9 +353,10 @@ struct WhatsNewView: View {
                 .frame(maxWidth: 520, alignment: .leading)
                 .padding(24)
                 .frame(maxWidth: .infinity)
+                .font(TunerTypography.body)
             }
             .foregroundStyle(Color.nordicText)
-            .background(Color.nordicBackground)
+            .background(Color.nordicSurface)
             .navigationTitle("What's New")
             .safeAreaInset(edge: .bottom) {
                 Button {

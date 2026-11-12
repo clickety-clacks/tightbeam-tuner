@@ -32,6 +32,8 @@ targets:
     info:
       path: TightbeamTuner/Info.plist
       properties:
+        UIAppFonts:
+          - DM-Sans-Variable.ttf
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
     dependencies:
