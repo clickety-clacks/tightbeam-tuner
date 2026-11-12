@@ -458,6 +458,8 @@ FloatingWindow {
             width: win.sidebarOpen ? win.sidebarWidth : 0
             height: parent.height
             color: colors.surface
+            border.color: colors.strongBorder
+            border.width: 1
             Behavior on color { ColorAnimation { duration: 300; easing.type: Easing.InOutQuad } }
 
             ColumnLayout {
