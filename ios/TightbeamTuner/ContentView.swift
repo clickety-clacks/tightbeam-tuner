@@ -726,28 +726,34 @@ private struct AgentRowLabel: View {
 private struct AgentBranch: View {
     let node: AgentNode
     let filtering: Bool
+    let selectedID: String?
     @Binding var collapsed: Set<String>
+
+    private var rowBackground: Color {
+        selectedID == node.id ? Color.nordicSelection : Color.nordicSurface
+    }
 
     var body: some View {
         if node.children.isEmpty {
             NavigationLink(value: node.id) {
                 AgentRowLabel(agent: node.agent, contextOnly: node.contextOnly)
             }
-            .listRowBackground(Color.nordicSurface)
+            .listRowBackground(rowBackground)
         } else {
             DisclosureGroup(isExpanded: Binding(
                 get: { filtering || !collapsed.contains(node.id) },
                 set: { if $0 { collapsed.remove(node.id) } else { collapsed.insert(node.id) } }
             )) {
                 ForEach(node.children) { child in
-                    AgentBranch(node: child, filtering: filtering, collapsed: $collapsed)
+                    AgentBranch(node: child, filtering: filtering, selectedID: selectedID,
+                                collapsed: $collapsed)
                 }
             } label: {
                 NavigationLink(value: node.id) {
                     AgentRowLabel(agent: node.agent, contextOnly: node.contextOnly)
                 }
             }
-            .listRowBackground(Color.nordicSurface)
+            .listRowBackground(rowBackground)
         }
     }
 }
@@ -882,7 +888,8 @@ private struct AgentSidebar: View {
                                           waitingForReply: waitingForReply)
                         }
                         .simultaneousGesture(TapGesture().onEnded { openRepliedAgent(agent.id) })
-                        .listRowBackground(Color.nordicSurface)
+                        .listRowBackground(store.selectedID == agent.id
+                            ? Color.nordicSelection : Color.nordicSurface)
                     }
                 } header: {
                     AgentSectionHeader(title: "Replies", count: counts.replied)
@@ -894,7 +901,8 @@ private struct AgentSidebar: View {
                         NavigationLink(value: agent.id) {
                             AgentRowLabel(agent: agent, symbol: "clock")
                         }
-                        .listRowBackground(Color.nordicSurface)
+                        .listRowBackground(store.selectedID == agent.id
+                            ? Color.nordicSelection : Color.nordicSurface)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
                                 store.removeRecent(agent.id)
@@ -912,7 +920,7 @@ private struct AgentSidebar: View {
             Section(isExpanded: $agentsSectionExpanded) {
                 ForEach(visibleRoots) { node in
                     AgentBranch(node: node, filtering: !words.isEmpty || !selectedArchetypes.isEmpty,
-                                collapsed: $collapsed)
+                                selectedID: store.selectedID, collapsed: $collapsed)
                 }
             } header: {
                 AgentSectionHeader(title: "Agents", count: counts.agents)

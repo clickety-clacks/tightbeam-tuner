@@ -4,6 +4,10 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 63, date: "November 12, 2026", items: [
+            .init(symbol: "circle.lefthalf.filled", title: "Match Chat colors across appearances",
+                  detail: "Chat's background, composer accents, and connection indicator now match Chat in both light and dark appearances."),
+        ]),
         ReleaseNote(version: "1.0", build: 62, date: "November 12, 2026", items: [
             .init(symbol: "arrowshape.turn.up.left", title: "See when an agent is replying",
                   detail: "After an accepted prompt, the agent moves from Agents to Replies with a spinner until a new assistant message arrives. If sending fails, the agent stays in Agents."),
