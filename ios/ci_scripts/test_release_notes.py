@@ -99,18 +99,18 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             self.assertTrue(note.items)
             self.assertEqual(source.read_bytes(), original)
 
-    def test_current_proof_note_is_selected_only_for_build_59(self):
+    def test_current_proof_note_is_selected_only_for_build_62(self):
         note = release_notes.note_for_build(
-            self.current_source, self.history_source, 59
+            self.current_source, self.history_source, 62
         )
-        self.assertEqual(note.build, 59)
-        self.assertEqual(len(note.items), 6)
+        self.assertEqual(note.build, 62)
+        self.assertEqual(len(note.items), 2)
 
         with self.assertRaisesRegex(
             release_notes.ReleaseNoteError,
-            "current draft is assigned to build 59",
+            "current draft is assigned to build 62",
         ):
-            release_notes.note_for_build(self.current_source, self.history_source, 58)
+            release_notes.note_for_build(self.current_source, self.history_source, 61)
 
     def test_premerge_refuses_a_missing_current_note(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
