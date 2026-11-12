@@ -602,9 +602,9 @@ private struct AgentChatView: View {
     }
 
     var body: some View {
-        // The page fills the detail width and respects the toolbar. When the composer is above
-        // the conversation, move the web view below its glass; when it is below, extend the
-        // page's bottom safe area so content can scroll clear of the glass.
+        // The page extends beneath the floating toolbar. When the composer is above the
+        // conversation, move the web view below its glass; when it is below, extend the page's
+        // bottom safe area so content can scroll clear of the glass.
         GeometryReader { geometry in
             let detailFrame = geometry.frame(in: .global)
             let keyboardUpForComposer = composerKeyboardFocused && softwareKeyboardVisible
@@ -626,7 +626,7 @@ private struct AgentChatView: View {
                 ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
                             floatingBottomInset: floatingBottomInset)
                     .padding(.top, topComposerClearance)
-                    .ignoresSafeArea(edges: .bottom)
+                    .ignoresSafeArea(edges: .vertical)
                 if bridge.hostComposerActive {
                     NativeChatComposer(
                         draft: $draft,
