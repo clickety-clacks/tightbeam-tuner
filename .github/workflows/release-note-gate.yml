@@ -1,0 +1,51 @@
+name: release-note-gate
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  release-note-gate:
+    name: release-note-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate fresh author-written release note
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PR_DESCRIPTION: ${{ github.event.pull_request.body || '' }}
+        run: |
+          set -eu
+          base_sha="$BASE_SHA"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            base_sha="$(git rev-parse "$GITHUB_SHA^1")"
+          fi
+
+          base_note="$(mktemp)"
+          trap 'rm -f "$base_note"' EXIT
+          git show "$base_sha:ios/TightbeamTuner/CurrentBuildReleaseNote.json" > "$base_note"
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            export TUNER_PR_DESCRIPTION="$PR_DESCRIPTION"
+            python3 ios/ci_scripts/release_notes.py premerge \
+              --base-note "$base_note" \
+              --require-pr-provenance
+          else
+            python3 ios/ci_scripts/release_notes.py premerge \
+              --base-note "$base_note"
+          fi
