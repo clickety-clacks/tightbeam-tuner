@@ -122,9 +122,9 @@ struct NativeChatComposer: View {
                     }
                         .accessibilityLabel(sendTitle)
                         .fontWeight(.semibold)
-                        .foregroundStyle(canSend ? Color.nordicOnAccent : Color.nordicSecondaryText)
+                        .foregroundStyle(canSend ? Color.chatOnAccent : Color.nordicSecondaryText)
                         // Grey whenever a tap would not send, so Send never looks available when it is not.
-                        .tint(canSend ? Color(.accent) : Color.nordicSecondaryText.opacity(0.25))
+                        .tint(canSend ? Color.chatAccent : Color.nordicSecondaryText.opacity(0.25))
                         .buttonStyle(.glassProminent)
                         .buttonBorderShape(.circle)
                         // The glass style pads wider than tall and centers its circle in that
@@ -138,6 +138,7 @@ struct NativeChatComposer: View {
         .frame(maxWidth: maxWidth)
         .padding(.horizontal, 12)
         .padding(.bottom, Self.bottomPadding)
+        .tint(Color.chatAccent)
         .animation(.default, value: notice)
         .onChange(of: focused, initial: true) { _, focused in
             bridge.nativeComposerFocused = focused
@@ -221,9 +222,9 @@ extension ChatHostBridge.Connection {
     /// Chat's status colors: moss when connected, ochre while connecting, red when it cannot connect.
     var color: Color {
         switch self {
-        case .connected: .nordicOk
-        case .connecting, .reconnecting: .nordicCaution
-        case .disconnected, .unsupported, .unauthorized: .nordicDanger
+        case .connected: .chatOk
+        case .connecting, .reconnecting: .chatCaution
+        case .disconnected, .unsupported, .unauthorized: .chatDanger
         }
     }
 }
@@ -252,7 +253,7 @@ private struct ConnectionDetails: View {
                     bridge.reconnect()
                 }
                 .buttonStyle(.glassProminent)
-                .tint(Color(.accent))
+                .tint(Color.chatAccent)
             }
         }
         .foregroundStyle(Color.nordicText)

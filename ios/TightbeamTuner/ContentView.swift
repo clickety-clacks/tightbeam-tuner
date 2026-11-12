@@ -117,7 +117,7 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.nordicBackground)
+            .background(Color.chatBackground)
         }
         .background {
             // SwiftUI does not expose the visible .searchable capsule's frame. Find it from
@@ -794,8 +794,12 @@ private struct AgentSidebar: View {
         Array(Set(store.agents.compactMap(\.archetype))).sorted()
     }
 
+    private var mainSectionAgents: [Agent] {
+        repliedFeed.state.agentsInMainSection(from: store.agents)
+    }
+
     private var visibleRoots: [AgentNode] {
-        let agents = store.agents
+        let agents = mainSectionAgents
         let ids = Set(agents.map(\.id))
         let filter = listFilter
         let filtering = filter.isActive
@@ -834,7 +838,7 @@ private struct AgentSidebar: View {
             let matchingReplied = replied.filter { filter.matches($0) }
             let matchingRecents = recents.filter { filter.matches($0) }
             let counts = AgentSectionCounts(replied: replied, recent: Array(recents),
-                                            agents: store.agents, filter: filter)
+                                            agents: mainSectionAgents, filter: filter)
             if store.isLoading { ProgressView("Loading agents…") }
             if store.isRosterStale {
                 Label("Agent list may be out of date", systemImage: "clock.arrow.circlepath")
@@ -928,3 +932,128 @@ private struct AgentSidebar: View {
     }
 
 }
+
+#if DEBUG
+/// A capture-only host for the content-free WI721 page. This bypasses the normal store,
+/// roster refresh, release-note, and Replies tasks, and exists only in Debug builds.
+struct WI721CaptureFixtureView: View {
+    private let configuration: WI721CaptureFixtureConfiguration
+    @State private var selectedSessionKey: String? = WI721CaptureFixtureConfiguration.sessionKey
+    @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
+    @State private var draft = ""
+    @State private var repliedFeed: RepliedFeed
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    init(arguments: [String]) {
+        configuration = WI721CaptureFixtureConfiguration(arguments: arguments)
+        let defaultsSuite = "wi721.capture.fixture"
+        guard let isolatedDefaults = UserDefaults(suiteName: defaultsSuite) else {
+            preconditionFailure("Unable to create isolated WI721 fixture defaults")
+        }
+        isolatedDefaults.removePersistentDomain(forName: defaultsSuite)
+        _repliedFeed = State(initialValue: RepliedFeed(defaults: isolatedDefaults))
+    }
+
+    var body: some View {
+        Group {
+            if let failureMessage = configuration.failureMessage {
+                ContentUnavailableView(
+                    "WI721 capture fixture unavailable",
+                    systemImage: "network.slash",
+                    description: Text(failureMessage)
+                )
+            } else {
+                NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
+                    List(selection: $selectedSessionKey) {
+                        Text("WI721 Fixture Agent")
+                            .tag(WI721CaptureFixtureConfiguration.sessionKey)
+                    }
+                    .navigationTitle("Fixture agents")
+                } detail: {
+                    if selectedSessionKey == WI721CaptureFixtureConfiguration.sessionKey,
+                       let chatURL = configuration.chatURL {
+                        AgentChatView(
+                            url: chatURL,
+                            reloadToken: 0,
+                            draft: $draft,
+                            repliedFeed: repliedFeed,
+                            sidebarSearchFrame: nil,
+                            compactSearchKeyboardDownFrame: nil,
+                            compactSearchKeyboardUpFrame: nil,
+                            softwareKeyboardVisible: false,
+                            isCompact: horizontalSizeClass == .compact
+                        )
+                        .id(WI721CaptureFixtureConfiguration.sessionKey)
+                        .toolbarBackground(.hidden, for: .navigationBar)
+                        .navigationTitle("WI721 Fixture Agent")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.chatBackground)
+                    } else {
+                        ContentUnavailableView("Select the WI721 fixture agent", systemImage: "person.crop.circle")
+                    }
+                }
+            }
+        }
+        .preferredColorScheme(configuration.colorScheme)
+    }
+}
+
+/// Debug-only launch configuration. The only accepted origin is an HTTPS loopback origin,
+/// so this route cannot point at a production Chat service.
+struct WI721CaptureFixtureConfiguration {
+    static let launchArgument = "--wi721-chat-fixture"
+    static let sessionKey = "agent:test"
+    private static let originPrefix = "--wi721-chat-origin="
+    private static let themePrefix = "--wi721-theme="
+
+    let chatURL: URL?
+    let colorScheme: ColorScheme?
+    let failureMessage: String?
+
+    init(arguments: [String]) {
+        guard arguments.contains(Self.launchArgument),
+              let originArgument = arguments.first(where: { $0.hasPrefix(Self.originPrefix) }) else {
+            chatURL = nil
+            colorScheme = nil
+            failureMessage = "Pass the fixture flag, an HTTPS loopback origin, and a light or dark theme."
+            return
+        }
+
+        let originValue = String(originArgument.dropFirst(Self.originPrefix.count))
+        guard let origin = Connection().origin(originValue),
+              let host = origin.host?.lowercased(),
+              ["localhost", "127.0.0.1", "::1"].contains(host),
+              var components = URLComponents(url: origin, resolvingAgainstBaseURL: false) else {
+            chatURL = nil
+            colorScheme = nil
+            failureMessage = "Use an HTTPS origin on localhost or a loopback IP address."
+            return
+        }
+
+        guard let themeArgument = arguments.first(where: { $0.hasPrefix(Self.themePrefix) }) else {
+            chatURL = nil
+            colorScheme = nil
+            failureMessage = "Pass --wi721-theme=light or --wi721-theme=dark."
+            return
+        }
+
+        let themeValue = String(themeArgument.dropFirst(Self.themePrefix.count))
+        let requestedColorScheme: ColorScheme
+        switch themeValue {
+        case "light": requestedColorScheme = .light
+        case "dark": requestedColorScheme = .dark
+        default:
+            chatURL = nil
+            colorScheme = nil
+            failureMessage = "The fixture theme must be light or dark."
+            return
+        }
+
+        components.path = "/"
+        components.queryItems = [URLQueryItem(name: "session", value: Self.sessionKey)]
+        chatURL = components.url
+        colorScheme = requestedColorScheme
+        failureMessage = chatURL == nil ? "The fixture origin could not be formed." : nil
+    }
+}
+#endif

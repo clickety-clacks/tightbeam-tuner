@@ -13,7 +13,9 @@ QtObject {
     // Canvas and surfaces
     readonly property color canvasTop: light ? "#E8E0D4" : "#0F0E0D"
     readonly property color canvasBottom: light ? "#D4C8BC" : "#1A1816"
-    readonly property color window: canvasTop
+    // The native window under Chat stays on Chat's page color; Tuner-owned
+    // empty/loading surfaces use the Canvas and Surface roles below.
+    readonly property color window: light ? "#F0EAE0" : "#1C1917"
     readonly property color surface: light ? "#F7F3EB" : "#1C1917"
     readonly property color raisedSurface: raisedSurfaceTop
     readonly property color raisedSurfaceTop: light ? "#F0EAE0" : "#1C1917"
