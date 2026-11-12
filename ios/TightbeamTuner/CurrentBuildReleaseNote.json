@@ -1,17 +1,12 @@
 {
   "version": "1.0",
-  "build": 62,
+  "build": 63,
   "date": "November 12, 2026",
   "items": [
     {
-      "symbol": "arrowshape.turn.up.left",
-      "title": "See when an agent is replying",
-      "detail": "After an accepted prompt, the agent moves from Agents to Replies with a spinner until a new assistant message arrives. If sending fails, the agent stays in Agents."
-    },
-    {
-      "symbol": "checkmark.circle",
-      "title": "Keep release notes with every update",
-      "detail": "Each numbered update needs its own author-written notes before release. The same notes appear in What's Changed and TestFlight."
+      "symbol": "circle.lefthalf.filled",
+      "title": "Match Chat colors across appearances",
+      "detail": "Chat's background, composer accents, and connection indicator now match Chat in both light and dark appearances."
     }
   ]
 }
