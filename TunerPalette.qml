@@ -7,12 +7,13 @@ QtObject {
     readonly property bool light: Application.styleHints.colorScheme === Qt.Light
 
     // Neutrals
-    readonly property color window: light ? "#F1EEE9" : "#161514"
+    readonly property color window: light ? "#F0EAE0" : "#1C1917"
     readonly property color sidebar: light ? "#E6E1D8" : "#201F1D"
     readonly property color surface: light ? "#F1EEE9" : "#201F1D"
     readonly property color inset: light ? "#F1EFEB" : "#24221F"
     readonly property color field: light ? "#F1EFEB" : "#24221F"
-    readonly property color loading: window
+    // The host window uses Chat's page color; Tuner-only loading surfaces keep the Tuner palette.
+    readonly property color loading: light ? "#F1EEE9" : "#161514"
 
     // Text
     readonly property color foreground: light ? "#31302D" : "#DDD9D1"

@@ -4,6 +4,12 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 62, date: "November 12, 2026", items: [
+            .init(symbol: "arrowshape.turn.up.left", title: "See when an agent is replying",
+                  detail: "After an accepted prompt, the agent moves from Agents to Replies with a spinner until a new assistant message arrives. If sending fails, the agent stays in Agents."),
+            .init(symbol: "checkmark.circle", title: "Keep release notes with every update",
+                  detail: "Each numbered update needs its own author-written notes before release. The same notes appear in What's Changed and TestFlight."),
+        ]),
         ReleaseNote(version: "1.0", build: 59, date: "November 11, 2026", items: [
             .init(symbol: "text.bubble", title: "Keep Chat clear during its first layout",
                   detail: "Tuner reserves space for its message field before Chat's first layout measurement, keeping the conversation controls clear."),
