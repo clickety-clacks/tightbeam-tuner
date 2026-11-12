@@ -63,7 +63,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
     def _render_signed_export(self, source, signed_export, output):
         return release_notes.main([
-            "render", "--build-number", "57", "--source", str(source),
+            "render", "--build-number", "60", "--source", str(source),
             "--history", str(self.history_source), "--signed-app-path", str(signed_export),
             "--output", str(output),
         ])
@@ -73,6 +73,39 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
         self.assertEqual(note.build, 52)
         self.assertTrue(note.items)
         self.assertTrue(all(item.title.strip() and item.detail.strip() for item in note.items))
+
+    def test_shipped_build_59_notes_remain_available_after_current_note_advances(self):
+        note = release_notes.exact_note(self.history, 59)
+        self.assertEqual(note.build, 59)
+        self.assertEqual(
+            [(item.title, item.detail) for item in note.items],
+            [
+                (
+                    "Keep Chat clear during its first layout",
+                    "Tuner reserves space for its message field before Chat's first layout measurement, keeping the conversation controls clear.",
+                ),
+                (
+                    "See your saved agents at launch",
+                    "Tuner shows the saved agent list as soon as it opens, then reconciles it with the current roster.",
+                ),
+                (
+                    "Send sits beside the message field",
+                    "Send is a separate control beside the field and stays aligned with the last line as the field grows.",
+                ),
+                (
+                    "See when an agent is replying",
+                    "After you send a prompt, its row moves to Replies with a spinner until a new assistant message arrives. If sending fails, the row stays where it was.",
+                ),
+                (
+                    "Send matches the message field",
+                    "The one-line Send control matches the 44-point field height, while multiline drafts keep it aligned with the last line.",
+                ),
+                (
+                    "Release notes match the build",
+                    "Each numbered archive requires notes for that exact build. Tuner's What's Changed and TestFlight use the same authored notes.",
+                ),
+            ],
+        )
 
     def test_missing_historical_build_does_not_fall_back_to_latest(self):
         with self.assertRaisesRegex(release_notes.ReleaseNoteError, "build 57"):
@@ -87,15 +120,15 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
     def test_selects_the_authored_note_only_for_its_exact_build_number(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            source = self._numbered_note_copy(Path(temporary_directory), 57)
+            source = self._numbered_note_copy(Path(temporary_directory), 60)
             original = source.read_bytes()
 
-            note = release_notes.note_for_build(source, self.history_source, 57)
-            selected, data = release_notes.load_current_note(source, expected_build=57)
+            note = release_notes.note_for_build(source, self.history_source, 60)
+            selected, data = release_notes.load_current_note(source, expected_build=60)
 
-            self.assertEqual(note.build, 57)
+            self.assertEqual(note.build, 60)
             self.assertEqual(selected, note)
-            self.assertEqual(data["build"], 57)
+            self.assertEqual(data["build"], 60)
             self.assertTrue(note.items)
             self.assertEqual(source.read_bytes(), original)
 
@@ -151,7 +184,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 52"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 59"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )
@@ -248,7 +281,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_two_sequential_archive_workspaces_refuse_a_reused_note_draft(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            committed_draft = self._numbered_note_copy(root, 57).read_bytes()
+            committed_draft = self._numbered_note_copy(root, 60).read_bytes()
             first_workspace = root / "archive-one"
             second_workspace = root / "archive-two"
             first_workspace.mkdir()
@@ -261,19 +294,19 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             first_errors = StringIO()
             with redirect_stderr(first_errors):
                 first_status = release_notes.main([
-                    "validate", "--build-number", "57", "--source", str(first_source),
+                    "validate", "--build-number", "60", "--source", str(first_source),
                     "--history", str(self.history_source),
                 ])
             second_errors = StringIO()
             with redirect_stderr(second_errors):
                 second_status = release_notes.main([
-                    "validate", "--build-number", "58", "--source", str(second_source),
+                    "validate", "--build-number", "61", "--source", str(second_source),
                     "--history", str(self.history_source),
                 ])
 
             self.assertEqual(first_status, 0)
             self.assertEqual(second_status, 1)
-            self.assertIn("current draft is assigned to build 57", second_errors.getvalue())
+            self.assertIn("current draft is assigned to build 60", second_errors.getvalue())
             self.assertEqual(first_source.read_bytes(), committed_draft)
             self.assertEqual(second_source.read_bytes(), committed_draft)
 
@@ -332,8 +365,8 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_render_reads_the_app_version_from_the_exported_testflight_ipa(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 57)
-            signed_export = self._signed_export_copy(root, [("TightbeamTuner", 57)])
+            source = self._numbered_note_copy(root, 60)
+            signed_export = self._signed_export_copy(root, [("TightbeamTuner", 60)])
             output = root / "WhatToTest.en-US.txt"
 
             status = self._render_signed_export(source, signed_export, output)
@@ -341,14 +374,14 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(
                 output.read_text(encoding="utf-8"),
-                release_notes.note_for_build(source, self.history_source, 57).tester_text(),
+                release_notes.note_for_build(source, self.history_source, 60).tester_text(),
             )
 
     def test_render_rejects_an_exported_ipa_with_a_different_bundle_build(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 57)
-            signed_export = self._signed_export_copy(root, [("TightbeamTuner", 56)])
+            source = self._numbered_note_copy(root, 60)
+            signed_export = self._signed_export_copy(root, [("TightbeamTuner", 59)])
             output = root / "WhatToTest.en-US.txt"
             errors = StringIO()
 
@@ -356,13 +389,13 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 status = self._render_signed_export(source, signed_export, output)
 
             self.assertEqual(status, 1)
-            self.assertIn("signed app CFBundleVersion 56 does not match build 57", errors.getvalue())
+            self.assertIn("signed app CFBundleVersion 59 does not match build 60", errors.getvalue())
             self.assertFalse(output.exists())
 
     def test_render_refuses_signed_ipa_with_no_app_bundles_and_lists_names_only(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 57)
+            source = self._numbered_note_copy(root, 60)
             signed_export = self._signed_export_copy(root, [])
             output = root / "WhatToTest.en-US.txt"
             errors = StringIO()
@@ -380,9 +413,9 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_render_refuses_signed_ipa_with_multiple_app_bundles_and_lists_names_only(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 57)
+            source = self._numbered_note_copy(root, 60)
             signed_export = self._signed_export_copy(
-                root, [("TightbeamTuner", 57), ("UnexpectedApp", 57)]
+                root, [("TightbeamTuner", 60), ("UnexpectedApp", 60)]
             )
             output = root / "WhatToTest.en-US.txt"
             errors = StringIO()

@@ -4,6 +4,20 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 59, date: "November 11, 2026", items: [
+            .init(symbol: "text.bubble", title: "Keep Chat clear during its first layout",
+                  detail: "Tuner reserves space for its message field before Chat's first layout measurement, keeping the conversation controls clear."),
+            .init(symbol: "person.2", title: "See your saved agents at launch",
+                  detail: "Tuner shows the saved agent list as soon as it opens, then reconciles it with the current roster."),
+            .init(symbol: "arrow.up.circle", title: "Send sits beside the message field",
+                  detail: "Send is a separate control beside the field and stays aligned with the last line as the field grows."),
+            .init(symbol: "arrowshape.turn.up.left", title: "See when an agent is replying",
+                  detail: "After you send a prompt, its row moves to Replies with a spinner until a new assistant message arrives. If sending fails, the row stays where it was."),
+            .init(symbol: "arrow.up.circle", title: "Send matches the message field",
+                  detail: "The one-line Send control matches the 44-point field height, while multiline drafts keep it aligned with the last line."),
+            .init(symbol: "checkmark.circle", title: "Release notes match the build",
+                  detail: "Each numbered archive requires notes for that exact build. Tuner's What's Changed and TestFlight use the same authored notes."),
+        ]),
         ReleaseNote(version: "1.0", build: 52, date: "November 7, 2026", items: [
             .init(symbol: "text.bubble", title: "Keep the compact message field full size",
                   detail: "The empty or one-line message field keeps its full height and rounded ends in compact layouts."),
