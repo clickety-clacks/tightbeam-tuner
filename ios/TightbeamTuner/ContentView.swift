@@ -940,6 +940,7 @@ struct WI721CaptureFixtureView: View {
     private let configuration: WI721CaptureFixtureConfiguration
     @State private var selectedSessionKey: String? = WI721CaptureFixtureConfiguration.sessionKey
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
+    @State private var draft = ""
     @State private var repliedFeed: RepliedFeed
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -974,7 +975,7 @@ struct WI721CaptureFixtureView: View {
                         AgentChatView(
                             url: chatURL,
                             reloadToken: 0,
-                            draft: .constant(""),
+                            draft: $draft,
                             repliedFeed: repliedFeed,
                             sidebarSearchFrame: nil,
                             compactSearchKeyboardDownFrame: nil,
@@ -985,6 +986,8 @@ struct WI721CaptureFixtureView: View {
                         .id(WI721CaptureFixtureConfiguration.sessionKey)
                         .toolbarBackground(.hidden, for: .navigationBar)
                         .navigationTitle("WI721 Fixture Agent")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.chatBackground)
                     } else {
                         ContentUnavailableView("Select the WI721 fixture agent", systemImage: "person.crop.circle")
                     }
