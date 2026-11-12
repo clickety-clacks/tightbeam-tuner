@@ -278,6 +278,65 @@ def _validate_current_build_against_history(note: Note, history_path: Path) -> N
         )
 
 
+def validate_premerge_note(
+    source_path: Path,
+    history_path: Path,
+    base_note_path: Path,
+    pr_description: str | None = None,
+) -> Note:
+    """Require an author-bound note newer than both the base and shipped history."""
+    note, _ = load_current_note(source_path)
+    base_note, _ = load_current_note(base_note_path)
+    if note.build <= 0:
+        raise ReleaseNoteError("current-build release note is not bound to a numbered build")
+
+    if note.build <= base_note.build:
+        raise ReleaseNoteError(
+            f"current release note build {note.build} must be greater than base note build {base_note.build}"
+        )
+
+    history = load_notes(history_path)
+    history_builds = {entry.build for entry in history}
+    if note.build in history_builds:
+        raise ReleaseNoteError(
+            f"current release note build {note.build} already appears in release-note history"
+        )
+    latest_history_build = max(history_builds)
+    if note.build <= latest_history_build:
+        raise ReleaseNoteError(
+            f"current release note build {note.build} must be greater than latest historical note {latest_history_build}"
+        )
+
+    if pr_description is not None:
+        declared_builds = re.findall(
+            r"(?im)^Release note build number:\s*(\d+)\s*$", pr_description
+        )
+        if len(declared_builds) != 1:
+            raise ReleaseNoteError(
+                "PR description must contain exactly one `Release note build number: <build>` line"
+            )
+        if int(declared_builds[0]) != note.build:
+            raise ReleaseNoteError(
+                f"PR description names release-note build {declared_builds[0]}, but the current note is bound to build {note.build}"
+            )
+
+        observed_runs = re.findall(
+            r"(?im)^Build number source:\s*latest Xcode Cloud run\s+#?(\d+)\b.*$",
+            pr_description,
+        )
+        if len(observed_runs) != 1:
+            raise ReleaseNoteError(
+                "PR description must contain exactly one `Build number source: latest Xcode Cloud run <observed-number>` line"
+            )
+        observed_run = int(observed_runs[0])
+        if note.build != observed_run + 1:
+            raise ReleaseNoteError(
+                f"current release note build {note.build} must be one greater than observed latest Xcode Cloud run {observed_run}"
+            )
+
+    return note
+
+
 def note_for_build(source_path: Path, history_path: Path, build_number: int) -> Note:
     if build_number <= 0:
         raise ReleaseNoteError("Xcode Cloud build number must be positive")
@@ -383,20 +442,43 @@ def _signed_export_app_info(signed_app_path: Path) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("validate", "render"))
-    parser.add_argument("--build-number", required=True, type=int)
+    parser.add_argument("action", choices=("validate", "render", "premerge"))
+    parser.add_argument("--build-number", type=int)
     parser.add_argument("--source", type=Path, default=_default_current_source())
     parser.add_argument("--history", type=Path, default=_default_source())
+    parser.add_argument("--base-note", type=Path)
+    parser.add_argument("--require-pr-provenance", action="store_true")
     parser.add_argument("--signed-app-path", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
 
-    if args.build_number <= 0:
+    if args.action in ("validate", "render") and args.build_number is None:
+        parser.error(f"{args.action} requires --build-number")
+    if args.build_number is not None and args.build_number <= 0:
         parser.error("--build-number must be a positive integer")
     if args.action == "render" and args.output is None:
         parser.error("render requires --output")
+    if args.action == "premerge" and args.base_note is None:
+        parser.error("premerge requires --base-note")
+    if args.action == "premerge" and args.signed_app_path is not None:
+        parser.error("premerge does not accept --signed-app-path")
+    if args.action == "premerge" and args.output is not None:
+        parser.error("premerge does not accept --output")
+    if args.require_pr_provenance and args.action != "premerge":
+        parser.error("--require-pr-provenance is only valid for premerge")
 
     try:
+        if args.action == "premerge":
+            description = os.environ.get("TUNER_PR_DESCRIPTION", "") if args.require_pr_provenance else None
+            note = validate_premerge_note(
+                args.source,
+                args.history,
+                args.base_note,
+                pr_description=description,
+            )
+            print(f"Release note build {note.build} is fresh against the base and history.")
+            return 0
+
         note = note_for_build(args.source, args.history, args.build_number)
         if args.signed_app_path is not None:
             info = _signed_export_app_info(args.signed_app_path)
