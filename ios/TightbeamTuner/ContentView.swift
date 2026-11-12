@@ -794,8 +794,12 @@ private struct AgentSidebar: View {
         Array(Set(store.agents.compactMap(\.archetype))).sorted()
     }
 
+    private var mainSectionAgents: [Agent] {
+        repliedFeed.state.agentsInMainSection(from: store.agents)
+    }
+
     private var visibleRoots: [AgentNode] {
-        let agents = store.agents
+        let agents = mainSectionAgents
         let ids = Set(agents.map(\.id))
         let filter = listFilter
         let filtering = filter.isActive
@@ -834,7 +838,7 @@ private struct AgentSidebar: View {
             let matchingReplied = replied.filter { filter.matches($0) }
             let matchingRecents = recents.filter { filter.matches($0) }
             let counts = AgentSectionCounts(replied: replied, recent: Array(recents),
-                                            agents: store.agents, filter: filter)
+                                            agents: mainSectionAgents, filter: filter)
             if store.isLoading { ProgressView("Loading agents…") }
             if store.isRosterStale {
                 Label("Agent list may be out of date", systemImage: "clock.arrow.circlepath")

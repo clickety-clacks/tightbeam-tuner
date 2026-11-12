@@ -325,6 +325,10 @@ struct RepliedState: Sendable {
         }
         .map { $0.0 }
     }
+
+    func agentsInMainSection(from roster: [Agent]) -> [Agent] {
+        roster.filter { !isWaitingForReply($0.id) }
+    }
 }
 
 struct RepliedTaskKey: Equatable {

@@ -138,9 +138,11 @@ final class RepliedTests: XCTestCase {
         let roster = try makeAgents(["agent:alpha"])
         let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
 
+        XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
         bridge.send("synthetic prompt")
         let outgoing = try XCTUnwrap(bridge.outgoing)
         XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
 
         bridge.handle(type: "accepted", event: [
             "lifetimeId": outgoing.lifetimeId,
@@ -149,6 +151,15 @@ final class RepliedTests: XCTestCase {
 
         XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+        let mainSectionAgents = feed.state.agentsInMainSection(from: roster)
+        XCTAssertTrue(mainSectionAgents.isEmpty, "A pending agent must leave Agents after acceptance")
+        let counts = AgentSectionCounts(
+            replied: feed.state.agents(from: roster),
+            recent: [],
+            agents: mainSectionAgents,
+            filter: AgentListFilter(words: [], archetypes: [])
+        )
+        XCTAssertEqual(counts.agents, 0)
     }
 
     @MainActor func testAssistantReplyRestoresRepliesArrow() throws {
@@ -163,12 +174,15 @@ final class RepliedTests: XCTestCase {
             "lifetimeId": outgoing.lifetimeId,
             "correlationId": outgoing.correlationId
         ])
+        XCTAssertTrue(feed.state.agentsInMainSection(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
 
         feed.apply(try change(#"{"type":"change","class":"message.created","payload":{"seq":3,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}}"#), userID: "reader")
         feed.apply(try change(#"{"type":"change","class":"message.created","payload":{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#), userID: "reader")
 
         XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+        XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
     }
 
     @MainActor func testReplayedAssistantHistoryDoesNotEndPendingPrompt() async throws {
@@ -268,6 +282,7 @@ final class RepliedTests: XCTestCase {
         let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
         bridge.send("synthetic prompt")
         let outgoing = try XCTUnwrap(bridge.outgoing)
+        XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
         bridge.handle(type: "accepted", event: [
             "lifetimeId": outgoing.lifetimeId,
             "correlationId": outgoing.correlationId
@@ -308,6 +323,7 @@ final class RepliedTests: XCTestCase {
         let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
         bridge.send("synthetic prompt")
         let outgoing = try XCTUnwrap(bridge.outgoing)
+        XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
 
         bridge.handle(type: "rejected", event: [
             "lifetimeId": outgoing.lifetimeId,
@@ -318,6 +334,7 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(bridge.outgoing?.status, .failed("offline"))
         XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
         XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+        XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
     }
 
     @MainActor func testFailureAfterAcceptanceClearsWaitingIndicator() throws {
@@ -342,6 +359,7 @@ final class RepliedTests: XCTestCase {
 
         XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
         XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+        XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
     }
 
     @MainActor func testLifetimeEndDoesNotClearWaitingIndicator() throws {
