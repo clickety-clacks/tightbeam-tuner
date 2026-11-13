@@ -128,7 +128,7 @@ struct RepliedState: Codable, Sendable {
     private(set) var readMarkerBySession: [String: RepliedReadMarker] = [:]
     private(set) var localReadMarkerBySession: [String: Int]
     private(set) var retiredSessionKeys: Set<String> = []
-    private struct PendingPrompt: Codable, Sendable {
+    private struct PendingPrompt: Codable, Sendable, Equatable {
         let sessionKey: String
         var promptSequence: Int?
         let assistantSequenceAtAcceptance: Int?
@@ -147,6 +147,30 @@ struct RepliedState: Codable, Sendable {
     init(localReadMarkerBySession: [String: Int] = [:]) {
         self.localReadMarkerBySession = localReadMarkerBySession
     }
+
+    func hasPersistenceRelevantChanges(comparedTo previous: RepliedState) -> Bool {
+        let persistedAssistantSequences = assistantSequencesForPersistedSessions()
+        let previousPersistedAssistantSequences = previous.assistantSequencesForPersistedSessions()
+
+        return latestReplyBySession != previous.latestReplyBySession
+            || readMarkerBySession != previous.readMarkerBySession
+            || localReadMarkerBySession != previous.localReadMarkerBySession
+            || retiredSessionKeys != previous.retiredSessionKeys
+            || pendingPromptsByID != previous.pendingPromptsByID
+            || completedPromptIDsBySession != previous.completedPromptIDsBySession
+            || completedPromptOrderBySession != previous.completedPromptOrderBySession
+            || pendingOrderBySession != previous.pendingOrderBySession
+            || nextPendingOrder != previous.nextPendingOrder
+            || persistedAssistantSequences != previousPersistedAssistantSequences
+    }
+
+    private func assistantSequencesForPersistedSessions() -> [String: Int] {
+        // Catch-up can replay histories for sessions with replies or pending prompts.
+        var sessions = Set(latestReplyBySession.keys)
+        sessions.formUnion(pendingPromptsByID.values.map(\.sessionKey))
+        return latestAssistantSequenceBySession.filter { sessions.contains($0.key) }
+    }
+
     mutating func markOpened(_ key: String) -> Int? {
         guard let reply = latestReplyBySession[key] else { return nil }
         let marker = max(reply, localReadMarkerBySession[key] ?? Int.min)
@@ -425,7 +449,9 @@ struct RepliedShownChat {
     }
 
     func markOpened(_ key: String) {
-        guard state.markOpened(key) != nil else { return }
+        let previousState = state
+        guard state.markOpened(key) != nil,
+              state.hasPersistenceRelevantChanges(comparedTo: previousState) else { return }
         persistLocalReadMarkers()
         persistStateSnapshot()
     }
@@ -444,29 +470,27 @@ struct RepliedShownChat {
         shownSessionKey: String?,
         persistSnapshot: Bool = true
     ) {
+        let previousState = state
         if state.apply(frame, userID: userID, shownSessionKey: shownSessionKey) {
             persistLocalReadMarkers()
         }
-        guard persistSnapshot else { return }
-        switch frame {
-        case .message, .readMarker, .sessionSpawned, .sessionUpdated, .sessionHarnessChanged, .retired:
-            persistStateSnapshot()
-        default:
-            break
-        }
+        guard persistSnapshot,
+              state.hasPersistenceRelevantChanges(comparedTo: previousState) else { return }
+        persistStateSnapshot()
     }
 
     func observePromptStatus(_ status: ChatHostBridge.Status, sessionKey: String, correlationID: String) {
+        let previousState = state
         switch status {
         case .accepted, .delivered:
             state.acceptPrompt(sessionKey: sessionKey, correlationID: correlationID)
-            persistStateSnapshot()
         case .failed(_):
             state.failPrompt(sessionKey: sessionKey, correlationID: correlationID)
-            persistStateSnapshot()
         case .sending, .uncertain, .interrupted:
             break
         }
+        guard state.hasPersistenceRelevantChanges(comparedTo: previousState) else { return }
+        persistStateSnapshot()
     }
 
     private func persistLocalReadMarkers() {
@@ -545,8 +569,13 @@ struct RepliedShownChat {
     ) async {
         let markers = await fetchMarkers(gateway, user)
         guard !Task.isCancelled else { return }
+        let previousState = state
         for marker in markers { state.apply(marker, userID: user) }
-        defer { persistStateSnapshot() }
+        defer {
+            if state.hasPersistenceRelevantChanges(comparedTo: previousState) {
+                persistStateSnapshot()
+            }
+        }
         let keysToFetch = markers.isEmpty
             ? sessionKeys.filter { state.needsSnapshotRefresh($0) }
             : sessionKeys

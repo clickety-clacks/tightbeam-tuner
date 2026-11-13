@@ -1087,6 +1087,35 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(restored.state.agents(from: roster).map(\.id), ["agent:pending"])
     }
 
+    @MainActor func testSnapshotWritesOnlyWhenPendingReplyOrMarkerStateChanges() throws {
+        let suiteName = "RepliedTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(CountingUserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let feed = RepliedFeed(defaults: defaults)
+        feed.activateConnection(makeConnection())
+        feed.observePromptStatus(.accepted, sessionKey: "agent:alpha", correlationID: "prompt-alpha")
+        XCTAssertEqual(defaults.writeCount(forKey: "repliedStateSnapshot.v1"), 1)
+
+        // Duplicate delivery and unrelated org-wide events change transient history only.
+        feed.observePromptStatus(.delivered, sessionKey: "agent:alpha", correlationID: "prompt-alpha")
+        feed.apply(.message(try message(#"{"seq":2,"sessionKey":"agent:other","role":"user","clientMessageId":"other-prompt"}"#)), userID: "reader")
+        feed.apply(.message(try message(#"{"seq":3,"sessionKey":"agent:other","role":"assistant","turnIncludesHuman":false}"#)), userID: "reader")
+        let unrelatedMarker = try JSONDecoder().decode(
+            RepliedReadMarker.self,
+            from: Data(#"{"userId":"someone-else","scopeKey":"agent:other:session-read-position","marker":2,"updatedAt":3}"#.utf8)
+        )
+        feed.apply(.readMarker(unrelatedMarker), userID: "reader")
+        let otherAgent = try XCTUnwrap(makeAgents(["agent:other"]).first)
+        feed.apply(.sessionUpdated(otherAgent), userID: "reader")
+        XCTAssertEqual(defaults.writeCount(forKey: "repliedStateSnapshot.v1"), 1)
+
+        feed.apply(.message(try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"user","clientMessageId":"prompt-alpha"}"#)), userID: "reader")
+        XCTAssertEqual(defaults.writeCount(forKey: "repliedStateSnapshot.v1"), 2)
+        feed.apply(.message(try message(#"{"seq":5,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
+        XCTAssertEqual(defaults.writeCount(forKey: "repliedStateSnapshot.v1"), 3)
+    }
+
     func testRetiredAndOutOfRosterAgentsAreExcluded() throws {
         let roster = try makeAgents(["agent:active"])
         var state = RepliedState()
@@ -1254,5 +1283,18 @@ final class RepliedTests: XCTestCase {
     private actor FetchPromptIDsRecorder {
         private(set) var values: [Set<String>] = []
         func record(_ value: Set<String>) { values.append(value) }
+    }
+}
+
+private final class CountingUserDefaults: UserDefaults {
+    private var writesByKey: [String: Int] = [:]
+
+    override func set(_ value: Any?, forKey defaultName: String) {
+        writesByKey[defaultName, default: 0] += 1
+        super.set(value, forKey: defaultName)
+    }
+
+    func writeCount(forKey key: String) -> Int {
+        writesByKey[key, default: 0]
     }
 }
