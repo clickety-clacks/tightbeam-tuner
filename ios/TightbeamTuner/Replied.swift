@@ -179,7 +179,14 @@ struct RepliedState: Sendable {
                 if alreadyCompleted {
                     rememberCompletedPrompt(sessionKey: message.sessionKey, correlationID: correlationID)
                     removePendingPrompt(correlationID, sessionKey: message.sessionKey)
-                    if !regularWidthShownChat,
+                    let latestReply = latestReplyBySession[message.sessionKey, default: Int.min]
+                    let currentReadMarker = localReadMarkerBySession[message.sessionKey, default: Int.min]
+                    let hasUnreadReply = latestReply > currentReadMarker
+                    if regularWidthShownChat,
+                       message.sessionKey == regularWidthSelectionSessionKey,
+                       hasUnreadReply {
+                        regularWidthUnreadSessions.insert(message.sessionKey)
+                    } else if !regularWidthShownChat,
                        latestShownReplySequenceBySession[message.sessionKey, default: Int.min] > promptSequence {
                         readMarkerChanged = advanceLocalReadMarkerIfSafe(message.sessionKey)
                     }
