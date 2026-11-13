@@ -570,8 +570,8 @@ private struct AgentChatView: View {
     let softwareKeyboardVisible: Bool
     let isCompact: Bool
     let isPortrait: Bool
+    let composerInsetEdgeOverride: VerticalEdge?
     @State private var bridge: ChatHostBridge
-    @State private var composerHeight: CGFloat = 0
     @State private var composerKeyboardFocused = false
 
     init(
@@ -584,7 +584,8 @@ private struct AgentChatView: View {
         compactSearchKeyboardUpFrame: CGRect?,
         softwareKeyboardVisible: Bool,
         isCompact: Bool,
-        isPortrait: Bool
+        isPortrait: Bool,
+        composerInsetEdgeOverride: VerticalEdge? = nil
     ) {
         self.url = url
         self.reloadToken = reloadToken
@@ -596,6 +597,7 @@ private struct AgentChatView: View {
         self.softwareKeyboardVisible = softwareKeyboardVisible
         self.isCompact = isCompact
         self.isPortrait = isPortrait
+        self.composerInsetEdgeOverride = composerInsetEdgeOverride
         _bridge = State(initialValue: ChatHostBridge(
             chatURL: url,
             outgoingObserver: { outgoing in
@@ -606,30 +608,22 @@ private struct AgentChatView: View {
     }
 
     var body: some View {
-        // In portrait the page extends beneath the floating toolbar. In landscape, preserve
-        // the top safe area; the page still extends to the bottom for its floating composer.
         GeometryReader { geometry in
             let detailFrame = geometry.frame(in: .global)
             let keyboardUpForComposer = composerKeyboardFocused && softwareKeyboardVisible
             let searchFrame = composerTargetFrame(in: detailFrame, keyboardIsUp: keyboardUpForComposer)
-            let composerIsTopAligned = searchFrame != nil
-                && sidebarSearchFrame.map { $0.maxX <= detailFrame.minX + 0.5 } == true
-            // The compact Filter capsule is 38 pt high; its backing text field's bounds can be taller.
-            let compactGlassBottomCorrection: CGFloat = isCompact && keyboardUpForComposer ? 1 : 0
-            let composerOffset = searchFrame.map {
-                $0.maxY - (detailFrame.maxY - NativeChatComposer.bottomPadding) - compactGlassBottomCorrection
-            } ?? 0
-            // The native row can be positioned before onGeometryChange reports its height.
-            // Keep Chat's controls clear during that first layout as well as after measurement.
-            let composerClearance = max(composerHeight, NativeChatComposer.minimumLayoutHeight)
-            let topComposerClearance = bridge.hostComposerActive && composerIsTopAligned ? composerClearance : 0
-            let floatingBottomInset = bridge.hostComposerActive && !composerIsTopAligned
-                ? max(0, composerClearance - composerOffset) : 0
-            ZStack(alignment: .bottom) {
-                ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
-                            floatingBottomInset: floatingBottomInset)
-                    .padding(.top, topComposerClearance)
-                    .ignoresSafeArea(edges: isPortrait ? .vertical : .bottom)
+            let composerInsetEdge = composerInsetEdgeOverride
+                ?? ChatComposerSafeAreaPlacement.edge(for: searchFrame, in: detailFrame)
+            let contentExtensionEdges = ChatComposerSafeAreaPlacement.contentExtensionEdges(
+                isPortrait: isPortrait,
+                composerActive: bridge.hostComposerActive,
+                composerEdge: composerInsetEdge
+            )
+
+            ChatComposerSafeAreaLayout(edge: composerInsetEdge) {
+                ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge)
+                    .ignoresSafeArea(edges: contentExtensionEdges)
+            } inset: {
                 if bridge.hostComposerActive {
                     NativeChatComposer(
                         draft: $draft,
@@ -638,8 +632,6 @@ private struct AgentChatView: View {
                     ) { focused in
                         composerKeyboardFocused = focused
                     }
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
-                        .offset(y: composerOffset)
                 }
             }
         }
@@ -656,9 +648,54 @@ private struct AgentChatView: View {
             return nil
         }
 
-        guard let searchFrame,
-              searchFrame.maxY <= detailFrame.maxY + NativeChatComposer.bottomPadding else { return nil }
+        guard let searchFrame, !searchFrame.isNull, searchFrame.height > 0 else { return nil }
         return searchFrame
+    }
+}
+
+enum ChatComposerSafeAreaPlacement {
+    static func edge(for filterFrame: CGRect?, in detailFrame: CGRect) -> VerticalEdge {
+        guard let filterFrame, !filterFrame.isNull,
+              filterFrame.height > 0, detailFrame.height > 0 else { return .bottom }
+        return filterFrame.midY < detailFrame.midY ? .top : .bottom
+    }
+
+    static func contentExtensionEdges(
+        isPortrait: Bool,
+        composerActive: Bool,
+        composerEdge: VerticalEdge
+    ) -> Edge.Set {
+        guard composerActive else { return isPortrait ? .vertical : .bottom }
+
+        // In unfolded landscape the inset already respects the composer edge. Let SwiftUI
+        // preserve the opposite system safe area too, so a top composer leaves the conversation
+        // at the normal bottom boundary without adding a second top clearance.
+        guard isPortrait else { return [] }
+
+        switch composerEdge {
+        case .top: return .bottom
+        case .bottom: return .top
+        }
+    }
+}
+
+struct ChatComposerSafeAreaLayout<Content: View, Inset: View>: View {
+    let edge: VerticalEdge
+    let content: Content
+    let inset: Inset
+
+    init(
+        edge: VerticalEdge,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder inset: () -> Inset
+    ) {
+        self.edge = edge
+        self.content = content()
+        self.inset = inset()
+    }
+
+    var body: some View {
+        content.safeAreaInset(edge: edge, spacing: 0) { inset }
     }
 }
 
@@ -971,6 +1008,149 @@ private struct AgentSidebar: View {
 }
 
 #if DEBUG
+/// Synthetic layout fixture for the production composer safe-area inset. It contains no Chat
+/// WebView, account, roster, or send route; the disabled native composer can still summon iOS's
+/// real software keyboard for keyboard-up captures.
+struct WIb6SafeAreaCaptureFixtureView: View {
+    private let configuration: WIb6SafeAreaCaptureFixtureConfiguration
+    @State private var draft = ""
+    @State private var bridge: ChatHostBridge
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    init(arguments: [String]) {
+        configuration = WIb6SafeAreaCaptureFixtureConfiguration(arguments: arguments)
+        guard let fixtureURL = URL(string: "https://fixture.invalid") else {
+            preconditionFailure("Unable to construct inert fixture URL")
+        }
+        _bridge = State(initialValue: ChatHostBridge(chatURL: fixtureURL))
+    }
+
+    var body: some View {
+        if let failureMessage = configuration.failureMessage {
+            ContentUnavailableView("Safe-area fixture unavailable", systemImage: "rectangle.slash",
+                                   description: Text(failureMessage))
+        } else {
+            let isPortrait = verticalSizeClass != .compact
+            let edge = configuration.edge
+            Group {
+                if isPortrait {
+                    NavigationStack {
+                        captureLayout(isPortrait: isPortrait, edge: edge)
+                            .navigationTitle("Synthetic Chat")
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbarBackground(.hidden, for: .navigationBar)
+                            .toolbar {
+                                ToolbarItem(placement: .topBarLeading) {
+                                    Button("Agents", systemImage: "sidebar.left") { }
+                                        .accessibilityIdentifier("fixture-floating-agents")
+                                }
+                                ToolbarItem(placement: .topBarTrailing) {
+                                    Button("Reload", systemImage: "arrow.clockwise") { }
+                                        .accessibilityIdentifier("fixture-floating-reload")
+                                }
+                            }
+                    }
+                } else {
+                    captureLayout(isPortrait: isPortrait, edge: edge)
+                }
+            }
+            .background(Color.chatBackground.ignoresSafeArea())
+        }
+    }
+
+    private func captureLayout(isPortrait: Bool, edge: VerticalEdge) -> some View {
+        ChatComposerSafeAreaLayout(edge: edge) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        Text("First synthetic message")
+                            .accessibilityIdentifier("fixture-first-message")
+                            .id("first")
+                        ForEach(1..<18, id: \.self) { index in
+                            Text("Synthetic conversation message \(index)")
+                        }
+                        Text("Last synthetic message")
+                            .accessibilityIdentifier("fixture-last-message")
+                            .id("last")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    Button {
+                        withAnimation { proxy.scrollTo("last", anchor: .bottom) }
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 38, height: 38)
+                            .background(.regularMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Scroll to latest")
+                    .accessibilityIdentifier("fixture-scroll-to-latest")
+                    .padding(12)
+                }
+                .onAppear {
+                    guard configuration.scrollToLast else { return }
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("last", anchor: .bottom)
+                    }
+                }
+            }
+            .background(Color.chatBackground)
+            .ignoresSafeArea(edges: ChatComposerSafeAreaPlacement.contentExtensionEdges(
+                isPortrait: isPortrait,
+                composerActive: true,
+                composerEdge: edge
+            ))
+        } inset: {
+            NativeChatComposer(
+                draft: $draft,
+                bridge: bridge,
+                glassHeight: nil,
+                focusOnAppear: configuration.keyboardUp
+            ) { _ in }
+        }
+    }
+}
+
+struct WIb6SafeAreaCaptureFixtureConfiguration {
+    static let launchArgument = "--wib6-safe-area-fixture"
+    private static let edgePrefix = "--wib6-filter-edge="
+    private static let keyboardUpArgument = "--wib6-keyboard-up"
+    private static let scrollToLastArgument = "--wib6-scroll-to-last"
+
+    let edge: VerticalEdge
+    let keyboardUp: Bool
+    let scrollToLast: Bool
+    let failureMessage: String?
+
+    init(arguments: [String]) {
+        guard arguments.contains(Self.launchArgument),
+              let edgeArgument = arguments.first(where: { $0.hasPrefix(Self.edgePrefix) }) else {
+            edge = .bottom
+            keyboardUp = false
+            scrollToLast = false
+            failureMessage = "Pass the fixture flag and a top or bottom Filter edge."
+            return
+        }
+
+        switch edgeArgument.dropFirst(Self.edgePrefix.count) {
+        case "top": edge = .top
+        case "bottom": edge = .bottom
+        default:
+            edge = .bottom
+            keyboardUp = false
+            scrollToLast = false
+            failureMessage = "The fixture Filter edge must be top or bottom."
+            return
+        }
+        keyboardUp = arguments.contains(Self.keyboardUpArgument)
+        scrollToLast = arguments.contains(Self.scrollToLastArgument)
+        failureMessage = nil
+    }
+}
+
 /// A capture-only host for the content-free WI721 page. This bypasses the normal store,
 /// roster refresh, release-note, and Replies tasks, and exists only in Debug builds.
 struct WI721CaptureFixtureView: View {

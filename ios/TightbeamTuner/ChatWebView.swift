@@ -1,13 +1,12 @@
 import SwiftUI
 import WebKit
 
-/// Hosts Chat in a web view. The child controller carries extra bottom safe area for controls
-/// below the page, which Chat reads as `env(safe-area-inset-bottom)`.
+/// Hosts Chat in a web view. SwiftUI's composer safe-area inset is inherited by the page so Chat
+/// can keep its controls clear of the native composer.
 struct ChatWebView: UIViewControllerRepresentable {
     let url: URL
     let reloadToken: Int
     let bridge: ChatHostBridge
-    var floatingBottomInset: CGFloat = 0
 
     static let pinchHandlerName = "tunerPinch"
 
@@ -92,19 +91,12 @@ struct ChatWebView: UIViewControllerRepresentable {
         pageController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         controller.view.addSubview(pageController.view)
         pageController.didMove(toParent: controller)
-        // This child controller applies the bottom composer inset to the web view's safe area.
-        pageController.additionalSafeAreaInsets.bottom = floatingBottomInset
         context.coordinator.hostView = controller.view
-        context.coordinator.pageController = pageController
         return controller
     }
 
     func updateUIViewController(_ controller: UIViewController, context: Context) {
-        guard let webView = context.coordinator.webView,
-              let pageController = context.coordinator.pageController else { return }
-        if pageController.additionalSafeAreaInsets.bottom != floatingBottomInset {
-            pageController.additionalSafeAreaInsets.bottom = floatingBottomInset
-        }
+        guard let webView = context.coordinator.webView else { return }
         if context.coordinator.loadedURL != url {
             context.coordinator.loadedURL = url
             webView.load(URLRequest(url: url))
@@ -124,7 +116,6 @@ struct ChatWebView: UIViewControllerRepresentable {
         static let zoomRange: ClosedRange<Double> = 0.7...2.0
 
         weak var hostView: UIView?
-        weak var pageController: UIViewController?
         private var latestKeyboardShift: CGFloat?
         var savedZoom: Double {
             let value = UserDefaults.standard.double(forKey: Self.zoomKey)
@@ -164,7 +155,7 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
 
         @objc private func keyboardWillChangeFrame(_ notification: Notification) {
-            guard let hostView, let pageController, let webView,
+            guard let hostView, let webView,
                   let endValue = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue,
                   let durationValue = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber,
                   let curveValue = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber else { return }
@@ -176,11 +167,11 @@ struct ChatWebView: UIViewControllerRepresentable {
             let options = UIView.AnimationOptions(rawValue: UInt(truncating: curveValue) << 16)
                 .union([.beginFromCurrentState, .allowUserInteraction])
             applyKeyboardShift(targetShift, duration: durationValue.doubleValue, options: options,
-                               hostView: hostView, pageController: pageController, webView: webView)
+                               hostView: hostView, webView: webView)
         }
 
         private func reconcileKeyboardGeometry() {
-            guard let hostView, let pageController, let webView, hostView.window != nil else { return }
+            guard let hostView, let webView, hostView.window != nil else { return }
             let keyboardGuide = hostView.keyboardLayoutGuide
             keyboardGuide.followsUndockedKeyboard = true
             hostView.layoutIfNeeded()
@@ -194,12 +185,12 @@ struct ChatWebView: UIViewControllerRepresentable {
                 ? max(0, bounds.maxY - keyboardFrame.minY) : 0
             applyKeyboardShift(targetShift, duration: 0,
                                options: [.beginFromCurrentState, .allowUserInteraction],
-                               hostView: hostView, pageController: pageController, webView: webView)
+                               hostView: hostView, webView: webView)
         }
 
         private func applyKeyboardShift(_ targetShift: CGFloat, duration: TimeInterval,
                                         options: UIView.AnimationOptions, hostView: UIView,
-                                        pageController: UIViewController, webView: WKWebView) {
+                                        webView: WKWebView) {
             let bounds = hostView.bounds
             let presentationTransform = webView.layer.presentation().map {
                 CATransform3DGetAffineTransform($0.transform)
@@ -208,8 +199,7 @@ struct ChatWebView: UIViewControllerRepresentable {
                 && abs(presentationTransform.ty) < 0.5
                 ? max(0, bounds.maxY - webView.frame.maxY)
                 : max(0, -presentationTransform.ty)
-            let targetSafeAreaBottom = pageController.additionalSafeAreaInsets.bottom
-                + (targetShift > 0 ? 0 : hostView.safeAreaInsets.bottom)
+            let targetSafeAreaBottom = targetShift > 0 ? 0 : hostView.safeAreaInsets.bottom
             let startShift = max(0, currentShift + webView.safeAreaInsets.bottom - targetSafeAreaBottom)
             latestKeyboardShift = targetShift
 

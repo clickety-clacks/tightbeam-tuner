@@ -13,7 +13,10 @@ struct TightbeamTunerApp: App {
     var body: some Scene {
         WindowGroup {
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains(WI721CaptureFixtureConfiguration.launchArgument) {
+            if ProcessInfo.processInfo.arguments.contains(WIb6SafeAreaCaptureFixtureConfiguration.launchArgument) {
+                WIb6SafeAreaCaptureFixtureView(arguments: ProcessInfo.processInfo.arguments)
+                    .tint(Color(.accent))
+            } else if ProcessInfo.processInfo.arguments.contains(WI721CaptureFixtureConfiguration.launchArgument) {
                 WI721CaptureFixtureView(arguments: ProcessInfo.processInfo.arguments)
                     .tint(Color(.accent))
             } else {
