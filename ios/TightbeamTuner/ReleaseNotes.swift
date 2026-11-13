@@ -4,6 +4,12 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 66, date: "November 13, 2026", items: [
+            .init(symbol: "text.bubble", title: "Keep the message field aligned with Filter",
+                  detail: "The message field follows Filter as the keyboard opens and closes, with conversation space reserved around it."),
+            .init(symbol: "rectangle.topthird.inset.filled", title: "Scroll beneath floating controls",
+                  detail: "Portrait conversations can scroll beneath the floating toolbar. Landscape conversations use the top safe area without an extra gap."),
+        ]),
         ReleaseNote(version: "1.0", build: 65, date: "November 13, 2026", items: [
             .init(symbol: "arrowshape.turn.up.left", title: "Keep Replies up to date",
                   detail: "Sent prompts now reliably appear in Replies with a spinner until an assistant responds. In side-by-side layouts, the row stays unread with its back arrow until you leave or mark the conversation read."),
