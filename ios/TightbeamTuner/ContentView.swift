@@ -975,6 +975,8 @@ struct WI721CaptureFixtureView: View {
     @State private var selectedSessionKey: String? = WI721CaptureFixtureConfiguration.sessionKey
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
     @State private var draft = ""
+    @State private var filterQuery = ""
+    @State private var sidebarSearchFrame: CGRect?
     @State private var repliedFeed: RepliedFeed
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -1002,7 +1004,8 @@ struct WI721CaptureFixtureView: View {
                         Text("WI721 Fixture Agent")
                             .tag(WI721CaptureFixtureConfiguration.sessionKey)
                     }
-                    .navigationTitle("Fixture agents")
+                    .navigationTitle("Agents")
+                    .searchable(text: $filterQuery, placement: .sidebar, prompt: "Filter agents")
                 } detail: {
                     if selectedSessionKey == WI721CaptureFixtureConfiguration.sessionKey,
                        let chatURL = configuration.chatURL {
@@ -1011,7 +1014,7 @@ struct WI721CaptureFixtureView: View {
                             reloadToken: 0,
                             draft: $draft,
                             repliedFeed: repliedFeed,
-                            sidebarSearchFrame: nil,
+                            sidebarSearchFrame: sidebarSearchFrame,
                             compactSearchKeyboardDownFrame: nil,
                             compactSearchKeyboardUpFrame: nil,
                             softwareKeyboardVisible: false,
@@ -1027,6 +1030,15 @@ struct WI721CaptureFixtureView: View {
                     }
                 }
             }
+        }
+        .background {
+            SidebarSearchFrameReader(
+                prompt: "Filter agents",
+                usesCompactFieldFrame: horizontalSizeClass == .compact
+            ) { measurement in
+                sidebarSearchFrame = measurement.capsule
+            }
+            .accessibilityHidden(true)
         }
         .preferredColorScheme(configuration.colorScheme)
     }
