@@ -95,7 +95,7 @@ final class ComposerSafeAreaTests: XCTestCase {
         XCTAssertNil(keyboardDown.failureMessage)
     }
 
-    func testCaptureFixtureUsesSelfContainedSyntheticChatPage() {
+    func testCaptureFixtureUsesSelfContainedSyntheticChatPage() async {
         let fixture = WIb6SafeAreaCaptureFixtureConfiguration(arguments: [
             WIb6SafeAreaCaptureFixtureConfiguration.launchArgument,
             "--wib6-filter-edge=top",
@@ -112,6 +112,8 @@ final class ComposerSafeAreaTests: XCTestCase {
         }
         XCTAssertTrue(page.contains("First synthetic message"))
         XCTAssertTrue(page.contains("Last synthetic message"))
-        XCTAssertFalse(page.contains(ChatHostBridge.commandEntryName))
+        let commandEntryName = await MainActor.run { ChatHostBridge.commandEntryName }
+        let pageContainsCommandEntry = page.contains(commandEntryName)
+        XCTAssertFalse(pageContainsCommandEntry)
     }
 }
