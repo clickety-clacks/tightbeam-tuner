@@ -4,6 +4,10 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 68, date: "November 13, 2026", items: [
+            .init(symbol: "person.2", title: "See each agent's model and effort",
+                  detail: "The Agents list now shows each agent's archetype followed by its actual model and effort."),
+        ]),
         ReleaseNote(version: "1.0", build: 67, date: "November 13, 2026", items: [
             .init(symbol: "rectangle.bottomthird.inset.filled", title: "Let the conversation run under the message field",
                   detail: "The conversation fills the chat screen, folded or unfolded, in portrait and landscape. The toolbar and message field float over it, with no empty or white bars, and Latest messages stays clear of the message field."),
