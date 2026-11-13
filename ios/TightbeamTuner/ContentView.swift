@@ -570,7 +570,6 @@ private struct AgentChatView: View {
     let softwareKeyboardVisible: Bool
     let isCompact: Bool
     let isPortrait: Bool
-    let composerInsetEdgeOverride: VerticalEdge?
     @State private var bridge: ChatHostBridge
     @State private var composerKeyboardFocused = false
 
@@ -584,8 +583,7 @@ private struct AgentChatView: View {
         compactSearchKeyboardUpFrame: CGRect?,
         softwareKeyboardVisible: Bool,
         isCompact: Bool,
-        isPortrait: Bool,
-        composerInsetEdgeOverride: VerticalEdge? = nil
+        isPortrait: Bool
     ) {
         self.url = url
         self.reloadToken = reloadToken
@@ -597,7 +595,6 @@ private struct AgentChatView: View {
         self.softwareKeyboardVisible = softwareKeyboardVisible
         self.isCompact = isCompact
         self.isPortrait = isPortrait
-        self.composerInsetEdgeOverride = composerInsetEdgeOverride
         _bridge = State(initialValue: ChatHostBridge(
             chatURL: url,
             outgoingObserver: { outgoing in
@@ -612,8 +609,7 @@ private struct AgentChatView: View {
             let detailFrame = geometry.frame(in: .global)
             let keyboardUpForComposer = composerKeyboardFocused && softwareKeyboardVisible
             let searchFrame = composerTargetFrame(in: detailFrame, keyboardIsUp: keyboardUpForComposer)
-            let composerInsetEdge = composerInsetEdgeOverride
-                ?? ChatComposerSafeAreaPlacement.edge(for: searchFrame, in: detailFrame)
+            let composerInsetEdge = ChatComposerSafeAreaPlacement.edge(for: searchFrame, in: detailFrame)
             let composerIsActive = hostComposerIsActive
             let contentExtensionEdges = ChatComposerSafeAreaPlacement.contentExtensionEdges(
                 isPortrait: isPortrait,
@@ -621,9 +617,13 @@ private struct AgentChatView: View {
                 composerEdge: composerInsetEdge
             )
 
-            ChatComposerSafeAreaLayout(edge: composerInsetEdge) {
+            ChatComposerSafeAreaLayout(
+                edge: composerInsetEdge,
+                availableHeight: geometry.size.height,
+                targetBottom: searchFrame.map { $0.maxY - detailFrame.minY }
+            ) {
                 ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge)
-                    .ignoresSafeArea(edges: contentExtensionEdges)
+                    .ignoresSafeArea(.container, edges: contentExtensionEdges)
             } inset: {
                 if composerIsActive {
                     NativeChatComposer(
@@ -702,21 +702,86 @@ enum ChatComposerSafeAreaPlacement {
 
 struct ChatComposerSafeAreaLayout<Content: View, Inset: View>: View {
     let edge: VerticalEdge
+    let availableHeight: CGFloat
+    let targetBottom: CGFloat?
     let content: Content
     let inset: Inset
 
     init(
         edge: VerticalEdge,
+        availableHeight: CGFloat,
+        targetBottom: CGFloat?,
         @ViewBuilder content: () -> Content,
         @ViewBuilder inset: () -> Inset
     ) {
         self.edge = edge
+        self.availableHeight = availableHeight
+        self.targetBottom = targetBottom
         self.content = content()
         self.inset = inset()
     }
 
     var body: some View {
-        content.safeAreaInset(edge: edge, spacing: 0) { inset }
+        content.safeAreaInset(edge: edge, spacing: 0) {
+            FilterAlignedComposerLayout(
+                edge: edge, availableHeight: availableHeight, targetBottom: targetBottom
+            ) { inset }
+        }
+    }
+}
+
+/// The occupied interval is measured from the system's safe edge to the actual composer.
+/// SwiftUI consumes this interval once; WebKit does not add another composer/keyboard inset.
+struct FilterAlignedComposerLayout: Layout {
+    let edge: VerticalEdge
+    let availableHeight: CGFloat
+    let targetBottom: CGFloat?
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let composer = subviews.first else { return .zero }
+        let size = composer.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        let placement = ComposerInsetPlacement(
+            edge: edge, availableHeight: availableHeight,
+            targetBottom: targetBottom, composerHeight: size.height
+        )
+        return CGSize(width: proposal.width ?? size.width, height: placement.extent)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let composer = subviews.first else { return }
+        let size = composer.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        let placement = ComposerInsetPlacement(
+            edge: edge, availableHeight: availableHeight,
+            targetBottom: targetBottom, composerHeight: size.height
+        )
+        composer.place(
+            at: CGPoint(x: bounds.midX, y: bounds.minY + placement.composerTop),
+            anchor: .top,
+            proposal: ProposedViewSize(width: bounds.width, height: size.height)
+        )
+    }
+}
+
+/// Coordinates are local to the detail's system-proposed safe region, including the keyboard.
+/// A stale/offscreen Filter cannot pull the composer beneath a system obstruction. Multiline
+/// growth retains the Filter's bottom edge while it fits, then respects the safe top edge.
+struct ComposerInsetPlacement {
+    let extent: CGFloat
+    let composerTop: CGFloat
+
+    init(edge: VerticalEdge, availableHeight: CGFloat, targetBottom: CGFloat?, composerHeight: CGFloat) {
+        let height = max(0, composerHeight)
+        let regionHeight = max(height, availableHeight)
+        let edgeBottom = edge == .top ? height : regionHeight
+        let bottom = min(regionHeight, max(height, targetBottom ?? edgeBottom))
+        switch edge {
+        case .top:
+            extent = bottom
+            composerTop = bottom - height
+        case .bottom:
+            extent = regionHeight - bottom + height
+            composerTop = 0
+        }
     }
 }
 
@@ -1034,11 +1099,14 @@ private struct AgentSidebar: View {
 struct WIb6SafeAreaCaptureFixtureView: View {
     private let configuration: WIb6SafeAreaCaptureFixtureConfiguration
     @State private var draft = ""
+    @State private var filterFrame: CGRect?
     @State private var repliedFeed: RepliedFeed
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     init(arguments: [String]) {
         configuration = WIb6SafeAreaCaptureFixtureConfiguration(arguments: arguments)
+        _draft = State(initialValue: arguments.contains("--wib6-multiline")
+            ? "First draft line\nSecond draft line\nThird draft line" : "")
         let defaultsSuite = "wib6.safe-area.capture.fixture"
         guard let isolatedDefaults = UserDefaults(suiteName: defaultsSuite) else {
             preconditionFailure("Unable to create isolated WIb6 fixture defaults")
@@ -1054,11 +1122,10 @@ struct WIb6SafeAreaCaptureFixtureView: View {
                                        description: Text(failureMessage))
             } else {
                 let isPortrait = geometry.size.height > geometry.size.width
-                let edge = configuration.edge
                 Group {
                     if isPortrait {
                         NavigationStack {
-                            captureLayout(isPortrait: isPortrait, edge: edge)
+                            captureLayout(isPortrait: isPortrait)
                                 .navigationTitle("Synthetic Chat")
                                 .navigationBarTitleDisplayMode(.inline)
                                 .toolbarBackground(.hidden, for: .navigationBar)
@@ -1074,7 +1141,7 @@ struct WIb6SafeAreaCaptureFixtureView: View {
                                 }
                         }
                     } else {
-                        captureLayout(isPortrait: isPortrait, edge: edge)
+                        captureLayout(isPortrait: isPortrait)
                     }
                 }
                 .background(Color.chatBackground.ignoresSafeArea())
@@ -1082,22 +1149,44 @@ struct WIb6SafeAreaCaptureFixtureView: View {
         }
     }
 
-    private func captureLayout(isPortrait: Bool, edge: VerticalEdge) -> some View {
-        AgentChatView(
-            url: configuration.chatURL,
-            reloadToken: 0,
-            draft: $draft,
-            repliedFeed: repliedFeed,
-            sidebarSearchFrame: nil,
-            compactSearchKeyboardDownFrame: nil,
-            compactSearchKeyboardUpFrame: nil,
-            softwareKeyboardVisible: configuration.keyboardUp,
-            isCompact: horizontalSizeClass == .compact,
-            isPortrait: isPortrait,
-            composerInsetEdgeOverride: edge
-        )
+    private func captureLayout(isPortrait: Bool) -> some View {
+        HStack(spacing: 0) {
+            WIb6MeasuredFilterFixture(configuration: configuration) { filterFrame = $0 }
+            AgentChatView(
+                url: configuration.chatURL,
+                reloadToken: 0,
+                draft: $draft,
+                repliedFeed: repliedFeed,
+                sidebarSearchFrame: filterFrame,
+                compactSearchKeyboardDownFrame: nil,
+                compactSearchKeyboardUpFrame: nil,
+                softwareKeyboardVisible: configuration.keyboardUp,
+                isCompact: horizontalSizeClass == .compact,
+                isPortrait: isPortrait
+            )
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.chatBackground)
+    }
+}
+
+/// The target is a real laid-out view, not an injected edge or coordinate. Flexible spacers
+/// exercise intermediate targets and move with the system keyboard safe area.
+private struct WIb6MeasuredFilterFixture: View {
+    let configuration: WIb6SafeAreaCaptureFixtureConfiguration
+    let onFrameChange: (CGRect) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<configuration.spacersBeforeFilter, id: \.self) { _ in Spacer(minLength: 0) }
+            Text("Synthetic Filter")
+                .padding()
+                .background(.regularMaterial, in: Capsule())
+                .accessibilityIdentifier("fixture-filter")
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onFrameChange($0) }
+            ForEach(0..<configuration.spacersAfterFilter, id: \.self) { _ in Spacer(minLength: 0) }
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
@@ -1112,8 +1201,18 @@ struct WIb6SafeAreaCaptureFixtureConfiguration {
     let scrollToLast: Bool
     let chatURL: URL
     let failureMessage: String?
+    let intermediateFilter: Bool
+
+    var spacersBeforeFilter: Int {
+        intermediateFilter ? (edge == .top ? 1 : 2) : (edge == .top ? 0 : 1)
+    }
+
+    var spacersAfterFilter: Int {
+        intermediateFilter ? (edge == .top ? 2 : 1) : (edge == .top ? 1 : 0)
+    }
 
     init(arguments: [String]) {
+        intermediateFilter = arguments.contains("--wib6-intermediate-filter")
         chatURL = Self.makeChatURL(scrollToLast: arguments.contains(Self.scrollToLastArgument))
         guard arguments.contains(Self.launchArgument),
               let edgeArgument = arguments.first(where: { $0.hasPrefix(Self.edgePrefix) }) else {

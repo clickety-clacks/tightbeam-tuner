@@ -3,6 +3,64 @@ import SwiftUI
 @testable import TightbeamTuner
 
 final class ComposerSafeAreaTests: XCTestCase {
+    func testExactFilterBottomAlignmentAcrossIntermediatePositionsAndKeyboardRegions() {
+        // Positions deliberately share the same half: edge classification alone cannot pass.
+        for regionHeight in [CGFloat(900), 500] {
+            for fraction in [CGFloat(0.15), 0.35, 0.65, 0.85] {
+                let filterBottom = regionHeight * fraction
+                let edge: VerticalEdge = fraction < 0.5 ? .top : .bottom
+                let placement = ComposerInsetPlacement(
+                    edge: edge, availableHeight: regionHeight,
+                    targetBottom: filterBottom, composerHeight: 44
+                )
+                let insetOrigin = edge == .top ? 0 : regionHeight - placement.extent
+                let composerBottom = insetOrigin + placement.composerTop + 44
+                XCTAssertEqual(composerBottom, filterBottom, accuracy: 0.001)
+                if edge == .top {
+                    XCTAssertEqual(placement.extent, composerBottom, accuracy: 0.001)
+                } else {
+                    XCTAssertEqual(insetOrigin, composerBottom - 44, accuracy: 0.001)
+                }
+            }
+        }
+    }
+
+    func testMultilineGrowthKeepsFilterBottomAndReservesWholeComposer() {
+        for edge in [VerticalEdge.top, .bottom] {
+            for height in [CGFloat(44), 88, 132] {
+                let placement = ComposerInsetPlacement(
+                    edge: edge, availableHeight: 600, targetBottom: 300, composerHeight: height
+                )
+                let origin = edge == .top ? 0 : 600 - placement.extent
+                XCTAssertEqual(origin + placement.composerTop + height, 300)
+                XCTAssertGreaterThanOrEqual(placement.extent, height)
+            }
+        }
+    }
+
+    func testSystemSafeRegionWinsOverStaleOffscreenFilterFrame() {
+        let cases: [(CGFloat, CGFloat)] = [(-20, 44), (700, 400)]
+        for edge in [VerticalEdge.top, .bottom] {
+            for (target, expectedBottom) in cases {
+                let placement = ComposerInsetPlacement(
+                    edge: edge, availableHeight: 400, targetBottom: target, composerHeight: 44
+                )
+                let origin = edge == .top ? 0 : 400 - placement.extent
+                XCTAssertEqual(origin + placement.composerTop + 44, expectedBottom)
+            }
+        }
+    }
+
+    func testNoTargetUsesOnlyMeasuredHeightWithoutAdditionalClearance() {
+        for edge in [VerticalEdge.top, .bottom] {
+            let placement = ComposerInsetPlacement(
+                edge: edge, availableHeight: 600, targetBottom: nil, composerHeight: 61
+            )
+            XCTAssertEqual(placement.extent, 61)
+            XCTAssertEqual(placement.composerTop, 0)
+        }
+    }
+
     func testFilterNearTopSelectsTopSafeAreaInset() {
         let detail = CGRect(x: 300, y: 80, width: 800, height: 900)
         let filter = CGRect(x: 40, y: 96, width: 240, height: 48)
@@ -93,6 +151,20 @@ final class ComposerSafeAreaTests: XCTestCase {
         XCTAssertFalse(keyboardDown.keyboardUp)
         XCTAssertFalse(keyboardDown.scrollToLast)
         XCTAssertNil(keyboardDown.failureMessage)
+    }
+
+    func testCaptureFixtureUsesMeasuredIntermediateFilterTargets() {
+        for edge in ["top", "bottom"] {
+            let configuration = WIb6SafeAreaCaptureFixtureConfiguration(arguments: [
+                WIb6SafeAreaCaptureFixtureConfiguration.launchArgument,
+                "--wib6-filter-edge=\(edge)", "--wib6-intermediate-filter",
+            ])
+            XCTAssertNil(configuration.failureMessage)
+            XCTAssertTrue(configuration.intermediateFilter)
+            XCTAssertGreaterThan(configuration.spacersBeforeFilter, 0)
+            XCTAssertGreaterThan(configuration.spacersAfterFilter, 0)
+            XCTAssertEqual(configuration.spacersBeforeFilter + configuration.spacersAfterFilter, 3)
+        }
     }
 
     func testCaptureFixtureUsesSelfContainedSyntheticChatPage() async {

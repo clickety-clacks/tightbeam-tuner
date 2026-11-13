@@ -87,9 +87,17 @@ struct ChatWebView: UIViewControllerRepresentable {
         let pageController = UIViewController()
         pageController.view = webView
         controller.addChild(pageController)
-        pageController.view.frame = controller.view.bounds
-        pageController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        pageController.view.translatesAutoresizingMaskIntoConstraints = false
         controller.view.addSubview(pageController.view)
+        // Honor the safe region supplied by SwiftUI, including the measured composer inset.
+        // No keyboard notification, transform, or independently calculated inset is needed.
+        let safeArea = controller.view.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            pageController.view.topAnchor.constraint(equalTo: safeArea.topAnchor),
+            pageController.view.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
+            pageController.view.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
+            pageController.view.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
+        ])
         pageController.didMove(toParent: controller)
         return controller
     }
