@@ -1,17 +1,17 @@
 {
   "version": "1.0",
-  "build": 66,
+  "build": 67,
   "date": "November 13, 2026",
   "items": [
     {
-      "symbol": "text.bubble",
-      "title": "Keep the message field aligned with Filter",
-      "detail": "The message field follows Filter as the keyboard opens and closes, with conversation space reserved around it."
+      "symbol": "rectangle.bottomthird.inset.filled",
+      "title": "Let the conversation run under the message field",
+      "detail": "The conversation fills the chat screen, folded or unfolded, in portrait and landscape. The toolbar and message field float over it, with no empty or white bars, and Latest messages stays clear of the message field."
     },
     {
-      "symbol": "rectangle.topthird.inset.filled",
-      "title": "Scroll beneath floating controls",
-      "detail": "Portrait conversations can scroll beneath the floating toolbar. Landscape conversations use the top safe area without an extra gap."
+      "symbol": "keyboard",
+      "title": "Leave room above the keyboard",
+      "detail": "With the keyboard up, the message field sits a small gap above it. The message field now follows the system layout instead of lining up with Filter agents."
     }
   ]
 }

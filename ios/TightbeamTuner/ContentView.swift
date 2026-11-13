@@ -10,10 +10,6 @@ struct ContentView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     /// Retains the in-process sidebar position across background layout changes.
     @State private var visibilityBeforeInactive: NavigationSplitViewVisibility?
-    @State private var sidebarSearchFrame: CGRect?
-    @State private var compactSearchKeyboardDownFrame: CGRect?
-    @State private var compactSearchKeyboardUpFrame: CGRect?
-    @State private var softwareKeyboardVisible = false
     @State private var sidebarQuery = ""
     @State private var selectedArchetypes: Set<String> = []
     /// In portrait on a wide screen the agent list floats over the chat instead of beside it.
@@ -99,12 +95,7 @@ struct ContentView: View {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
                     AgentChatView(url: url, reloadToken: reloadToken, draft: draftBinding(for: agent.id),
                                   repliedFeed: repliedFeed,
-                                  sidebarSearchFrame: sidebarSearchFrame,
-                                  compactSearchKeyboardDownFrame: compactSearchKeyboardDownFrame,
-                                  compactSearchKeyboardUpFrame: compactSearchKeyboardUpFrame,
-                                  softwareKeyboardVisible: softwareKeyboardVisible,
-                                  isCompact: horizontalSizeClass == .compact,
-                                  isPortrait: portrait)
+                                  isCompact: horizontalSizeClass == .compact)
                         .id(agent.id)
                         .toolbarBackground(.hidden, for: .navigationBar)
                         .toolbar {
@@ -120,29 +111,12 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background {
                 if store.selectedAgent.flatMap({ store.connection.chatURL(for: $0) }) != nil {
-                    Color.chatBackground
+                    // Fills the side safe areas beside the page, so they match the conversation.
+                    Color.chatBackground.ignoresSafeArea()
                 } else {
                     TunerCanvasBackground()
                 }
             }
-        }
-        .background {
-            // SwiftUI does not expose the visible .searchable capsule's frame. Find it from
-            // the text field so the composer follows the current navigation layout.
-            SidebarSearchFrameReader(
-                prompt: "Filter agents",
-                usesCompactFieldFrame: horizontalSizeClass == .compact
-            ) { measurement in
-                softwareKeyboardVisible = measurement.softwareKeyboardVisible
-                sidebarSearchFrame = measurement.capsule
-                guard let capsule = measurement.capsule else { return }
-                if measurement.keyboardFocused {
-                    compactSearchKeyboardUpFrame = capsule
-                } else {
-                    compactSearchKeyboardDownFrame = capsule
-                }
-            }
-            .accessibilityHidden(true)
         }
         .font(TunerTypography.body)
         .preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
@@ -240,222 +214,6 @@ struct ContentView: View {
 #endif
             // Side by side again in landscape: bring the list back if it was closed in portrait.
             if scenePhase == .active && wouldShowSidebar { columnVisibility = .automatic }
-        }
-    }
-}
-
-/// Reports the visible search capsule and software-keyboard state in window coordinates.
-private struct SidebarSearchFrameReader: UIViewRepresentable {
-    let prompt: String
-    let usesCompactFieldFrame: Bool
-    let onFrameChange: (Measurement) -> Void
-
-    struct Measurement: Equatable {
-        let capsule: CGRect?
-        let keyboardFocused: Bool
-        let softwareKeyboardVisible: Bool
-    }
-
-    func makeUIView(context: Context) -> UIView {
-        let view = SearchFieldProbeView()
-        view.isUserInteractionEnabled = false
-        view.backgroundColor = .clear
-        view.keyboardLayoutGuide.followsUndockedKeyboard = true
-        view.prompt = prompt
-        view.usesCompactFieldFrame = usesCompactFieldFrame
-        view.onFrameChange = onFrameChange
-        return view
-    }
-
-    func updateUIView(_ view: UIView, context: Context) {
-        guard let view = view as? SearchFieldProbeView else { return }
-        view.prompt = prompt
-        view.usesCompactFieldFrame = usesCompactFieldFrame
-        view.onFrameChange = onFrameChange
-        view.scheduleRead()
-    }
-
-    private final class SearchFieldProbeView: UIView {
-        var prompt = ""
-        var usesCompactFieldFrame = false
-        var onFrameChange: ((Measurement) -> Void)?
-        private var lastMeasurement: Measurement?
-        private var keyboardScreenFrame: CGRect?
-        private weak var keyboardFrameScreen: UIScreen?
-        private var keyboardVisibilitySnapshot: Bool?
-        private var needsKeyboardVisibilityReconciliation = false
-        private var keyboardObserverGeneration = 0
-        private var keyboardObservers: [NSObjectProtocol] = []
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            keyboardObserverGeneration += 1
-            removeKeyboardObservers()
-            guard let window else {
-                keyboardScreenFrame = nil
-                keyboardFrameScreen = nil
-                keyboardVisibilitySnapshot = nil
-                needsKeyboardVisibilityReconciliation = false
-                scheduleRead()
-                return
-            }
-
-            if let keyboardFrameScreen, keyboardFrameScreen !== window.screen {
-                keyboardScreenFrame = nil
-                self.keyboardFrameScreen = nil
-            }
-            installKeyboardObservers()
-            // Notifications received while detached have no reliable window/screen context.
-            // Reconcile from UIKit's current guide after this view has completed its next layout.
-            keyboardVisibilitySnapshot = nil
-            needsKeyboardVisibilityReconciliation = true
-            scheduleRead()
-        }
-
-        private func installKeyboardObservers() {
-            guard keyboardObservers.isEmpty else { return }
-            let center = NotificationCenter.default
-            let observerGeneration = keyboardObserverGeneration
-            keyboardObservers = [
-                center.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification,
-                                  object: nil, queue: .main) { [weak self] notification in
-                    let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
-                    Task { @MainActor [weak self] in
-                        self?.keyboardFrameDidChange(frame, observerGeneration: observerGeneration)
-                    }
-                },
-                center.addObserver(forName: UIResponder.keyboardWillHideNotification,
-                                  object: nil, queue: .main) { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        self?.keyboardFrameDidChange(nil, observerGeneration: observerGeneration)
-                    }
-                },
-            ]
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            // This background fills the split view, so a window resize schedules a fresh read.
-            scheduleRead()
-        }
-
-        func scheduleRead() {
-            // The sidebar may lay out after this view. Read its final frame on the next turn.
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if self.needsKeyboardVisibilityReconciliation {
-                    self.reconcileKeyboardVisibilityFromLayoutGuide()
-                }
-                let measurement = self.searchMeasurement()
-                guard measurement != self.lastMeasurement else { return }
-                self.lastMeasurement = measurement
-                self.onFrameChange?(measurement)
-            }
-        }
-
-        deinit {
-            removeKeyboardObservers()
-        }
-
-        private func searchMeasurement() -> Measurement {
-            let keyboardVisible = softwareKeyboardIsVisible
-            guard let window,
-                  let field = findSearchField(in: window),
-                  !field.isHidden,
-                  field.alpha > 0.01 else {
-                return Measurement(capsule: nil, keyboardFocused: false,
-                                   softwareKeyboardVisible: keyboardVisible)
-            }
-
-            let fieldFrame = field.convert(field.bounds, to: window)
-            if usesCompactFieldFrame {
-                let visibleField = window.bounds.intersects(fieldFrame) ? fieldFrame : nil
-                return Measurement(capsule: visibleField, keyboardFocused: field.isFirstResponder,
-                                   softwareKeyboardVisible: keyboardVisible)
-            }
-
-            var capsuleFrame = fieldFrame
-            var ancestor = field.superview
-            // On iPad the search field itself is the capsule; larger ancestors are toolbar containers.
-            while let view = ancestor {
-                let frame = view.convert(view.bounds, to: window)
-                guard frame.minX <= fieldFrame.minX + 0.5,
-                      frame.minY <= fieldFrame.minY + 0.5,
-                      frame.maxX >= fieldFrame.maxX - 0.5,
-                      frame.maxY >= fieldFrame.maxY - 0.5 else { break }
-                let insets = [
-                    fieldFrame.minX - frame.minX,
-                    fieldFrame.minY - frame.minY,
-                    frame.maxX - fieldFrame.maxX,
-                    frame.maxY - fieldFrame.maxY,
-                ]
-                guard insets.allSatisfy({ $0 <= 8 }) else { break }
-                if insets.contains(where: { $0 > 0.5 }) {
-                    capsuleFrame = frame
-                    break
-                }
-                capsuleFrame = frame
-                ancestor = view.superview
-            }
-            let visibleCapsule = window.bounds.intersects(capsuleFrame) ? capsuleFrame : nil
-            return Measurement(capsule: visibleCapsule, keyboardFocused: field.isFirstResponder,
-                               softwareKeyboardVisible: keyboardVisible)
-        }
-
-        private var softwareKeyboardIsVisible: Bool {
-            if let keyboardVisibilitySnapshot { return keyboardVisibilitySnapshot }
-            guard let window, let keyboardScreenFrame,
-                  keyboardFrameScreen === window.screen else { return false }
-            let keyboardFrame = window.convert(keyboardScreenFrame, from: window.screen.coordinateSpace)
-            let intersection = window.bounds.intersection(keyboardFrame)
-            return !intersection.isNull && intersection.width > 1 && intersection.height > 1
-        }
-
-        private func keyboardFrameDidChange(_ frame: CGRect?, observerGeneration: Int) {
-            guard self.keyboardObserverGeneration == observerGeneration, let window else { return }
-            keyboardScreenFrame = frame
-            keyboardFrameScreen = frame == nil ? nil : window.screen
-            keyboardVisibilitySnapshot = nil
-            needsKeyboardVisibilityReconciliation = false
-            scheduleRead()
-        }
-
-        private func reconcileKeyboardVisibilityFromLayoutGuide() {
-            guard window != nil else {
-                keyboardVisibilitySnapshot = nil
-                needsKeyboardVisibilityReconciliation = false
-                return
-            }
-            // A newly attached probe can receive this read before its first nonzero layout.
-            // Keep the reconciliation pending until UIKit has usable bounds.
-            guard bounds.width > 1, bounds.height > 1 else { return }
-
-            layoutIfNeeded()
-            let keyboardArea = keyboardLayoutGuide.layoutFrame
-            let intersection = bounds.intersection(keyboardArea)
-            // With no keyboard, UIKit places this guide at the bottom safe area.
-            // Require space beyond that inset so the home-indicator area is not
-            // mistaken for a visible software keyboard.
-            keyboardVisibilitySnapshot = !intersection.isNull
-                && intersection.width > 1
-                && intersection.height > safeAreaInsets.bottom + 1
-            needsKeyboardVisibilityReconciliation = false
-        }
-
-        private func removeKeyboardObservers() {
-            keyboardObservers.forEach { NotificationCenter.default.removeObserver($0) }
-            keyboardObservers.removeAll()
-        }
-
-        private func findSearchField(in view: UIView) -> UITextField? {
-            if let field = view as? UITextField,
-               field.placeholder == prompt || field.accessibilityLabel == prompt {
-                return field
-            }
-            for subview in view.subviews {
-                if let field = findSearchField(in: subview) { return field }
-            }
-            return nil
         }
     }
 }
@@ -558,43 +316,39 @@ private struct SidebarKeyboardOcclusionReader: UIViewRepresentable {
 }
 
 /// One agent's chat. Chat's own composer serves until Chat reports the seam ready,
-/// then Tuner's native composer takes over below the transcript.
+/// then Tuner's native composer floats over the bottom of the conversation.
+///
+/// Layout is left to SwiftUI's safe areas. The page fills the detail column from top to bottom,
+/// under the floating toolbar and the composer, and WebKit passes the safe area to Chat as
+/// `env(safe-area-inset-*)`. The composer sits in the bottom safe area with `safeAreaInset`,
+/// and its height joins the page's bottom inset: the newest message and Latest messages stay
+/// above the glass while older messages scroll beneath it. SwiftUI keeps the page and composer
+/// above the keyboard. Side safe areas stay clear so messages are not hidden under side bars.
 private struct AgentChatView: View {
+    /// Space between the composer and the top of the keyboard.
+    static let keyboardGap: CGFloat = 10
+
     let url: URL
     let reloadToken: Int
     @Binding var draft: String
     let repliedFeed: RepliedFeed
-    let sidebarSearchFrame: CGRect?
-    let compactSearchKeyboardDownFrame: CGRect?
-    let compactSearchKeyboardUpFrame: CGRect?
-    let softwareKeyboardVisible: Bool
     let isCompact: Bool
-    let isPortrait: Bool
     @State private var bridge: ChatHostBridge
-    @State private var composerKeyboardFocused = false
+    @State private var keyboardShown = false
+    @State private var composerHeight: CGFloat = 0
 
     init(
         url: URL,
         reloadToken: Int,
         draft: Binding<String>,
         repliedFeed: RepliedFeed,
-        sidebarSearchFrame: CGRect?,
-        compactSearchKeyboardDownFrame: CGRect?,
-        compactSearchKeyboardUpFrame: CGRect?,
-        softwareKeyboardVisible: Bool,
-        isCompact: Bool,
-        isPortrait: Bool
+        isCompact: Bool
     ) {
         self.url = url
         self.reloadToken = reloadToken
         _draft = draft
         self.repliedFeed = repliedFeed
-        self.sidebarSearchFrame = sidebarSearchFrame
-        self.compactSearchKeyboardDownFrame = compactSearchKeyboardDownFrame
-        self.compactSearchKeyboardUpFrame = compactSearchKeyboardUpFrame
-        self.softwareKeyboardVisible = softwareKeyboardVisible
         self.isCompact = isCompact
-        self.isPortrait = isPortrait
         _bridge = State(initialValue: ChatHostBridge(
             chatURL: url,
             outgoingObserver: { outgoing in
@@ -605,183 +359,26 @@ private struct AgentChatView: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let detailFrame = geometry.frame(in: .global)
-            let keyboardUpForComposer = composerKeyboardFocused && softwareKeyboardVisible
-            let searchFrame = composerTargetFrame(in: detailFrame, keyboardIsUp: keyboardUpForComposer)
-            let composerInsetEdge = ChatComposerSafeAreaPlacement.edge(for: searchFrame, in: detailFrame)
-            let composerIsActive = hostComposerIsActive
-            let contentExtensionEdges = ChatComposerSafeAreaPlacement.contentExtensionEdges(
-                isPortrait: isPortrait,
-                composerActive: composerIsActive,
-                composerEdge: composerInsetEdge
-            )
-
-            ChatComposerSafeAreaLayout(
-                edge: composerInsetEdge,
-                availableHeight: geometry.size.height,
-                targetBottom: searchFrame.map { $0.maxY - detailFrame.minY }
-            ) {
-                ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge)
-                    .ignoresSafeArea(.container, edges: contentExtensionEdges)
-            } inset: {
-                if composerIsActive {
+        ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
+                    composerInset: bridge.hostComposerActive ? composerHeight : 0)
+            .ignoresSafeArea(.container, edges: .vertical)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if bridge.hostComposerActive {
                     NativeChatComposer(
                         draft: $draft,
                         bridge: bridge,
-                        glassHeight: isCompact ? NativeChatComposer.compactSearchHeight : searchFrame?.height,
-                        focusOnAppear: captureKeyboardOnAppear
-                    ) { focused in
-                        composerKeyboardFocused = focused
-                    }
+                        glassHeight: isCompact ? NativeChatComposer.compactSearchHeight : nil
+                    ) { _ in }
+                    .padding(.bottom, keyboardShown ? Self.keyboardGap : 0)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
                 }
             }
-        }
-    }
-
-    private var hostComposerIsActive: Bool {
-#if DEBUG
-        bridge.hostComposerActive
-            || ProcessInfo.processInfo.arguments.contains(WIb6SafeAreaCaptureFixtureConfiguration.launchArgument)
-#else
-        bridge.hostComposerActive
-#endif
-    }
-
-    private var captureKeyboardOnAppear: Bool {
-#if DEBUG
-        let arguments = ProcessInfo.processInfo.arguments
-        return arguments.contains(WIb6SafeAreaCaptureFixtureConfiguration.launchArgument)
-            && arguments.contains(WIb6SafeAreaCaptureFixtureConfiguration.keyboardUpArgument)
-#else
-        false
-#endif
-    }
-
-    private func composerTargetFrame(in detailFrame: CGRect, keyboardIsUp: Bool) -> CGRect? {
-        let isSideBySide = sidebarSearchFrame.map { $0.maxX <= detailFrame.minX + 0.5 } ?? false
-        let searchFrame: CGRect?
-        if isSideBySide {
-            searchFrame = sidebarSearchFrame
-        } else if isCompact {
-            searchFrame = keyboardIsUp ? compactSearchKeyboardUpFrame : compactSearchKeyboardDownFrame
-        } else {
-            return nil
-        }
-
-        guard let searchFrame, !searchFrame.isNull, searchFrame.height > 0 else { return nil }
-        return searchFrame
-    }
-}
-
-enum ChatComposerSafeAreaPlacement {
-    static func edge(for filterFrame: CGRect?, in detailFrame: CGRect) -> VerticalEdge {
-        guard let filterFrame, !filterFrame.isNull,
-              filterFrame.height > 0, detailFrame.height > 0 else { return .bottom }
-        return filterFrame.midY < detailFrame.midY ? .top : .bottom
-    }
-
-    static func contentExtensionEdges(
-        isPortrait: Bool,
-        composerActive: Bool,
-        composerEdge: VerticalEdge
-    ) -> Edge.Set {
-        guard composerActive else { return isPortrait ? .vertical : .bottom }
-
-        // In unfolded landscape the inset already respects the composer edge. Let SwiftUI
-        // preserve the opposite system safe area too, so a top composer leaves the conversation
-        // at the normal bottom boundary without adding a second top clearance.
-        guard isPortrait else { return [] }
-
-        switch composerEdge {
-        case .top: return .bottom
-        case .bottom: return .top
-        }
-    }
-}
-
-struct ChatComposerSafeAreaLayout<Content: View, Inset: View>: View {
-    let edge: VerticalEdge
-    let availableHeight: CGFloat
-    let targetBottom: CGFloat?
-    let content: Content
-    let inset: Inset
-
-    init(
-        edge: VerticalEdge,
-        availableHeight: CGFloat,
-        targetBottom: CGFloat?,
-        @ViewBuilder content: () -> Content,
-        @ViewBuilder inset: () -> Inset
-    ) {
-        self.edge = edge
-        self.availableHeight = availableHeight
-        self.targetBottom = targetBottom
-        self.content = content()
-        self.inset = inset()
-    }
-
-    var body: some View {
-        content.safeAreaInset(edge: edge, spacing: 0) {
-            FilterAlignedComposerLayout(
-                edge: edge, availableHeight: availableHeight, targetBottom: targetBottom
-            ) { inset }
-        }
-    }
-}
-
-/// The occupied interval is measured from the system's safe edge to the actual composer.
-/// SwiftUI consumes this interval once; WebKit does not add another composer/keyboard inset.
-struct FilterAlignedComposerLayout: Layout {
-    let edge: VerticalEdge
-    let availableHeight: CGFloat
-    let targetBottom: CGFloat?
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard let composer = subviews.first else { return .zero }
-        let size = composer.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
-        let placement = ComposerInsetPlacement(
-            edge: edge, availableHeight: availableHeight,
-            targetBottom: targetBottom, composerHeight: size.height
-        )
-        return CGSize(width: proposal.width ?? size.width, height: placement.extent)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        guard let composer = subviews.first else { return }
-        let size = composer.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
-        let placement = ComposerInsetPlacement(
-            edge: edge, availableHeight: availableHeight,
-            targetBottom: targetBottom, composerHeight: size.height
-        )
-        composer.place(
-            at: CGPoint(x: bounds.midX, y: bounds.minY + placement.composerTop),
-            anchor: .top,
-            proposal: ProposedViewSize(width: bounds.width, height: size.height)
-        )
-    }
-}
-
-/// Coordinates are local to the detail's system-proposed safe region, including the keyboard.
-/// A stale/offscreen Filter cannot pull the composer beneath a system obstruction. Multiline
-/// growth retains the Filter's bottom edge while it fits, then respects the safe top edge.
-struct ComposerInsetPlacement {
-    let extent: CGFloat
-    let composerTop: CGFloat
-
-    init(edge: VerticalEdge, availableHeight: CGFloat, targetBottom: CGFloat?, composerHeight: CGFloat) {
-        let height = max(0, composerHeight)
-        let regionHeight = max(height, availableHeight)
-        let edgeBottom = edge == .top ? height : regionHeight
-        let bottom = min(regionHeight, max(height, targetBottom ?? edgeBottom))
-        switch edge {
-        case .top:
-            extent = bottom
-            composerTop = bottom - height
-        case .bottom:
-            extent = regionHeight - bottom + height
-            composerTop = 0
-        }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                keyboardShown = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                keyboardShown = false
+            }
     }
 }
 
@@ -1094,200 +691,6 @@ private struct AgentSidebar: View {
 }
 
 #if DEBUG
-/// Synthetic page hosted by the production AgentChatView and ChatWebView layout. It has no Chat
-/// service, account, roster, or command entry, and exists only in Debug builds.
-struct WIb6SafeAreaCaptureFixtureView: View {
-    private let configuration: WIb6SafeAreaCaptureFixtureConfiguration
-    @State private var draft = ""
-    @State private var filterFrame: CGRect?
-    @State private var repliedFeed: RepliedFeed
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
-    init(arguments: [String]) {
-        configuration = WIb6SafeAreaCaptureFixtureConfiguration(arguments: arguments)
-        _draft = State(initialValue: arguments.contains("--wib6-multiline")
-            ? "First draft line\nSecond draft line\nThird draft line" : "")
-        let defaultsSuite = "wib6.safe-area.capture.fixture"
-        guard let isolatedDefaults = UserDefaults(suiteName: defaultsSuite) else {
-            preconditionFailure("Unable to create isolated WIb6 fixture defaults")
-        }
-        isolatedDefaults.removePersistentDomain(forName: defaultsSuite)
-        _repliedFeed = State(initialValue: RepliedFeed(defaults: isolatedDefaults))
-    }
-
-    var body: some View {
-        GeometryReader { geometry in
-            if let failureMessage = configuration.failureMessage {
-                ContentUnavailableView("Safe-area fixture unavailable", systemImage: "rectangle.slash",
-                                       description: Text(failureMessage))
-            } else {
-                let isPortrait = geometry.size.height > geometry.size.width
-                Group {
-                    if isPortrait {
-                        NavigationStack {
-                            captureLayout(isPortrait: isPortrait)
-                                .navigationTitle("Synthetic Chat")
-                                .navigationBarTitleDisplayMode(.inline)
-                                .toolbarBackground(.hidden, for: .navigationBar)
-                                .toolbar {
-                                    ToolbarItem(placement: .topBarLeading) {
-                                        Button("Agents", systemImage: "sidebar.left") { }
-                                            .accessibilityIdentifier("fixture-floating-agents")
-                                    }
-                                    ToolbarItem(placement: .topBarTrailing) {
-                                        Button("Reload", systemImage: "arrow.clockwise") { }
-                                            .accessibilityIdentifier("fixture-floating-reload")
-                                    }
-                                }
-                        }
-                    } else {
-                        captureLayout(isPortrait: isPortrait)
-                    }
-                }
-                .background(Color.chatBackground.ignoresSafeArea())
-            }
-        }
-    }
-
-    private func captureLayout(isPortrait: Bool) -> some View {
-        HStack(spacing: 0) {
-            WIb6MeasuredFilterFixture(configuration: configuration) { filterFrame = $0 }
-            AgentChatView(
-                url: configuration.chatURL,
-                reloadToken: 0,
-                draft: $draft,
-                repliedFeed: repliedFeed,
-                sidebarSearchFrame: filterFrame,
-                compactSearchKeyboardDownFrame: nil,
-                compactSearchKeyboardUpFrame: nil,
-                softwareKeyboardVisible: configuration.keyboardUp,
-                isCompact: horizontalSizeClass == .compact,
-                isPortrait: isPortrait
-            )
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.chatBackground)
-    }
-}
-
-/// The target is a real laid-out view, not an injected edge or coordinate. Flexible spacers
-/// exercise intermediate targets and move with the system keyboard safe area.
-private struct WIb6MeasuredFilterFixture: View {
-    let configuration: WIb6SafeAreaCaptureFixtureConfiguration
-    let onFrameChange: (CGRect) -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ForEach(0..<configuration.spacersBeforeFilter, id: \.self) { _ in Spacer(minLength: 0) }
-            Text("Synthetic Filter")
-                .padding()
-                .background(.regularMaterial, in: Capsule())
-                .accessibilityIdentifier("fixture-filter")
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onFrameChange($0) }
-            ForEach(0..<configuration.spacersAfterFilter, id: \.self) { _ in Spacer(minLength: 0) }
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-}
-
-struct WIb6SafeAreaCaptureFixtureConfiguration {
-    static let launchArgument = "--wib6-safe-area-fixture"
-    private static let edgePrefix = "--wib6-filter-edge="
-    static let keyboardUpArgument = "--wib6-keyboard-up"
-    private static let scrollToLastArgument = "--wib6-scroll-to-last"
-
-    let edge: VerticalEdge
-    let keyboardUp: Bool
-    let scrollToLast: Bool
-    let chatURL: URL
-    let failureMessage: String?
-    let intermediateFilter: Bool
-
-    var spacersBeforeFilter: Int {
-        intermediateFilter ? (edge == .top ? 1 : 2) : (edge == .top ? 0 : 1)
-    }
-
-    var spacersAfterFilter: Int {
-        intermediateFilter ? (edge == .top ? 2 : 1) : (edge == .top ? 1 : 0)
-    }
-
-    init(arguments: [String]) {
-        intermediateFilter = arguments.contains("--wib6-intermediate-filter")
-        chatURL = Self.makeChatURL(scrollToLast: arguments.contains(Self.scrollToLastArgument))
-        guard arguments.contains(Self.launchArgument),
-              let edgeArgument = arguments.first(where: { $0.hasPrefix(Self.edgePrefix) }) else {
-            edge = .bottom
-            keyboardUp = false
-            scrollToLast = false
-            failureMessage = "Pass the fixture flag and a top or bottom Filter edge."
-            return
-        }
-
-        switch edgeArgument.dropFirst(Self.edgePrefix.count) {
-        case "top": edge = .top
-        case "bottom": edge = .bottom
-        default:
-            edge = .bottom
-            keyboardUp = false
-            scrollToLast = false
-            failureMessage = "The fixture Filter edge must be top or bottom."
-            return
-        }
-        keyboardUp = arguments.contains(Self.keyboardUpArgument)
-        scrollToLast = arguments.contains(Self.scrollToLastArgument)
-        failureMessage = nil
-    }
-
-    private static func makeChatURL(scrollToLast: Bool) -> URL {
-        let initialScroll = scrollToLast
-            ? "document.getElementById('last').scrollIntoView({block:'end', behavior:'auto'});"
-            : ""
-        let html = """
-        <!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          html, body { margin: 0; min-height: 100%; background: #f3efe7; color: #27313b;
-            font: 16px -apple-system, sans-serif; }
-          main { display: flex; flex-direction: column; gap: 12px; padding: 16px 16px 72px; }
-          .message { min-height: 54px; padding: 14px; border-radius: 14px; background: white;
-            box-sizing: border-box; }
-          #latest { position: fixed; z-index: 2; right: 14px; bottom: 14px; width: 38px; height: 38px;
-            border: 0; border-radius: 19px; background: rgba(255,255,255,.88); color: #27313b;
-            font-size: 18px; }
-        </style>
-        <main id="messages">
-          <div class="message" id="first">First synthetic message</div>
-          <div class="message">Synthetic conversation message 1</div>
-          <div class="message">Synthetic conversation message 2</div>
-          <div class="message">Synthetic conversation message 3</div>
-          <div class="message">Synthetic conversation message 4</div>
-          <div class="message">Synthetic conversation message 5</div>
-          <div class="message">Synthetic conversation message 6</div>
-          <div class="message">Synthetic conversation message 7</div>
-          <div class="message">Synthetic conversation message 8</div>
-          <div class="message">Synthetic conversation message 9</div>
-          <div class="message">Synthetic conversation message 10</div>
-          <div class="message">Synthetic conversation message 11</div>
-          <div class="message">Synthetic conversation message 12</div>
-          <div class="message">Synthetic conversation message 13</div>
-          <div class="message">Synthetic conversation message 14</div>
-          <div class="message">Synthetic conversation message 15</div>
-          <div class="message" id="last">Last synthetic message</div>
-        </main>
-        <button id="latest" aria-label="Scroll to latest">↓</button>
-        <script>
-          document.getElementById('latest').addEventListener('click', () =>
-            document.getElementById('last').scrollIntoView({block:'end', behavior:'smooth'}));
-          window.addEventListener('load', () => requestAnimationFrame(() => { \(initialScroll) }));
-        </script>
-        """
-        let encodedHTML = Data(html.utf8).base64EncodedString()
-        guard let url = URL(string: "data:text/html;charset=utf-8;base64,\(encodedHTML)") else {
-            preconditionFailure("Unable to construct inert WIb6 page URL")
-        }
-        return url
-    }
-}
-
 /// A capture-only host for the content-free WI721 page. This bypasses the normal store,
 /// roster refresh, release-note, and Replies tasks, and exists only in Debug builds.
 struct WI721CaptureFixtureView: View {
@@ -1296,7 +699,6 @@ struct WI721CaptureFixtureView: View {
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
     @State private var draft = ""
     @State private var filterQuery = ""
-    @State private var sidebarSearchFrame: CGRect?
     @State private var repliedFeed: RepliedFeed
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -1334,12 +736,7 @@ struct WI721CaptureFixtureView: View {
                             reloadToken: 0,
                             draft: $draft,
                             repliedFeed: repliedFeed,
-                            sidebarSearchFrame: sidebarSearchFrame,
-                            compactSearchKeyboardDownFrame: nil,
-                            compactSearchKeyboardUpFrame: nil,
-                            softwareKeyboardVisible: false,
-                            isCompact: horizontalSizeClass == .compact,
-                            isPortrait: horizontalSizeClass == .compact
+                            isCompact: horizontalSizeClass == .compact
                         )
                         .id(WI721CaptureFixtureConfiguration.sessionKey)
                         .toolbarBackground(.hidden, for: .navigationBar)
@@ -1351,15 +748,6 @@ struct WI721CaptureFixtureView: View {
                     }
                 }
             }
-        }
-        .background {
-            SidebarSearchFrameReader(
-                prompt: "Filter agents",
-                usesCompactFieldFrame: horizontalSizeClass == .compact
-            ) { measurement in
-                sidebarSearchFrame = measurement.capsule
-            }
-            .accessibilityHidden(true)
         }
         .preferredColorScheme(configuration.colorScheme)
     }

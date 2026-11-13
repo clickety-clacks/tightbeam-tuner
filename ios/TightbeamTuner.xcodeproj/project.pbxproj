@@ -14,7 +14,6 @@
 		3FA347EB8A603721DE29F8E0 /* NativeChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A6346F05A278BDFB5CD929E /* NativeChatComposer.swift */; };
 		53670126D52A2032D16366F4 /* ChatHostBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53D3923635A58ACEFD594A57 /* ChatHostBridge.swift */; };
 		610E617D511675CC7EDD51A7 /* ReleaseNotesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A25E8652060F43158F6050F6 /* ReleaseNotesTests.swift */; };
-		2632480FEB8C4BB1851A5B81 /* ComposerSafeAreaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67549CD9105D45F385115548 /* ComposerSafeAreaTests.swift */; };
 		66F77BF4DB71E34645D09852 /* DM-Sans-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 1002610F5FD92DFCCE889EBE /* DM-Sans-OFL.txt */; };
 		6D871E6F982DB9720FC3F162 /* RepliedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E5C99F34C2EB0117B642314 /* RepliedTests.swift */; };
 		773B38DFFC81D0C9DF4FA891 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B27FF03A215A345C45C5928 /* ContentView.swift */; };
@@ -46,7 +45,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		67549CD9105D45F385115548 /* ComposerSafeAreaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerSafeAreaTests.swift; sourceTree = "<group>"; };
 		053DD6AA4E4E5A915C9F2B1E /* TightbeamTunerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TightbeamTunerApp.swift; sourceTree = "<group>"; };
 		07D97C9F33E7C21E3409EB8D /* AgentSectionCountsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSectionCountsTests.swift; sourceTree = "<group>"; };
 		1002610F5FD92DFCCE889EBE /* DM-Sans-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "DM-Sans-OFL.txt"; sourceTree = "<group>"; };
@@ -100,7 +98,6 @@
 		8C9DC737C056524394195730 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
-				67549CD9105D45F385115548 /* ComposerSafeAreaTests.swift */,
 				07D97C9F33E7C21E3409EB8D /* AgentSectionCountsTests.swift */,
 				B7FBFAE83CE0AFBFBB5697B3 /* ChatHostBridgeTests.swift */,
 				A981DB7748C7BCB960FCC7E9 /* ConnectionTests.swift */,
@@ -253,7 +250,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				2632480FEB8C4BB1851A5B81 /* ComposerSafeAreaTests.swift in Sources */,
 				809A381B2BAFE2C839F450E9 /* AgentSectionCountsTests.swift in Sources */,
 				E2A9FB911B7D27057D552026 /* ChatHostBridgeTests.swift in Sources */,
 				A981B0BA13B464004DF743BE /* ConnectionTests.swift in Sources */,
