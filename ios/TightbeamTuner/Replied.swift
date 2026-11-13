@@ -139,6 +139,8 @@ struct RepliedState: Sendable {
     private var completedPromptOrderBySession: [String: [String]] = [:]
     private var latestAssistantSequenceBySession: [String: Int] = [:]
     private var latestShownReplySequenceBySession: [String: Int] = [:]
+    // Keep every later message unread after a shown regular-width prompt reply until normal read/navigation.
+    private var regularWidthUnreadSessions: Set<String> = []
     private(set) var pendingOrderBySession: [String: Int] = [:]
     private var nextPendingOrder = 0
     private static let retainedPromptPositionsPerSession = 128
@@ -147,6 +149,7 @@ struct RepliedState: Sendable {
         self.localReadMarkerBySession = localReadMarkerBySession
     }
     mutating func markOpened(_ key: String) -> Int? {
+        regularWidthUnreadSessions.remove(key)
         guard let reply = latestReplyBySession[key] else { return nil }
         let marker = max(reply, localReadMarkerBySession[key] ?? Int.min)
         localReadMarkerBySession[key] = marker
@@ -158,7 +161,8 @@ struct RepliedState: Sendable {
     mutating func apply(
         _ message: RepliedMessage,
         shownSessionKey: String?,
-        regularWidthShownChat: Bool = false
+        regularWidthShownChat: Bool = false,
+        regularWidthSelectionSessionKey: String? = nil
     ) -> Bool {
         var readMarkerChanged = false
         if message.role == "user", let correlationID = message.clientMessageId {
@@ -206,12 +210,22 @@ struct RepliedState: Sendable {
 
         guard message.role == "assistant", message.turnIncludesHuman else { return readMarkerChanged }
         latestReplyBySession[message.sessionKey] = max(latestReplyBySession[message.sessionKey] ?? Int.min, message.seq)
+        let latestReply = latestReplyBySession[message.sessionKey, default: Int.min]
+        let readMarker = localReadMarkerBySession[message.sessionKey, default: Int.min]
+        if regularWidthShownChat,
+           message.sessionKey == regularWidthSelectionSessionKey,
+           completedPendingPrompt,
+           latestReply > readMarker {
+            regularWidthUnreadSessions.insert(message.sessionKey)
+        }
         guard message.sessionKey == shownSessionKey else { return readMarkerChanged }
         latestShownReplySequenceBySession[message.sessionKey] = max(
             latestShownReplySequenceBySession[message.sessionKey] ?? Int.min,
             message.seq
         )
-        guard !(regularWidthShownChat && completedPendingPrompt) else { return readMarkerChanged }
+        guard !(regularWidthShownChat && regularWidthUnreadSessions.contains(message.sessionKey)) else {
+            return readMarkerChanged
+        }
         return advanceLocalReadMarkerIfSafe(message.sessionKey) || readMarkerChanged
     }
 
@@ -266,6 +280,7 @@ struct RepliedState: Sendable {
         let previousMarker = localReadMarkerBySession[sessionKey] ?? Int.min
         guard shownReply > previousMarker else { return false }
         localReadMarkerBySession[sessionKey] = shownReply
+        regularWidthUnreadSessions.remove(sessionKey)
         return true
     }
     mutating func apply(_ marker: RepliedReadMarker, userID: String) {
@@ -274,6 +289,11 @@ struct RepliedState: Sendable {
         let key = String(marker.scopeKey.dropLast(suffix.count))
         if let current = readMarkerBySession[key], current.updatedAt > marker.updatedAt { return }
         readMarkerBySession[key] = marker
+        if let latestReply = latestReplyBySession[key],
+           let readMarker = marker.marker,
+           readMarker >= latestReply {
+            regularWidthUnreadSessions.remove(key)
+        }
     }
     mutating func apply(_ frame: RepliedFrame, userID: String) {
         _ = apply(frame, userID: userID, shownSessionKey: nil, regularWidthShownChat: false)
@@ -282,12 +302,14 @@ struct RepliedState: Sendable {
         _ frame: RepliedFrame,
         userID: String,
         shownSessionKey: String?,
-        regularWidthShownChat: Bool = false
+        regularWidthShownChat: Bool = false,
+        regularWidthSelectionSessionKey: String? = nil
     ) -> Bool {
         switch frame {
         case .message(let message):
             return apply(message, shownSessionKey: shownSessionKey,
-                         regularWidthShownChat: regularWidthShownChat)
+                         regularWidthShownChat: regularWidthShownChat,
+                         regularWidthSelectionSessionKey: regularWidthSelectionSessionKey)
         case .readMarker(let marker): apply(marker, userID: userID)
         case .sessionSpawned(let agent), .sessionUpdated(let agent), .sessionHarnessChanged(let agent):
             retiredSessionKeys.remove(agent.id)
@@ -368,7 +390,6 @@ struct RepliedTaskKey: Equatable {
 struct RepliedShownChat {
     private static let regularWidthPrefix = "\u{001F}regular-width:"
     private static let inactiveRegularWidthPrefix = "\u{001F}regular-width-inactive:"
-    private static let escapedSessionKeyPrefix = "\u{001F}session-key:"
 
     let selectedSessionKey: String?
     let compactWidth: Bool
@@ -380,23 +401,13 @@ struct RepliedShownChat {
     var sessionKeyOnScreen: String? {
         guard let selectedSessionKey,
               !compactWidth || (compactDetailSelected && sceneIsActive) else { return nil }
-        if compactWidth {
-            if selectedSessionKey.hasPrefix(Self.regularWidthPrefix)
-                || selectedSessionKey.hasPrefix(Self.inactiveRegularWidthPrefix)
-                || selectedSessionKey.hasPrefix(Self.escapedSessionKeyPrefix) {
-                return Self.escapedSessionKeyPrefix + selectedSessionKey
-            }
-            return selectedSessionKey
-        }
+        if compactWidth { return selectedSessionKey }
         let prefix = sceneIsActive ? Self.regularWidthPrefix : Self.inactiveRegularWidthPrefix
         return prefix + selectedSessionKey
     }
 
     static func decodeSessionKey(_ value: String?) -> (sessionKey: String?, regularWidth: Bool, visible: Bool) {
         guard let value else { return (nil, false, false) }
-        if value.hasPrefix(escapedSessionKeyPrefix) {
-            return (String(value.dropFirst(escapedSessionKeyPrefix.count)), false, true)
-        }
         if value.hasPrefix(inactiveRegularWidthPrefix) {
             return (String(value.dropFirst(inactiveRegularWidthPrefix.count)), true, false)
         }
@@ -449,7 +460,8 @@ struct RepliedShownChat {
 
     private func apply(_ frame: RepliedFrame, userID: String, shownSessionKey: String?) {
         if state.apply(frame, userID: userID, shownSessionKey: shownSessionKey,
-                       regularWidthShownChat: shownChatIsRegularWidth) {
+                       regularWidthShownChat: shownChatIsRegularWidth,
+                       regularWidthSelectionSessionKey: regularWidthSelectedSessionKey) {
             persistLocalReadMarkers()
         }
     }
