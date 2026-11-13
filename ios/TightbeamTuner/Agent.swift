@@ -40,6 +40,7 @@ struct Agent: Codable, Identifiable, Hashable, Sendable {
         case harness
         case model
         case effort
+        case thinkingLevel
     }
 
     init(from decoder: Decoder) throws {
@@ -52,7 +53,8 @@ struct Agent: Codable, Identifiable, Hashable, Sendable {
         archetype = try values.decodeIfPresent(String.self, forKey: .archetype)
         harness = try? values.decodeIfPresent(String.self, forKey: .harness)
         model = try? values.decodeIfPresent(String.self, forKey: .model)
-        effort = try? values.decodeIfPresent(String.self, forKey: .effort)
+        effort = (try? values.decodeIfPresent(String.self, forKey: .effort))
+            ?? (try? values.decodeIfPresent(String.self, forKey: .thinkingLevel))
     }
 
     func encode(to encoder: Encoder) throws {
