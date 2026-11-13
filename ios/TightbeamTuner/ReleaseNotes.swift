@@ -4,6 +4,10 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 64, date: "November 12, 2026", items: [
+            .init(symbol: "paintbrush.pointed", title: "Give Tuner a clear look in both themes",
+                  detail: "Tuner's light and dark palettes, type, button feedback, and panels now follow its design system on desktop and iOS."),
+        ]),
         ReleaseNote(version: "1.0", build: 63, date: "November 12, 2026", items: [
             .init(symbol: "circle.lefthalf.filled", title: "Match Chat colors across appearances",
                   detail: "Chat's background, composer accents, and connection indicator now match Chat in both light and dark appearances."),
