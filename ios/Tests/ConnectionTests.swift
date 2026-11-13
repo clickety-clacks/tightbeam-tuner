@@ -44,17 +44,31 @@ final class ConnectionTests: XCTestCase {
         store.agents = try JSONDecoder().decode(Roster.self, from: Data(#"{"sessions":[{"sessionKey":"agent:existing","displayName":"Existing","state":"active","archetype":"Coder","harness":"codex","model":"gpt-6"},{"sessionKey":"agent:retire","displayName":"Retire me","state":"active"}]}"#.utf8)).sessions
         store.selectedID = "agent:retire"
 
-        store.applyRosterEvent(try rosterEvent(#"{"type":"change","class":"session.spawned","payload":{"sessionKey":"agent:new","displayName":"New","state":"active","archetype":"Coder","harness":"codex","model":"gpt-6"}}"#))
+        store.applyRosterEvent(try rosterEvent(#"""
+        {"type":"change","class":"session.spawned","payload":{"sessionKey":"agent:new","displayName":"New","state":"active","archetype":"Coder","harness":"codex","model":"gpt-6","thinkingLevel":"high"}}
+        """#))
         XCTAssertEqual(store.agents.map(\.id), ["agent:existing", "agent:retire", "agent:new"])
+        let spawned = try XCTUnwrap(store.agents.first { $0.id == "agent:new" })
+        XCTAssertEqual(spawned.effort, "high")
+        XCTAssertEqual(spawned.rowDescription, "Coder • gpt-6 high")
 
-        store.applyRosterEvent(try rosterEvent(#"{"type":"change","class":"session.updated","payload":{"sessionKey":"agent:new","displayName":"Renamed","state":"active","archetype":"Reviewer","harness":"codex","model":"gpt-6.1"}}"#))
+        store.applyRosterEvent(try rosterEvent(#"""
+        {"type":"change","class":"session.updated","payload":{"sessionKey":"agent:new","displayName":"Renamed","state":"active","archetype":"Reviewer","harness":"codex","model":"gpt-6.1","thinkingLevel":"medium"}}
+        """#))
         let renamed = try XCTUnwrap(store.agents.first { $0.id == "agent:new" })
         XCTAssertEqual(renamed.name, "Renamed")
         XCTAssertEqual(renamed.archetype, "Reviewer")
         XCTAssertEqual(renamed.model, "gpt-6.1")
+        XCTAssertEqual(renamed.effort, "medium")
+        XCTAssertEqual(renamed.rowDescription, "Reviewer • gpt-6.1 medium")
 
-        store.applyRosterEvent(try rosterEvent(#"{"type":"change","class":"session.harness_changed","payload":{"sessionKey":"agent:new","displayName":"Renamed","state":"active","archetype":"Reviewer","harness":"claude","model":"gpt-6.1"}}"#))
-        XCTAssertEqual(store.agents.first { $0.id == "agent:new" }?.harness, "claude")
+        store.applyRosterEvent(try rosterEvent(#"""
+        {"type":"change","class":"session.harness_changed","payload":{"sessionKey":"agent:new","displayName":"Renamed","state":"active","archetype":"Reviewer","harness":"claude","model":"gpt-6.1","thinkingLevel":"low"}}
+        """#))
+        let harnessChanged = try XCTUnwrap(store.agents.first { $0.id == "agent:new" })
+        XCTAssertEqual(harnessChanged.harness, "claude")
+        XCTAssertEqual(harnessChanged.effort, "low")
+        XCTAssertEqual(harnessChanged.rowDescription, "Reviewer • gpt-6.1 low")
 
         store.applyRosterEvent(try rosterEvent(#"{"type":"change","class":"session.updated","payload":{"sessionKey":"agent:new","displayName":"Renamed","state":"paused","archetype":"Reviewer","harness":"claude","model":"gpt-6.1"}}"#))
         XCTAssertFalse(store.agents.contains { $0.id == "agent:new" })

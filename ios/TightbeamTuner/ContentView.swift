@@ -425,8 +425,8 @@ private struct AgentRowLabel: View {
         let text = VStack(alignment: .leading, spacing: 1) {
             Text(agent.name)
                 .foregroundStyle(contextOnly ? Color.nordicSecondaryText : Color.nordicText)
-            if let archetype = agent.archetype, !archetype.isEmpty {
-                Text(archetype)
+            if let rowDescription = agent.rowDescription {
+                Text(rowDescription)
                     .font(TunerTypography.caption)
                     .foregroundStyle(Color.nordicSecondaryText)
             }

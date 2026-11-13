@@ -1,17 +1,12 @@
 {
   "version": "1.0",
-  "build": 67,
+  "build": 68,
   "date": "November 13, 2026",
   "items": [
     {
-      "symbol": "rectangle.bottomthird.inset.filled",
-      "title": "Let the conversation run under the message field",
-      "detail": "The conversation fills the chat screen, folded or unfolded, in portrait and landscape. The toolbar and message field float over it, with no empty or white bars, and Latest messages stays clear of the message field."
-    },
-    {
-      "symbol": "keyboard",
-      "title": "Leave room above the keyboard",
-      "detail": "With the keyboard up, the message field sits a small gap above it. The message field now follows the system layout instead of lining up with Filter agents."
+      "symbol": "person.2",
+      "title": "See each agent's model and effort",
+      "detail": "The Agents list now shows each agent's archetype followed by its actual model and effort."
     }
   ]
 }

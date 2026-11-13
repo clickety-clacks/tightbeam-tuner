@@ -2,6 +2,45 @@ import XCTest
 @testable import TightbeamTuner
 
 final class RosterCacheTests: XCTestCase {
+    func testRosterPreservesActualModelAndEffortThroughCodable() throws {
+        let agent = try JSONDecoder().decode(
+            Roster.self,
+            from: roster("agent:coder", "Coder", model: "gpt-6.1", effort: "high")
+        ).sessions[0]
+
+        XCTAssertEqual(agent.model, "gpt-6.1")
+        XCTAssertEqual(agent.effort, "high")
+        XCTAssertEqual(agent.rowDescription, "Coder • gpt-6.1 high")
+
+        let restored = try JSONDecoder().decode(Agent.self, from: JSONEncoder().encode(agent))
+        XCTAssertEqual(restored.model, "gpt-6.1")
+        XCTAssertEqual(restored.effort, "high")
+    }
+
+    func testRosterLeavesMissingEffortAbsent() throws {
+        let agent = try JSONDecoder().decode(
+            Roster.self,
+            from: roster("agent:legacy", "Legacy", model: "gpt-6.1")
+        ).sessions[0]
+
+        XCTAssertEqual(agent.model, "gpt-6.1")
+        XCTAssertNil(agent.effort)
+        XCTAssertEqual(agent.rowDescription, "Coder • gpt-6.1")
+
+        let encoded = try JSONEncoder().encode(agent)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(object["effort"])
+    }
+
+    func testRosterDescriptionKeepsArchetypeWhenRuntimeDetailsAreAbsent() throws {
+        let agent = try JSONDecoder().decode(
+            Roster.self,
+            from: roster("agent:legacy", "Legacy")
+        ).sessions[0]
+
+        XCTAssertEqual(agent.rowDescription, "Coder")
+    }
+
     @MainActor
     func testMatchingCacheAppearsBeforeRefreshAndIsReplacedOnSuccess() async throws {
         let connection = completeConnection()
@@ -204,10 +243,17 @@ final class RosterCacheTests: XCTestCase {
         return connection
     }
 
-    private func roster(_ id: String, _ name: String, parent: String? = nil, model: String? = nil) -> Data {
+    private func roster(
+        _ id: String,
+        _ name: String,
+        parent: String? = nil,
+        model: String? = nil,
+        effort: String? = nil
+    ) -> Data {
         let parentField = parent.map { #","currentParent":"\#($0)""# } ?? ""
         let modelField = model.map { #","model":"\#($0)""# } ?? ""
-        return Data(#"{"sessions":[{"sessionKey":"\#(id)","displayName":"\#(name)","state":"active","archetype":"Coder","harness":"codex"\#(parentField)\#(modelField)}]}"#.utf8)
+        let effortField = effort.map { #","effort":"\#($0)""# } ?? ""
+        return Data(#"{"sessions":[{"sessionKey":"\#(id)","displayName":"\#(name)","state":"active","archetype":"Coder","harness":"codex"\#(parentField)\#(modelField)\#(effortField)}]}"#.utf8)
     }
 }
 
