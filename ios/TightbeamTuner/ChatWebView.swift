@@ -1,12 +1,16 @@
 import SwiftUI
 import WebKit
 
-/// Hosts Chat in a web view. SwiftUI's composer safe-area inset is inherited by the page so Chat
-/// can keep its controls clear of the native composer.
+/// Hosts Chat in a web view. The page reads its safe area as `env(safe-area-inset-*)`.
+/// SwiftUI's own safe areas reach the web view through UIKit, but a SwiftUI `safeAreaInset`
+/// does not, so the floating composer's height is added to the page's bottom safe area here.
+/// Chat then keeps its newest message and Latest messages clear of the composer.
 struct ChatWebView: UIViewControllerRepresentable {
     let url: URL
     let reloadToken: Int
     let bridge: ChatHostBridge
+    /// Height of the native composer floating over the bottom of the page.
+    var composerInset: CGFloat = 0
 
     static let pinchHandlerName = "tunerPinch"
 
@@ -69,6 +73,9 @@ struct ChatWebView: UIViewControllerRepresentable {
         let webView = ChatPageView(frame: .zero, configuration: configuration)
         webView.bridge = bridge
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        // Chat scrolls its own conversation inside the page, so the system's blurred edge under
+        // the toolbar would sit over the conversation as a fixed band. Let the toolbar float.
+        webView.scrollView.topEdgeEffect.isHidden = true
         // Match Chat's page color so loading and overscroll show linen, not white.
         webView.isOpaque = false
         webView.backgroundColor = UIColor(resource: .chatBackground)
@@ -86,6 +93,8 @@ struct ChatWebView: UIViewControllerRepresentable {
         controller.view.clipsToBounds = true
         let pageController = UIViewController()
         pageController.view = webView
+        pageController.additionalSafeAreaInsets.bottom = composerInset
+        context.coordinator.pageController = pageController
         controller.addChild(pageController)
         pageController.view.frame = controller.view.bounds
         pageController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -95,6 +104,10 @@ struct ChatWebView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: UIViewController, context: Context) {
+        if let pageController = context.coordinator.pageController,
+           pageController.additionalSafeAreaInsets.bottom != composerInset {
+            pageController.additionalSafeAreaInsets.bottom = composerInset
+        }
         guard let webView = context.coordinator.webView else { return }
         if context.coordinator.loadedURL != url {
             context.coordinator.loadedURL = url
@@ -108,6 +121,7 @@ struct ChatWebView: UIViewControllerRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var loadedURL: URL?
         var reloadToken = 0
+        var pageController: UIViewController?
         weak var bridge: ChatHostBridge?
 
         // Text size set by pinching, shared by every chat and kept across launches.
