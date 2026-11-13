@@ -4,6 +4,10 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 65, date: "November 13, 2026", items: [
+            .init(symbol: "arrowshape.turn.up.left", title: "Keep Replies up to date",
+                  detail: "Sent prompts now reliably appear in Replies with a spinner until an assistant responds. In side-by-side layouts, the row stays unread with its back arrow until you leave or mark the conversation read."),
+        ]),
         ReleaseNote(version: "1.0", build: 64, date: "November 12, 2026", items: [
             .init(symbol: "paintbrush.pointed", title: "Give Tuner a clear look in both themes",
                   detail: "Tuner's light and dark palettes, type, button feedback, and panels now follow its design system on desktop and iOS."),
