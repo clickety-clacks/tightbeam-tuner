@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// Native message field that floats over the transcript, shaped like Chat's own composer:
+/// Native message field inset at the selected transcript edge, shaped like Chat's own composer:
 /// a rounded field with the agent's name as placeholder and a separate send button beside it.
 struct NativeChatComposer: View {
     @Binding var draft: String
     let bridge: ChatHostBridge
     let glassHeight: CGFloat?
+    let focusOnAppear: Bool
     let onFocusChange: (Bool) -> Void
     @FocusState private var focused: Bool
     @State private var showingStatus = false
@@ -44,20 +45,17 @@ struct NativeChatComposer: View {
         max(0, ((glassHeight ?? contentHeight) - contentHeight) / 2)
     }
     private var cornerRadius: CGFloat { contentHeight / 2 + glassVerticalInset }
-    /// Used by the enclosing chat layout to locate the glass edge from the view's bottom.
-    static let bottomPadding: CGFloat = 8
-    /// Reserve the standard row before the first geometry measurement arrives.
-    static let minimumLayoutHeight: CGFloat = standardContentHeight + bottomPadding
-
     init(
         draft: Binding<String>,
         bridge: ChatHostBridge,
         glassHeight: CGFloat?,
+        focusOnAppear: Bool = false,
         onFocusChange: @escaping (Bool) -> Void
     ) {
         _draft = draft
         self.bridge = bridge
         self.glassHeight = glassHeight
+        self.focusOnAppear = focusOnAppear
         self.onFocusChange = onFocusChange
     }
 
@@ -137,7 +135,6 @@ struct NativeChatComposer: View {
         }
         .frame(maxWidth: maxWidth)
         .padding(.horizontal, 12)
-        .padding(.bottom, Self.bottomPadding)
         .tint(Color.chatAccent)
         .animation(.default, value: notice)
         .onChange(of: focused, initial: true) { _, focused in
@@ -145,6 +142,7 @@ struct NativeChatComposer: View {
             onFocusChange(focused)
         }
         .onAppear {
+            if focusOnAppear { focused = true }
             if let outgoing = bridge.outgoing, outgoing.status == .interrupted { restoreDraft(outgoing) }
             if bridge.overlayOpen { focusChatPage() }
         }
