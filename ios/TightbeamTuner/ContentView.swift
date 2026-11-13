@@ -103,7 +103,8 @@ struct ContentView: View {
                                   compactSearchKeyboardDownFrame: compactSearchKeyboardDownFrame,
                                   compactSearchKeyboardUpFrame: compactSearchKeyboardUpFrame,
                                   softwareKeyboardVisible: softwareKeyboardVisible,
-                                  isCompact: horizontalSizeClass == .compact)
+                                  isCompact: horizontalSizeClass == .compact,
+                                  isPortrait: portrait)
                         .id(agent.id)
                         .toolbarBackground(.hidden, for: .navigationBar)
                         .toolbar {
@@ -568,6 +569,7 @@ private struct AgentChatView: View {
     let compactSearchKeyboardUpFrame: CGRect?
     let softwareKeyboardVisible: Bool
     let isCompact: Bool
+    let isPortrait: Bool
     @State private var bridge: ChatHostBridge
     @State private var composerHeight: CGFloat = 0
     @State private var composerKeyboardFocused = false
@@ -581,7 +583,8 @@ private struct AgentChatView: View {
         compactSearchKeyboardDownFrame: CGRect?,
         compactSearchKeyboardUpFrame: CGRect?,
         softwareKeyboardVisible: Bool,
-        isCompact: Bool
+        isCompact: Bool,
+        isPortrait: Bool
     ) {
         self.url = url
         self.reloadToken = reloadToken
@@ -592,6 +595,7 @@ private struct AgentChatView: View {
         self.compactSearchKeyboardUpFrame = compactSearchKeyboardUpFrame
         self.softwareKeyboardVisible = softwareKeyboardVisible
         self.isCompact = isCompact
+        self.isPortrait = isPortrait
         _bridge = State(initialValue: ChatHostBridge(
             chatURL: url,
             outgoingObserver: { outgoing in
@@ -602,9 +606,8 @@ private struct AgentChatView: View {
     }
 
     var body: some View {
-        // The page extends beneath the floating toolbar. When the composer is above the
-        // conversation, move the web view below its glass; when it is below, extend the page's
-        // bottom safe area so content can scroll clear of the glass.
+        // In portrait the page extends beneath the floating toolbar. In landscape, preserve
+        // the top safe area; the page still extends to the bottom for its floating composer.
         GeometryReader { geometry in
             let detailFrame = geometry.frame(in: .global)
             let keyboardUpForComposer = composerKeyboardFocused && softwareKeyboardVisible
@@ -626,7 +629,7 @@ private struct AgentChatView: View {
                 ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge,
                             floatingBottomInset: floatingBottomInset)
                     .padding(.top, topComposerClearance)
-                    .ignoresSafeArea(edges: .vertical)
+                    .ignoresSafeArea(edges: isPortrait ? .vertical : .bottom)
                 if bridge.hostComposerActive {
                     NativeChatComposer(
                         draft: $draft,
@@ -1018,7 +1021,8 @@ struct WI721CaptureFixtureView: View {
                             compactSearchKeyboardDownFrame: nil,
                             compactSearchKeyboardUpFrame: nil,
                             softwareKeyboardVisible: false,
-                            isCompact: horizontalSizeClass == .compact
+                            isCompact: horizontalSizeClass == .compact,
+                            isPortrait: horizontalSizeClass == .compact
                         )
                         .id(WI721CaptureFixtureConfiguration.sessionKey)
                         .toolbarBackground(.hidden, for: .navigationBar)
