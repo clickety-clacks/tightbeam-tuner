@@ -12,6 +12,7 @@ struct Agent: Codable, Identifiable, Hashable, Sendable {
     let archetype: String?
     let harness: String?
     let model: String?
+    let effort: String?
 
     enum CodingKeys: String, CodingKey {
         case id = "sessionKey"
@@ -22,6 +23,7 @@ struct Agent: Codable, Identifiable, Hashable, Sendable {
         case archetype
         case harness
         case model
+        case effort
     }
 
     init(from decoder: Decoder) throws {
@@ -34,6 +36,7 @@ struct Agent: Codable, Identifiable, Hashable, Sendable {
         archetype = try values.decodeIfPresent(String.self, forKey: .archetype)
         harness = try? values.decodeIfPresent(String.self, forKey: .harness)
         model = try? values.decodeIfPresent(String.self, forKey: .model)
+        effort = try? values.decodeIfPresent(String.self, forKey: .effort)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -45,5 +48,6 @@ struct Agent: Codable, Identifiable, Hashable, Sendable {
         try values.encodeIfPresent(archetype, forKey: .archetype)
         try values.encodeIfPresent(harness, forKey: .harness)
         try values.encodeIfPresent(model, forKey: .model)
+        try values.encodeIfPresent(effort, forKey: .effort)
     }
 }
