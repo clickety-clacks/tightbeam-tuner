@@ -614,9 +614,10 @@ private struct AgentChatView: View {
             let searchFrame = composerTargetFrame(in: detailFrame, keyboardIsUp: keyboardUpForComposer)
             let composerInsetEdge = composerInsetEdgeOverride
                 ?? ChatComposerSafeAreaPlacement.edge(for: searchFrame, in: detailFrame)
+            let composerIsActive = hostComposerIsActive
             let contentExtensionEdges = ChatComposerSafeAreaPlacement.contentExtensionEdges(
                 isPortrait: isPortrait,
-                composerActive: bridge.hostComposerActive,
+                composerActive: composerIsActive,
                 composerEdge: composerInsetEdge
             )
 
@@ -624,17 +625,37 @@ private struct AgentChatView: View {
                 ChatWebView(url: url, reloadToken: reloadToken, bridge: bridge)
                     .ignoresSafeArea(edges: contentExtensionEdges)
             } inset: {
-                if bridge.hostComposerActive {
+                if composerIsActive {
                     NativeChatComposer(
                         draft: $draft,
                         bridge: bridge,
-                        glassHeight: isCompact ? NativeChatComposer.compactSearchHeight : searchFrame?.height
+                        glassHeight: isCompact ? NativeChatComposer.compactSearchHeight : searchFrame?.height,
+                        focusOnAppear: captureKeyboardOnAppear
                     ) { focused in
                         composerKeyboardFocused = focused
                     }
                 }
             }
         }
+    }
+
+    private var hostComposerIsActive: Bool {
+#if DEBUG
+        bridge.hostComposerActive
+            || ProcessInfo.processInfo.arguments.contains(WIb6SafeAreaCaptureFixtureConfiguration.launchArgument)
+#else
+        bridge.hostComposerActive
+#endif
+    }
+
+    private var captureKeyboardOnAppear: Bool {
+#if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        return arguments.contains(WIb6SafeAreaCaptureFixtureConfiguration.launchArgument)
+            && arguments.contains(WIb6SafeAreaCaptureFixtureConfiguration.keyboardUpArgument)
+#else
+        false
+#endif
     }
 
     private func composerTargetFrame(in detailFrame: CGRect, keyboardIsUp: Bool) -> CGRect? {
@@ -1008,124 +1029,92 @@ private struct AgentSidebar: View {
 }
 
 #if DEBUG
-/// Synthetic layout fixture for the production composer safe-area inset. It contains no Chat
-/// WebView, account, roster, or send route; the disabled native composer can still summon iOS's
-/// real software keyboard for keyboard-up captures.
+/// Synthetic page hosted by the production AgentChatView and ChatWebView layout. It has no Chat
+/// service, account, roster, or command entry, and exists only in Debug builds.
 struct WIb6SafeAreaCaptureFixtureView: View {
     private let configuration: WIb6SafeAreaCaptureFixtureConfiguration
     @State private var draft = ""
-    @State private var bridge: ChatHostBridge
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @State private var repliedFeed: RepliedFeed
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     init(arguments: [String]) {
         configuration = WIb6SafeAreaCaptureFixtureConfiguration(arguments: arguments)
-        guard let fixtureURL = URL(string: "https://fixture.invalid") else {
-            preconditionFailure("Unable to construct inert fixture URL")
+        let defaultsSuite = "wib6.safe-area.capture.fixture"
+        guard let isolatedDefaults = UserDefaults(suiteName: defaultsSuite) else {
+            preconditionFailure("Unable to create isolated WIb6 fixture defaults")
         }
-        _bridge = State(initialValue: ChatHostBridge(chatURL: fixtureURL))
+        isolatedDefaults.removePersistentDomain(forName: defaultsSuite)
+        _repliedFeed = State(initialValue: RepliedFeed(defaults: isolatedDefaults))
     }
 
     var body: some View {
-        if let failureMessage = configuration.failureMessage {
-            ContentUnavailableView("Safe-area fixture unavailable", systemImage: "rectangle.slash",
-                                   description: Text(failureMessage))
-        } else {
-            let isPortrait = verticalSizeClass != .compact
-            let edge = configuration.edge
-            Group {
-                if isPortrait {
-                    NavigationStack {
+        GeometryReader { geometry in
+            if let failureMessage = configuration.failureMessage {
+                ContentUnavailableView("Safe-area fixture unavailable", systemImage: "rectangle.slash",
+                                       description: Text(failureMessage))
+            } else {
+                let isPortrait = geometry.size.height > geometry.size.width
+                let edge = configuration.edge
+                Group {
+                    if isPortrait {
+                        NavigationStack {
+                            captureLayout(isPortrait: isPortrait, edge: edge)
+                                .navigationTitle("Synthetic Chat")
+                                .navigationBarTitleDisplayMode(.inline)
+                                .toolbarBackground(.hidden, for: .navigationBar)
+                                .toolbar {
+                                    ToolbarItem(placement: .topBarLeading) {
+                                        Button("Agents", systemImage: "sidebar.left") { }
+                                            .accessibilityIdentifier("fixture-floating-agents")
+                                    }
+                                    ToolbarItem(placement: .topBarTrailing) {
+                                        Button("Reload", systemImage: "arrow.clockwise") { }
+                                            .accessibilityIdentifier("fixture-floating-reload")
+                                    }
+                                }
+                        }
+                    } else {
                         captureLayout(isPortrait: isPortrait, edge: edge)
-                            .navigationTitle("Synthetic Chat")
-                            .navigationBarTitleDisplayMode(.inline)
-                            .toolbarBackground(.hidden, for: .navigationBar)
-                            .toolbar {
-                                ToolbarItem(placement: .topBarLeading) {
-                                    Button("Agents", systemImage: "sidebar.left") { }
-                                        .accessibilityIdentifier("fixture-floating-agents")
-                                }
-                                ToolbarItem(placement: .topBarTrailing) {
-                                    Button("Reload", systemImage: "arrow.clockwise") { }
-                                        .accessibilityIdentifier("fixture-floating-reload")
-                                }
-                            }
                     }
-                } else {
-                    captureLayout(isPortrait: isPortrait, edge: edge)
                 }
+                .background(Color.chatBackground.ignoresSafeArea())
             }
-            .background(Color.chatBackground.ignoresSafeArea())
         }
     }
 
     private func captureLayout(isPortrait: Bool, edge: VerticalEdge) -> some View {
-        ChatComposerSafeAreaLayout(edge: edge) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        Text("First synthetic message")
-                            .accessibilityIdentifier("fixture-first-message")
-                            .id("first")
-                        ForEach(1..<18, id: \.self) { index in
-                            Text("Synthetic conversation message \(index)")
-                        }
-                        Text("Last synthetic message")
-                            .accessibilityIdentifier("fixture-last-message")
-                            .id("last")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    Button {
-                        withAnimation { proxy.scrollTo("last", anchor: .bottom) }
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 38, height: 38)
-                            .background(.regularMaterial, in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Scroll to latest")
-                    .accessibilityIdentifier("fixture-scroll-to-latest")
-                    .padding(12)
-                }
-                .onAppear {
-                    guard configuration.scrollToLast else { return }
-                    DispatchQueue.main.async {
-                        proxy.scrollTo("last", anchor: .bottom)
-                    }
-                }
-            }
-            .background(Color.chatBackground)
-            .ignoresSafeArea(edges: ChatComposerSafeAreaPlacement.contentExtensionEdges(
-                isPortrait: isPortrait,
-                composerActive: true,
-                composerEdge: edge
-            ))
-        } inset: {
-            NativeChatComposer(
-                draft: $draft,
-                bridge: bridge,
-                glassHeight: nil,
-                focusOnAppear: configuration.keyboardUp
-            ) { _ in }
-        }
+        AgentChatView(
+            url: configuration.chatURL,
+            reloadToken: 0,
+            draft: $draft,
+            repliedFeed: repliedFeed,
+            sidebarSearchFrame: nil,
+            compactSearchKeyboardDownFrame: nil,
+            compactSearchKeyboardUpFrame: nil,
+            softwareKeyboardVisible: configuration.keyboardUp,
+            isCompact: horizontalSizeClass == .compact,
+            isPortrait: isPortrait,
+            composerInsetEdgeOverride: edge
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.chatBackground)
     }
 }
 
 struct WIb6SafeAreaCaptureFixtureConfiguration {
     static let launchArgument = "--wib6-safe-area-fixture"
     private static let edgePrefix = "--wib6-filter-edge="
-    private static let keyboardUpArgument = "--wib6-keyboard-up"
+    static let keyboardUpArgument = "--wib6-keyboard-up"
     private static let scrollToLastArgument = "--wib6-scroll-to-last"
 
     let edge: VerticalEdge
     let keyboardUp: Bool
     let scrollToLast: Bool
+    let chatURL: URL
     let failureMessage: String?
 
     init(arguments: [String]) {
+        chatURL = Self.makeChatURL(scrollToLast: arguments.contains(Self.scrollToLastArgument))
         guard arguments.contains(Self.launchArgument),
               let edgeArgument = arguments.first(where: { $0.hasPrefix(Self.edgePrefix) }) else {
             edge = .bottom
@@ -1148,6 +1137,55 @@ struct WIb6SafeAreaCaptureFixtureConfiguration {
         keyboardUp = arguments.contains(Self.keyboardUpArgument)
         scrollToLast = arguments.contains(Self.scrollToLastArgument)
         failureMessage = nil
+    }
+
+    private static func makeChatURL(scrollToLast: Bool) -> URL {
+        let initialScroll = scrollToLast
+            ? "document.getElementById('last').scrollIntoView({block:'end', behavior:'auto'});"
+            : ""
+        let html = """
+        <!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          html, body { margin: 0; min-height: 100%; background: #f3efe7; color: #27313b;
+            font: 16px -apple-system, sans-serif; }
+          main { display: flex; flex-direction: column; gap: 12px; padding: 16px 16px 72px; }
+          .message { min-height: 54px; padding: 14px; border-radius: 14px; background: white;
+            box-sizing: border-box; }
+          #latest { position: fixed; z-index: 2; right: 14px; bottom: 14px; width: 38px; height: 38px;
+            border: 0; border-radius: 19px; background: rgba(255,255,255,.88); color: #27313b;
+            font-size: 18px; }
+        </style>
+        <main id="messages">
+          <div class="message" id="first">First synthetic message</div>
+          <div class="message">Synthetic conversation message 1</div>
+          <div class="message">Synthetic conversation message 2</div>
+          <div class="message">Synthetic conversation message 3</div>
+          <div class="message">Synthetic conversation message 4</div>
+          <div class="message">Synthetic conversation message 5</div>
+          <div class="message">Synthetic conversation message 6</div>
+          <div class="message">Synthetic conversation message 7</div>
+          <div class="message">Synthetic conversation message 8</div>
+          <div class="message">Synthetic conversation message 9</div>
+          <div class="message">Synthetic conversation message 10</div>
+          <div class="message">Synthetic conversation message 11</div>
+          <div class="message">Synthetic conversation message 12</div>
+          <div class="message">Synthetic conversation message 13</div>
+          <div class="message">Synthetic conversation message 14</div>
+          <div class="message">Synthetic conversation message 15</div>
+          <div class="message" id="last">Last synthetic message</div>
+        </main>
+        <button id="latest" aria-label="Scroll to latest">↓</button>
+        <script>
+          document.getElementById('latest').addEventListener('click', () =>
+            document.getElementById('last').scrollIntoView({block:'end', behavior:'smooth'}));
+          window.addEventListener('load', () => requestAnimationFrame(() => { \(initialScroll) }));
+        </script>
+        """
+        let encodedHTML = Data(html.utf8).base64EncodedString()
+        guard let url = URL(string: "data:text/html;charset=utf-8;base64,\(encodedHTML)") else {
+            preconditionFailure("Unable to construct inert WIb6 page URL")
+        }
+        return url
     }
 }
 

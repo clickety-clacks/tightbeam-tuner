@@ -94,4 +94,24 @@ final class ComposerSafeAreaTests: XCTestCase {
         XCTAssertFalse(keyboardDown.scrollToLast)
         XCTAssertNil(keyboardDown.failureMessage)
     }
+
+    func testCaptureFixtureUsesSelfContainedSyntheticChatPage() {
+        let fixture = WIb6SafeAreaCaptureFixtureConfiguration(arguments: [
+            WIb6SafeAreaCaptureFixtureConfiguration.launchArgument,
+            "--wib6-filter-edge=top",
+            "--wib6-scroll-to-last",
+        ])
+
+        XCTAssertEqual(fixture.chatURL.scheme, "data")
+        XCTAssertNil(fixture.chatURL.host)
+
+        guard let encodedHTML = fixture.chatURL.absoluteString.split(separator: ",", maxSplits: 1).last,
+              let pageData = Data(base64Encoded: String(encodedHTML)),
+              let page = String(data: pageData, encoding: .utf8) else {
+            return XCTFail("The fixture should embed its page without a server")
+        }
+        XCTAssertTrue(page.contains("First synthetic message"))
+        XCTAssertTrue(page.contains("Last synthetic message"))
+        XCTAssertFalse(page.contains(ChatHostBridge.commandEntryName))
+    }
 }
