@@ -16,18 +16,26 @@ final class RepliedTests: XCTestCase {
             compactDetailSelected: true,
             sceneIsActive: true
         ).sessionKeyOnScreen, "agent:alpha")
-        XCTAssertEqual(RepliedShownChat(
+        let regularSessionToken = RepliedShownChat(
             selectedSessionKey: "agent:alpha",
             compactWidth: false,
             compactDetailSelected: false,
             sceneIsActive: true
-        ).sessionKeyOnScreen, "agent:alpha")
-        XCTAssertNil(RepliedShownChat(
+        ).sessionKeyOnScreen
+        let regularSelection = RepliedShownChat.decodeSessionKey(regularSessionToken)
+        XCTAssertEqual(regularSelection.sessionKey, "agent:alpha")
+        XCTAssertTrue(regularSelection.regularWidth)
+        XCTAssertTrue(regularSelection.visible)
+        let inactiveRegularSessionToken = RepliedShownChat(
             selectedSessionKey: "agent:alpha",
             compactWidth: false,
             compactDetailSelected: true,
             sceneIsActive: false
-        ).sessionKeyOnScreen)
+        ).sessionKeyOnScreen
+        let inactiveRegularSelection = RepliedShownChat.decodeSessionKey(inactiveRegularSessionToken)
+        XCTAssertEqual(inactiveRegularSelection.sessionKey, "agent:alpha")
+        XCTAssertTrue(inactiveRegularSelection.regularWidth)
+        XCTAssertFalse(inactiveRegularSelection.visible)
     }
 
     func testPagesSelectUnreadRepliesAndSortNewestFirst() throws {
@@ -160,6 +168,194 @@ final class RepliedTests: XCTestCase {
             filter: AgentListFilter(words: [], archetypes: [])
         )
         XCTAssertEqual(counts.agents, 0)
+    }
+
+    @MainActor func testRegularWidthShownReplyStaysUnreadUntilSelectingAnotherAgent() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(["agent:alpha": 2], forKey: "repliedLocalReadMarkers")
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha", "agent:beta"])
+        let shownAlpha = RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: false,
+            compactDetailSelected: false,
+            sceneIsActive: true
+        )
+        feed.updateShownSessionKey(shownAlpha.sessionKeyOnScreen)
+
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "delivered", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId,
+            "attempt": 1
+        ])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+        feed.apply(.message(try message(#"{"seq":3,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}"#)), userID: "reader")
+        feed.apply(.message(try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
+
+        XCTAssertFalse(feed.state.isWaitingForReply("agent:alpha"))
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 2)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+
+        let shownBeta = RepliedShownChat(
+            selectedSessionKey: "agent:beta",
+            compactWidth: false,
+            compactDetailSelected: false,
+            sceneIsActive: true
+        )
+        feed.updateShownSessionKey(shownBeta.sessionKeyOnScreen)
+
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 4)
+        XCTAssertEqual(defaults.dictionary(forKey: "repliedLocalReadMarkers")?["agent:alpha"] as? Int, 4)
+    }
+
+    @MainActor func testInactiveRegularSceneDoesNotReadReplyOrLoseSelection() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(["agent:alpha": 2], forKey: "repliedLocalReadMarkers")
+        let feed = RepliedFeed(defaults: defaults)
+        let shownAlpha = RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: false,
+            compactDetailSelected: false,
+            sceneIsActive: true
+        )
+        feed.updateShownSessionKey(shownAlpha.sessionKeyOnScreen)
+
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "delivered", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId,
+            "attempt": 1
+        ])
+        feed.apply(.message(try message(#"{"seq":3,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}"#)), userID: "reader")
+
+        let inactiveAlpha = RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: false,
+            compactDetailSelected: false,
+            sceneIsActive: false
+        )
+        let inactiveSelection = RepliedShownChat.decodeSessionKey(inactiveAlpha.sessionKeyOnScreen)
+        XCTAssertEqual(inactiveSelection.sessionKey, "agent:alpha")
+        XCTAssertTrue(inactiveSelection.regularWidth)
+        XCTAssertFalse(inactiveSelection.visible)
+        feed.updateShownSessionKey(inactiveAlpha.sessionKeyOnScreen)
+        feed.apply(.message(try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
+
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 2)
+
+        feed.updateShownSessionKey(shownAlpha.sessionKeyOnScreen)
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 2)
+
+        feed.updateShownSessionKey(RepliedShownChat(
+            selectedSessionKey: "agent:beta",
+            compactWidth: false,
+            compactDetailSelected: false,
+            sceneIsActive: true
+        ).sessionKeyOnScreen)
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 4)
+    }
+
+    func testCompactSessionKeyThatMatchesRegularWidthPrefixIsPreserved() {
+        let sessionKey = "\u{001F}regular-width:agent:alpha"
+        let compactDetail = RepliedShownChat(
+            selectedSessionKey: sessionKey,
+            compactWidth: true,
+            compactDetailSelected: true,
+            sceneIsActive: true
+        )
+
+        let selection = RepliedShownChat.decodeSessionKey(compactDetail.sessionKeyOnScreen)
+        XCTAssertEqual(selection.sessionKey, sessionKey)
+        XCTAssertFalse(selection.regularWidth)
+        XCTAssertTrue(selection.visible)
+    }
+
+    @MainActor func testRegularShownUnpromptedReplyKeepsExistingAutoReadBehavior() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let shownAlpha = RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: false,
+            compactDetailSelected: false,
+            sceneIsActive: true
+        )
+        feed.updateShownSessionKey(shownAlpha.sessionKeyOnScreen)
+
+        feed.apply(.message(try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
+
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 4)
+    }
+
+    @MainActor func testCompactWidthShownReplyStillAutoReadsOnArrival() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(["agent:alpha": 2], forKey: "repliedLocalReadMarkers")
+        let feed = RepliedFeed(defaults: defaults)
+        let compactDetail = RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: true,
+            compactDetailSelected: true,
+            sceneIsActive: true
+        )
+        feed.updateShownSessionKey(compactDetail.sessionKeyOnScreen)
+
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId,
+            "attempt": 1
+        ])
+        feed.apply(.message(try message(#"{"seq":3,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}"#)), userID: "reader")
+        feed.apply(.message(try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
+
+        XCTAssertFalse(feed.state.isWaitingForReply("agent:alpha"))
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 4)
+    }
+
+    @MainActor func testRegularShownSubstrateNoticeKeepsExistingBehavior() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(["agent:alpha": 2], forKey: "repliedLocalReadMarkers")
+        let feed = RepliedFeed(defaults: defaults)
+        let shownAlpha = RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: false,
+            compactDetailSelected: false,
+            sceneIsActive: true
+        )
+        feed.updateShownSessionKey(shownAlpha.sessionKeyOnScreen)
+
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId,
+            "attempt": 1
+        ])
+        feed.apply(.message(try message(#"{"seq":3,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}"#)), userID: "reader")
+        feed.apply(.message(try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":false}"#)), userID: "reader")
+
+        XCTAssertFalse(feed.state.isWaitingForReply("agent:alpha"))
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 2)
     }
 
     @MainActor func testDeliveredWithoutAcceptedMovesAgentIntoReplies() throws {
