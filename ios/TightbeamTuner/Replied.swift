@@ -17,7 +17,7 @@ struct RepliedMessage: Decodable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey { case seq, sessionKey, role, clientMessageId, turnIncludesHuman }
 }
 
-struct RepliedReadMarker: Decodable, Sendable, Equatable {
+struct RepliedReadMarker: Codable, Sendable, Equatable {
     let userId, scopeKey: String
     let marker: Int?
     let updatedAt: Int
@@ -123,14 +123,15 @@ enum RepliesRowIndicator: Equatable {
     case reply
 }
 
-struct RepliedState: Sendable {
+struct RepliedState: Codable, Sendable {
     private(set) var latestReplyBySession: [String: Int] = [:]
     private(set) var readMarkerBySession: [String: RepliedReadMarker] = [:]
     private(set) var localReadMarkerBySession: [String: Int]
     private(set) var retiredSessionKeys: Set<String> = []
-    private struct PendingPrompt: Sendable {
+    private struct PendingPrompt: Codable, Sendable {
         let sessionKey: String
         var promptSequence: Int?
+        let assistantSequenceAtAcceptance: Int?
     }
     private var pendingPromptsByID: [String: PendingPrompt] = [:]
     private var observedPromptSequencesBySession: [String: [String: Int]] = [:]
@@ -139,8 +140,6 @@ struct RepliedState: Sendable {
     private var completedPromptOrderBySession: [String: [String]] = [:]
     private var latestAssistantSequenceBySession: [String: Int] = [:]
     private var latestShownReplySequenceBySession: [String: Int] = [:]
-    // Keep every later message unread after a shown regular-width prompt reply until normal read/navigation.
-    private var regularWidthUnreadSessions: Set<String> = []
     private(set) var pendingOrderBySession: [String: Int] = [:]
     private var nextPendingOrder = 0
     private static let retainedPromptPositionsPerSession = 128
@@ -149,20 +148,17 @@ struct RepliedState: Sendable {
         self.localReadMarkerBySession = localReadMarkerBySession
     }
     mutating func markOpened(_ key: String) -> Int? {
-        regularWidthUnreadSessions.remove(key)
         guard let reply = latestReplyBySession[key] else { return nil }
         let marker = max(reply, localReadMarkerBySession[key] ?? Int.min)
         localReadMarkerBySession[key] = marker
         return marker
     }
     mutating func apply(_ message: RepliedMessage) {
-        _ = apply(message, shownSessionKey: nil, regularWidthShownChat: false)
+        _ = apply(message, shownSessionKey: nil)
     }
     mutating func apply(
         _ message: RepliedMessage,
-        shownSessionKey: String?,
-        regularWidthShownChat: Bool = false,
-        regularWidthSelectionSessionKey: String? = nil
+        shownSessionKey: String?
     ) -> Bool {
         var readMarkerChanged = false
         if message.role == "user", let correlationID = message.clientMessageId {
@@ -179,15 +175,7 @@ struct RepliedState: Sendable {
                 if alreadyCompleted {
                     rememberCompletedPrompt(sessionKey: message.sessionKey, correlationID: correlationID)
                     removePendingPrompt(correlationID, sessionKey: message.sessionKey)
-                    let latestReply = latestReplyBySession[message.sessionKey, default: Int.min]
-                    let currentReadMarker = localReadMarkerBySession[message.sessionKey, default: Int.min]
-                    let hasUnreadReply = latestReply > currentReadMarker
-                    if regularWidthShownChat,
-                       message.sessionKey == regularWidthSelectionSessionKey,
-                       hasUnreadReply {
-                        regularWidthUnreadSessions.insert(message.sessionKey)
-                    } else if !regularWidthShownChat,
-                       latestShownReplySequenceBySession[message.sessionKey, default: Int.min] > promptSequence {
+                    if latestShownReplySequenceBySession[message.sessionKey, default: Int.min] > promptSequence {
                         readMarkerChanged = advanceLocalReadMarkerIfSafe(message.sessionKey)
                     }
                 }
@@ -196,19 +184,21 @@ struct RepliedState: Sendable {
             }
         }
 
-        var completedPendingPrompt = false
         if message.role == "assistant" {
             latestAssistantSequenceBySession[message.sessionKey] = max(
                 latestAssistantSequenceBySession[message.sessionKey] ?? Int.min,
                 message.seq
             )
             let completedPrompts = pendingPromptsByID.compactMap { correlationID, prompt -> String? in
-                guard prompt.sessionKey == message.sessionKey,
-                      let promptSequence = prompt.promptSequence,
-                      message.seq > promptSequence else { return nil }
+                guard prompt.sessionKey == message.sessionKey else { return nil }
+                if let promptSequence = prompt.promptSequence {
+                    guard message.seq > promptSequence else { return nil }
+                } else {
+                    guard let acceptedAfterSequence = prompt.assistantSequenceAtAcceptance,
+                          message.seq > acceptedAfterSequence else { return nil }
+                }
                 return correlationID
             }
-            completedPendingPrompt = !completedPrompts.isEmpty
             for correlationID in completedPrompts {
                 rememberCompletedPrompt(sessionKey: message.sessionKey, correlationID: correlationID)
                 removePendingPrompt(correlationID, sessionKey: message.sessionKey)
@@ -217,22 +207,11 @@ struct RepliedState: Sendable {
 
         guard message.role == "assistant", message.turnIncludesHuman else { return readMarkerChanged }
         latestReplyBySession[message.sessionKey] = max(latestReplyBySession[message.sessionKey] ?? Int.min, message.seq)
-        let latestReply = latestReplyBySession[message.sessionKey, default: Int.min]
-        let readMarker = localReadMarkerBySession[message.sessionKey, default: Int.min]
-        if regularWidthShownChat,
-           message.sessionKey == regularWidthSelectionSessionKey,
-           completedPendingPrompt,
-           latestReply > readMarker {
-            regularWidthUnreadSessions.insert(message.sessionKey)
-        }
         guard message.sessionKey == shownSessionKey else { return readMarkerChanged }
         latestShownReplySequenceBySession[message.sessionKey] = max(
             latestShownReplySequenceBySession[message.sessionKey] ?? Int.min,
             message.seq
         )
-        guard !(regularWidthShownChat && regularWidthUnreadSessions.contains(message.sessionKey)) else {
-            return readMarkerChanged
-        }
         return advanceLocalReadMarkerIfSafe(message.sessionKey) || readMarkerChanged
     }
 
@@ -287,7 +266,6 @@ struct RepliedState: Sendable {
         let previousMarker = localReadMarkerBySession[sessionKey] ?? Int.min
         guard shownReply > previousMarker else { return false }
         localReadMarkerBySession[sessionKey] = shownReply
-        regularWidthUnreadSessions.remove(sessionKey)
         return true
     }
     mutating func apply(_ marker: RepliedReadMarker, userID: String) {
@@ -296,27 +274,18 @@ struct RepliedState: Sendable {
         let key = String(marker.scopeKey.dropLast(suffix.count))
         if let current = readMarkerBySession[key], current.updatedAt > marker.updatedAt { return }
         readMarkerBySession[key] = marker
-        if let latestReply = latestReplyBySession[key],
-           let readMarker = marker.marker,
-           readMarker >= latestReply {
-            regularWidthUnreadSessions.remove(key)
-        }
     }
     mutating func apply(_ frame: RepliedFrame, userID: String) {
-        _ = apply(frame, userID: userID, shownSessionKey: nil, regularWidthShownChat: false)
+        _ = apply(frame, userID: userID, shownSessionKey: nil)
     }
     mutating func apply(
         _ frame: RepliedFrame,
         userID: String,
-        shownSessionKey: String?,
-        regularWidthShownChat: Bool = false,
-        regularWidthSelectionSessionKey: String? = nil
+        shownSessionKey: String?
     ) -> Bool {
         switch frame {
         case .message(let message):
-            return apply(message, shownSessionKey: shownSessionKey,
-                         regularWidthShownChat: regularWidthShownChat,
-                         regularWidthSelectionSessionKey: regularWidthSelectionSessionKey)
+            return apply(message, shownSessionKey: shownSessionKey)
         case .readMarker(let marker): apply(marker, userID: userID)
         case .sessionSpawned(let agent), .sessionUpdated(let agent), .sessionHarnessChanged(let agent):
             retiredSessionKeys.remove(agent.id)
@@ -341,7 +310,8 @@ struct RepliedState: Sendable {
         }
         pendingPromptsByID[correlationID] = PendingPrompt(
             sessionKey: sessionKey,
-            promptSequence: promptSequence
+            promptSequence: promptSequence,
+            assistantSequenceAtAcceptance: latestAssistantSequenceBySession[sessionKey]
         )
     }
 
@@ -352,6 +322,10 @@ struct RepliedState: Sendable {
 
     func isWaitingForReply(_ sessionKey: String) -> Bool {
         pendingPromptsByID.values.contains(where: { $0.sessionKey == sessionKey })
+    }
+
+    func needsSnapshotRefresh(_ sessionKey: String) -> Bool {
+        latestReplyBySession[sessionKey] != nil || isWaitingForReply(sessionKey)
     }
 
     func pendingPromptIDs(for sessionKey: String) -> Set<String> {
@@ -370,71 +344,62 @@ struct RepliedState: Sendable {
     }
 
     func agents(from roster: [Agent]) -> [Agent] {
-        roster.compactMap { agent -> (Agent, RepliesRowIndicator, Int, Int)? in
-            guard let indicator = rowIndicator(for: agent.id) else { return nil }
-            return (agent, indicator, pendingOrderBySession[agent.id] ?? Int.min,
-                    latestReplyBySession[agent.id] ?? Int.min)
-        }
+        roster.filter { rowIndicator(for: $0.id) == .reply }
         .sorted {
-            if $0.1 != $1.1 { return $0.1 == .waiting }
-            let leftOrder = $0.1 == .waiting ? $0.2 : $0.3
-            let rightOrder = $1.1 == .waiting ? $1.2 : $1.3
-            return leftOrder == rightOrder ? $0.0.id < $1.0.id : leftOrder > rightOrder
+            let leftOrder = latestReplyBySession[$0.id] ?? Int.min
+            let rightOrder = latestReplyBySession[$1.id] ?? Int.min
+            return leftOrder == rightOrder ? $0.id < $1.id : leftOrder > rightOrder
         }
-        .map { $0.0 }
     }
 
     func agentsInMainSection(from roster: [Agent]) -> [Agent] {
-        roster.filter { !isWaitingForReply($0.id) }
+        roster
+    }
+
+    func visibleRecentAgents(from recentAgents: [Agent], limit: Int) -> [Agent] {
+        guard limit > 0 else { return [] }
+        let visibleCount = min(limit, recentAgents.count)
+        let visible = Array(recentAgents.prefix(visibleCount))
+        var included = Set(visible.map(\.id))
+        return visible + recentAgents.dropFirst(visibleCount).filter { agent in
+            isWaitingForReply(agent.id) && included.insert(agent.id).inserted
+        }
     }
 }
 
 struct RepliedTaskKey: Equatable {
-    let gateway, user: String
+    let connection: Connection
     let sessionKeys: [String]
 }
 
 struct RepliedShownChat {
-    private static let regularWidthPrefix = "\u{001F}regular-width:"
-    private static let inactiveRegularWidthPrefix = "\u{001F}regular-width-inactive:"
-
     let selectedSessionKey: String?
     let compactWidth: Bool
     let compactDetailSelected: Bool
     let sceneIsActive: Bool
 
-    /// ContentView's existing String? callback carries this selection token only to RepliedFeed.
-    /// The prefix preserves regular-width state across the existing String? seam without changing ContentView.
     var sessionKeyOnScreen: String? {
-        guard let selectedSessionKey,
-              !compactWidth || (compactDetailSelected && sceneIsActive) else { return nil }
-        if compactWidth { return selectedSessionKey }
-        let prefix = sceneIsActive ? Self.regularWidthPrefix : Self.inactiveRegularWidthPrefix
-        return prefix + selectedSessionKey
-    }
-
-    static func decodeSessionKey(_ value: String?) -> (sessionKey: String?, regularWidth: Bool, visible: Bool) {
-        guard let value else { return (nil, false, false) }
-        if value.hasPrefix(inactiveRegularWidthPrefix) {
-            return (String(value.dropFirst(inactiveRegularWidthPrefix.count)), true, false)
-        }
-        if value.hasPrefix(regularWidthPrefix) {
-            return (String(value.dropFirst(regularWidthPrefix.count)), true, true)
-        }
-        return (value, false, true)
+        guard sceneIsActive, let selectedSessionKey,
+              !compactWidth || compactDetailSelected else { return nil }
+        return selectedSessionKey
     }
 }
 
 @MainActor @Observable final class RepliedFeed {
+    private struct StateSnapshot: Codable {
+        let schemaVersion: Int
+        let connection: Connection
+        let state: RepliedState
+    }
+
     private(set) var state = RepliedState()
     private(set) var shownSessionKey: String?
     private static let localReadMarkersKey = "repliedLocalReadMarkers"
+    private static let stateSnapshotKey = "repliedStateSnapshot.v1"
+    private static let stateSnapshotSchemaVersion = 1
     private let defaults: UserDefaults
-    private var stateGateway: String?
-    private var stateUser: String?
+    private var activeConnection: Connection?
     private var subscriptionState = RepliedSubscriptionState()
-    private var shownChatIsRegularWidth = false
-    private var regularWidthSelectedSessionKey: String?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -445,31 +410,49 @@ struct RepliedShownChat {
         defaults.dictionary(forKey: localReadMarkersKey)?.compactMapValues { $0 as? Int } ?? [:]
     }
 
+    func activateConnection(_ connection: Connection) {
+        guard activeConnection != connection else { return }
+        activeConnection = connection
+        subscriptionState.reset()
+        if let data = defaults.data(forKey: Self.stateSnapshotKey),
+           let snapshot = try? JSONDecoder().decode(StateSnapshot.self, from: data),
+           snapshot.schemaVersion == Self.stateSnapshotSchemaVersion,
+           snapshot.connection == connection {
+            state = snapshot.state
+        } else {
+            state = RepliedState(localReadMarkerBySession: Self.localReadMarkers(from: defaults))
+        }
+    }
+
     func markOpened(_ key: String) {
         guard state.markOpened(key) != nil else { return }
         persistLocalReadMarkers()
+        persistStateSnapshot()
     }
 
     func updateShownSessionKey(_ key: String?) {
-        let selection = RepliedShownChat.decodeSessionKey(key)
-        if let previousSessionKey = regularWidthSelectedSessionKey,
-           previousSessionKey != selection.sessionKey {
-            markOpened(previousSessionKey)
-        }
-        shownSessionKey = selection.visible ? selection.sessionKey : nil
-        shownChatIsRegularWidth = selection.regularWidth && selection.sessionKey != nil
-        regularWidthSelectedSessionKey = shownChatIsRegularWidth ? selection.sessionKey : nil
+        shownSessionKey = key
     }
 
     func apply(_ frame: RepliedFrame, userID: String) {
         apply(frame, userID: userID, shownSessionKey: shownSessionKey)
     }
 
-    private func apply(_ frame: RepliedFrame, userID: String, shownSessionKey: String?) {
-        if state.apply(frame, userID: userID, shownSessionKey: shownSessionKey,
-                       regularWidthShownChat: shownChatIsRegularWidth,
-                       regularWidthSelectionSessionKey: regularWidthSelectedSessionKey) {
+    private func apply(
+        _ frame: RepliedFrame,
+        userID: String,
+        shownSessionKey: String?,
+        persistSnapshot: Bool = true
+    ) {
+        if state.apply(frame, userID: userID, shownSessionKey: shownSessionKey) {
             persistLocalReadMarkers()
+        }
+        guard persistSnapshot else { return }
+        switch frame {
+        case .message, .readMarker, .sessionSpawned, .sessionUpdated, .sessionHarnessChanged, .retired:
+            persistStateSnapshot()
+        default:
+            break
         }
     }
 
@@ -477,8 +460,10 @@ struct RepliedShownChat {
         switch status {
         case .accepted, .delivered:
             state.acceptPrompt(sessionKey: sessionKey, correlationID: correlationID)
+            persistStateSnapshot()
         case .failed(_):
             state.failPrompt(sessionKey: sessionKey, correlationID: correlationID)
+            persistStateSnapshot()
         case .sending, .uncertain, .interrupted:
             break
         }
@@ -488,19 +473,26 @@ struct RepliedShownChat {
         defaults.set(state.localReadMarkerBySession, forKey: Self.localReadMarkersKey)
     }
 
+    private func persistStateSnapshot() {
+        guard let activeConnection else { return }
+        let snapshot = StateSnapshot(
+            schemaVersion: Self.stateSnapshotSchemaVersion,
+            connection: activeConnection,
+            state: state
+        )
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(data, forKey: Self.stateSnapshotKey)
+    }
+
     func run(
-        gateway: String,
-        user: String,
+        connection: Connection,
         sessionKeys: [String],
         onRosterEvent: @escaping @MainActor (RepliedFrame) -> Void,
         onReconnect: @escaping @MainActor () async -> Void
     ) async {
-        if stateGateway != gateway || stateUser != user {
-            state = RepliedState(localReadMarkerBySession: Self.localReadMarkers(from: defaults))
-            stateGateway = gateway
-            stateUser = user
-            subscriptionState.reset()
-        }
+        activateConnection(connection)
+        let gateway = connection.gateway
+        let user = connection.tightbeamUser
         guard let url = RepliedAPI.webSocketURL(gateway: gateway) else { return }
         var retry: UInt64 = 1
         var firstLoad = true
@@ -554,8 +546,9 @@ struct RepliedShownChat {
         let markers = await fetchMarkers(gateway, user)
         guard !Task.isCancelled else { return }
         for marker in markers { state.apply(marker, userID: user) }
+        defer { persistStateSnapshot() }
         let keysToFetch = markers.isEmpty
-            ? sessionKeys.filter { state.isWaitingForReply($0) }
+            ? sessionKeys.filter { state.needsSnapshotRefresh($0) }
             : sessionKeys
         guard !keysToFetch.isEmpty else { return }
         let requests = keysToFetch.map { key -> (String, Set<String>, Int?) in
@@ -576,7 +569,8 @@ struct RepliedShownChat {
                 guard !Task.isCancelled else { group.cancelAll(); return }
                 if let messages {
                     for message in messages where message.sessionKey == key {
-                        apply(.message(message), userID: user)
+                        apply(.message(message), userID: user, shownSessionKey: shownSessionKey,
+                              persistSnapshot: false)
                     }
                 }
                 if next < requests.count {

@@ -134,14 +134,12 @@ struct ContentView: View {
             else { showingSettings = true }
         }
         .task(id: RepliedTaskKey(
-            gateway: store.connection.gateway,
-            user: store.connection.tightbeamUser,
+            connection: store.connection,
             sessionKeys: store.agents.map(\.id).sorted()
         )) {
             let sessionKeys = store.agents.map(\.id).sorted()
             guard store.connection.isComplete else { return }
-            await repliedFeed.run(gateway: store.connection.gateway, user: store.connection.tightbeamUser,
-                                  sessionKeys: sessionKeys,
+            await repliedFeed.run(connection: store.connection, sessionKeys: sessionKeys,
                                   onRosterEvent: { frame in store.applyRosterEvent(frame) },
                                   onReconnect: { await store.refresh() })
         }
@@ -450,6 +448,7 @@ private struct AgentBranch: View {
     let node: AgentNode
     let filtering: Bool
     let selectedID: String?
+    let waitingSessionKeys: Set<String>
     @Binding var collapsed: Set<String>
 
     private var rowBackground: Color {
@@ -459,7 +458,8 @@ private struct AgentBranch: View {
     var body: some View {
         if node.children.isEmpty {
             NavigationLink(value: node.id) {
-                AgentRowLabel(agent: node.agent, contextOnly: node.contextOnly)
+                AgentRowLabel(agent: node.agent, contextOnly: node.contextOnly,
+                              waitingForReply: waitingSessionKeys.contains(node.id))
             }
             .listRowBackground(rowBackground)
         } else {
@@ -469,11 +469,13 @@ private struct AgentBranch: View {
             )) {
                 ForEach(node.children) { child in
                     AgentBranch(node: child, filtering: filtering, selectedID: selectedID,
+                                waitingSessionKeys: waitingSessionKeys,
                                 collapsed: $collapsed)
                 }
             } label: {
                 NavigationLink(value: node.id) {
-                    AgentRowLabel(agent: node.agent, contextOnly: node.contextOnly)
+                    AgentRowLabel(agent: node.agent, contextOnly: node.contextOnly,
+                                  waitingForReply: waitingSessionKeys.contains(node.id))
                 }
             }
             .listRowBackground(rowBackground)
@@ -537,6 +539,12 @@ private struct AgentSidebar: View {
         repliedFeed.state.agentsInMainSection(from: store.agents)
     }
 
+    private var waitingSessionKeys: Set<String> {
+        Set(store.agents.compactMap { agent in
+            repliedFeed.state.isWaitingForReply(agent.id) ? agent.id : nil
+        })
+    }
+
     private var visibleRoots: [AgentNode] {
         let agents = mainSectionAgents
         let ids = Set(agents.map(\.id))
@@ -573,10 +581,10 @@ private struct AgentSidebar: View {
         List(selection: $store.selectedID) {
             let filter = listFilter
             let replied = repliedFeed.state.agents(from: store.agents)
-            let recents = store.recentAgents.prefix(maxRecents)
+            let recents = repliedFeed.state.visibleRecentAgents(from: store.recentAgents, limit: maxRecents)
             let matchingReplied = replied.filter { filter.matches($0) }
             let matchingRecents = recents.filter { filter.matches($0) }
-            let counts = AgentSectionCounts(replied: replied, recent: Array(recents),
+            let counts = AgentSectionCounts(replied: replied, recent: recents,
                                             agents: mainSectionAgents, filter: filter)
             if store.isLoading {
                 ProgressView("Loading agents…")
@@ -622,7 +630,9 @@ private struct AgentSidebar: View {
                 Section(isExpanded: $recentSectionExpanded) {
                     ForEach(matchingRecents) { agent in
                         NavigationLink(value: agent.id) {
-                            AgentRowLabel(agent: agent, symbol: "clock")
+                            let waitingForReply = repliedFeed.state.isWaitingForReply(agent.id)
+                            AgentRowLabel(agent: agent, symbol: waitingForReply ? nil : "clock",
+                                          waitingForReply: waitingForReply)
                         }
                         .listRowBackground(store.selectedID == agent.id
                             ? Color.nordicSelection : Color.nordicSurface)
@@ -643,7 +653,8 @@ private struct AgentSidebar: View {
             Section(isExpanded: $agentsSectionExpanded) {
                 ForEach(visibleRoots) { node in
                     AgentBranch(node: node, filtering: !words.isEmpty || !selectedArchetypes.isEmpty,
-                                selectedID: store.selectedID, collapsed: $collapsed)
+                                selectedID: store.selectedID, waitingSessionKeys: waitingSessionKeys,
+                                collapsed: $collapsed)
                 }
             } header: {
                 AgentSectionHeader(title: "Agents", count: counts.agents)
