@@ -307,6 +307,45 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 6)
     }
 
+    @MainActor func testRegularShownTwoAssistantMessagesStayInRepliesUntilLeaving() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(["agent:alpha": 2], forKey: "repliedLocalReadMarkers")
+        let feed = RepliedFeed(defaults: defaults)
+        feed.updateShownSessionKey(RepliedShownChat(
+            selectedSessionKey: "agent:alpha",
+            compactWidth: false,
+            compactDetailSelected: false,
+            sceneIsActive: true
+        ).sessionKeyOnScreen)
+
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "delivered", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId,
+            "attempt": 1
+        ])
+        feed.apply(.message(try message(#"{"seq":3,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}"#)), userID: "reader")
+        feed.apply(.message(try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
+        feed.apply(.message(try message(#"{"seq":5,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
+
+        XCTAssertFalse(feed.state.isWaitingForReply("agent:alpha"))
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 2)
+
+        feed.updateShownSessionKey(RepliedShownChat(
+            selectedSessionKey: "agent:beta",
+            compactWidth: false,
+            compactDetailSelected: false,
+            sceneIsActive: true
+        ).sessionKeyOnScreen)
+
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+        XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 5)
+    }
+
     @MainActor func testRegularShownLatePromptEchoStartsHoldForFollowingAssistantMessage() throws {
         let (defaults, suiteName) = try testDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
