@@ -14,6 +14,22 @@ struct Agent: Codable, Identifiable, Hashable, Sendable {
     let model: String?
     let effort: String?
 
+    var rowDescription: String? {
+        let archetype = archetype?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let runtimeDetails = [model, effort]
+            .compactMap { value -> String? in
+                guard let value else { return nil }
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            .joined(separator: " ")
+
+        guard let archetype, !archetype.isEmpty else {
+            return runtimeDetails.isEmpty ? nil : runtimeDetails
+        }
+        return runtimeDetails.isEmpty ? archetype : "\(archetype) • \(runtimeDetails)"
+    }
+
     enum CodingKeys: String, CodingKey {
         case id = "sessionKey"
         case name = "displayName"

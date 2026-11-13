@@ -10,6 +10,7 @@ final class RosterCacheTests: XCTestCase {
 
         XCTAssertEqual(agent.model, "gpt-6.1")
         XCTAssertEqual(agent.effort, "high")
+        XCTAssertEqual(agent.rowDescription, "Coder • gpt-6.1 high")
 
         let restored = try JSONDecoder().decode(Agent.self, from: JSONEncoder().encode(agent))
         XCTAssertEqual(restored.model, "gpt-6.1")
@@ -24,10 +25,20 @@ final class RosterCacheTests: XCTestCase {
 
         XCTAssertEqual(agent.model, "gpt-6.1")
         XCTAssertNil(agent.effort)
+        XCTAssertEqual(agent.rowDescription, "Coder • gpt-6.1")
 
         let encoded = try JSONEncoder().encode(agent)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         XCTAssertNil(object["effort"])
+    }
+
+    func testRosterDescriptionKeepsArchetypeWhenRuntimeDetailsAreAbsent() throws {
+        let agent = try JSONDecoder().decode(
+            Roster.self,
+            from: roster("agent:legacy", "Legacy")
+        ).sessions[0]
+
+        XCTAssertEqual(agent.rowDescription, "Coder")
     }
 
     @MainActor
