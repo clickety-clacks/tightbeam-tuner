@@ -135,6 +135,8 @@ struct RepliedState: Sendable {
     private var pendingPromptsByID: [String: PendingPrompt] = [:]
     private var observedPromptSequencesBySession: [String: [String: Int]] = [:]
     private var observedPromptOrderBySession: [String: [String]] = [:]
+    private var completedPromptIDsBySession: [String: Set<String>] = [:]
+    private var completedPromptOrderBySession: [String: [String]] = [:]
     private var latestAssistantSequenceBySession: [String: Int] = [:]
     private var latestShownReplySequenceBySession: [String: Int] = [:]
     private(set) var pendingOrderBySession: [String: Int] = [:]
@@ -164,16 +166,20 @@ struct RepliedState: Sendable {
                 correlationID: correlationID,
                 sequence: message.seq
             )
+            let latestAssistantSequence = latestAssistantSequenceBySession[message.sessionKey, default: Int.min]
+            let alreadyCompleted = latestAssistantSequence > promptSequence
             if var prompt = pendingPromptsByID[correlationID], prompt.sessionKey == message.sessionKey {
                 if prompt.promptSequence == nil { prompt.promptSequence = promptSequence }
                 pendingPromptsByID[correlationID] = prompt
-                if let latestAssistant = latestAssistantSequenceBySession[message.sessionKey],
-                   latestAssistant > promptSequence {
+                if alreadyCompleted {
+                    rememberCompletedPrompt(sessionKey: message.sessionKey, correlationID: correlationID)
                     removePendingPrompt(correlationID, sessionKey: message.sessionKey)
                     if latestShownReplySequenceBySession[message.sessionKey, default: Int.min] > promptSequence {
                         readMarkerChanged = advanceLocalReadMarkerIfSafe(message.sessionKey)
                     }
                 }
+            } else if alreadyCompleted {
+                rememberCompletedPrompt(sessionKey: message.sessionKey, correlationID: correlationID)
             }
         }
 
@@ -189,6 +195,7 @@ struct RepliedState: Sendable {
                 return correlationID
             }
             for correlationID in completedPrompts {
+                rememberCompletedPrompt(sessionKey: message.sessionKey, correlationID: correlationID)
                 removePendingPrompt(correlationID, sessionKey: message.sessionKey)
             }
         }
@@ -227,6 +234,19 @@ struct RepliedState: Sendable {
         if !pendingPromptsByID.values.contains(where: { $0.sessionKey == sessionKey }) {
             pendingOrderBySession.removeValue(forKey: sessionKey)
         }
+    }
+
+    private mutating func rememberCompletedPrompt(sessionKey: String, correlationID: String) {
+        var completed = completedPromptIDsBySession[sessionKey, default: []]
+        guard completed.insert(correlationID).inserted else { return }
+
+        var order = completedPromptOrderBySession[sessionKey, default: []]
+        order.append(correlationID)
+        while order.count > Self.retainedPromptPositionsPerSession {
+            completed.remove(order.removeFirst())
+        }
+        completedPromptIDsBySession[sessionKey] = completed
+        completedPromptOrderBySession[sessionKey] = order
     }
 
     private mutating func advanceLocalReadMarkerIfSafe(_ sessionKey: String) -> Bool {
@@ -272,7 +292,9 @@ struct RepliedState: Sendable {
     }
 
     mutating func acceptPrompt(sessionKey: String, correlationID: String) {
-        guard !retiredSessionKeys.contains(sessionKey), pendingPromptsByID[correlationID] == nil else { return }
+        guard !retiredSessionKeys.contains(sessionKey),
+              pendingPromptsByID[correlationID] == nil,
+              !completedPromptIDsBySession[sessionKey, default: []].contains(correlationID) else { return }
         let promptSequence = observedPromptSequencesBySession[sessionKey]?[correlationID]
         if let promptSequence,
            let latestAssistant = latestAssistantSequenceBySession[sessionKey],
@@ -388,11 +410,11 @@ struct RepliedShownChat {
 
     func observePromptStatus(_ status: ChatHostBridge.Status, sessionKey: String, correlationID: String) {
         switch status {
-        case .accepted:
+        case .accepted, .delivered:
             state.acceptPrompt(sessionKey: sessionKey, correlationID: correlationID)
         case .failed(_):
             state.failPrompt(sessionKey: sessionKey, correlationID: correlationID)
-        case .sending, .delivered, .uncertain, .interrupted:
+        case .sending, .uncertain, .interrupted:
             break
         }
     }
