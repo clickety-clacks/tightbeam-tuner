@@ -23,7 +23,8 @@ struct NativeChatComposer: View {
     private static let statusButtonSize: CGFloat = 34
     // The glass button's natural circle around the 20 pt icon is 34 pt.
     private static let sendButtonBaseCircleSize: CGFloat = 34
-    private static let standardVerticalGap: CGFloat = 5
+    // A 34 pt status button with 7 pt above and below yields a 48 pt one-line row.
+    private static let standardVerticalGap: CGFloat = 7
     private static let standardContentHeight = statusButtonSize + 2 * standardVerticalGap
     private var matchesCompactSearchHeight: Bool {
         (glassHeight ?? Self.standardContentHeight) < Self.standardContentHeight

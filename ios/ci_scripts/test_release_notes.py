@@ -63,7 +63,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
     def _render_signed_export(self, source, signed_export, output):
         return release_notes.main([
-            "render", "--build-number", "69", "--source", str(source),
+            "render", "--build-number", "70", "--source", str(source),
             "--history", str(self.history_source), "--signed-app-path", str(signed_export),
             "--output", str(output),
         ])
@@ -154,6 +154,19 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_shipped_build_69_notes_remain_available_after_current_note_advances(self):
+        note = release_notes.exact_note(self.history, 69)
+        self.assertEqual(note.build, 69)
+        self.assertEqual(
+            [(item.title, item.detail) for item in note.items],
+            [
+                (
+                    "Keep waiting agents on their rows",
+                    "After you send a prompt, the agent stays in its existing Recent and Agents rows with a spinner while it waits. Waiting agents stay in Recent even if the list grows beyond ten. After relaunch, agents still waiting regain their spinner, and existing Replies entries remain available. A reply stops the spinner and restores the existing Replies behavior; failed sends show no spinner.",
+                ),
+            ],
+        )
+
     def test_missing_historical_build_does_not_fall_back_to_latest(self):
         with self.assertRaisesRegex(release_notes.ReleaseNoteError, "build 57"):
             release_notes.exact_note(self.history, 57)
@@ -167,24 +180,29 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
     def test_selects_the_authored_note_only_for_its_exact_build_number(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            source = self._numbered_note_copy(Path(temporary_directory), 69)
+            source = self._numbered_note_copy(Path(temporary_directory), 70)
             original = source.read_bytes()
 
-            note = release_notes.note_for_build(source, self.history_source, 69)
-            selected, data = release_notes.load_current_note(source, expected_build=69)
+            note = release_notes.note_for_build(source, self.history_source, 70)
+            selected, data = release_notes.load_current_note(source, expected_build=70)
 
-            self.assertEqual(note.build, 69)
+            self.assertEqual(note.build, 70)
             self.assertEqual(selected, note)
-            self.assertEqual(data["build"], 69)
+            self.assertEqual(data["build"], 70)
             self.assertTrue(note.items)
             self.assertEqual(source.read_bytes(), original)
 
-    def test_current_proof_note_is_selected_only_for_build_69(self):
+    def test_current_proof_note_is_selected_only_for_build_70(self):
         note = release_notes.note_for_build(
+            self.current_source, self.history_source, 70
+        )
+        self.assertEqual(note.build, 70)
+        self.assertEqual(len(note.items), 1)
+
+        shipped = release_notes.note_for_build(
             self.current_source, self.history_source, 69
         )
-        self.assertEqual(note.build, 69)
-        self.assertEqual(len(note.items), 1)
+        self.assertEqual(shipped, release_notes.exact_note(self.history, 69))
 
         shipped = release_notes.note_for_build(
             self.current_source, self.history_source, 68
@@ -198,7 +216,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             release_notes.ReleaseNoteError,
-            "current draft is assigned to build 69",
+            "current draft is assigned to build 70",
         ):
             release_notes.note_for_build(self.current_source, self.history_source, 61)
 
@@ -241,7 +259,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 68"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 69"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )
@@ -249,8 +267,8 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_premerge_refuses_empty_author_note_items(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            current_note = self._numbered_note_copy(root, 69)
-            base_note = self._premerge_base_copy(root, 68)
+            current_note = self._numbered_note_copy(root, 70)
+            base_note = self._premerge_base_copy(root, 69)
             data = json.loads(current_note.read_text(encoding="utf-8"))
             data["items"] = []
             current_note.write_text(json.dumps(data), encoding="utf-8")
@@ -263,30 +281,30 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_premerge_accepts_fresh_note_with_matching_pr_number_and_run_source(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            current_note = self._numbered_note_copy(root, 69)
-            base_note = self._premerge_base_copy(root, 68)
+            current_note = self._numbered_note_copy(root, 70)
+            base_note = self._premerge_base_copy(root, 69)
             description = (
-                "Release note build number: 69\n"
-                "Build number source: latest Xcode Cloud run 68 (read at release-window preflight)\n"
+                "Release note build number: 70\n"
+                "Build number source: latest Xcode Cloud run 69 (read at release-window preflight)\n"
             )
 
             note = release_notes.validate_premerge_note(
                 current_note, self.history_source, base_note, pr_description=description
             )
 
-            self.assertEqual(note.build, 69)
+            self.assertEqual(note.build, 70)
 
     def test_premerge_rejects_pr_description_number_that_differs_from_the_note(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            current_note = self._numbered_note_copy(root, 69)
-            base_note = self._premerge_base_copy(root, 68)
+            current_note = self._numbered_note_copy(root, 70)
+            base_note = self._premerge_base_copy(root, 69)
             description = (
-                "Release note build number: 70\n"
-                "Build number source: latest Xcode Cloud run 68\n"
+                "Release note build number: 69\n"
+                "Build number source: latest Xcode Cloud run 69\n"
             )
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "names release-note build 70"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "names release-note build 69"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note, pr_description=description
                 )
@@ -294,14 +312,14 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_premerge_rejects_pr_description_source_that_does_not_imply_the_note_number(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            current_note = self._numbered_note_copy(root, 69)
-            base_note = self._premerge_base_copy(root, 68)
+            current_note = self._numbered_note_copy(root, 70)
+            base_note = self._premerge_base_copy(root, 69)
             description = (
-                "Release note build number: 69\n"
-                "Build number source: latest Xcode Cloud run 62\n"
+                "Release note build number: 70\n"
+                "Build number source: latest Xcode Cloud run 68\n"
             )
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "one greater than observed latest Xcode Cloud run 62"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "one greater than observed latest Xcode Cloud run 68"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note, pr_description=description
                 )
@@ -309,8 +327,8 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_premerge_cli_requires_pr_provenance_even_when_environment_value_is_missing(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            current_note = self._numbered_note_copy(root, 69)
-            base_note = self._premerge_base_copy(root, 68)
+            current_note = self._numbered_note_copy(root, 70)
+            base_note = self._premerge_base_copy(root, 69)
             errors = StringIO()
 
             with patch.dict("os.environ", {}, clear=True), redirect_stderr(errors):
@@ -326,19 +344,19 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_premerge_main_commit_does_not_require_a_pr_description(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            current_note = self._numbered_note_copy(root, 69)
-            base_note = self._premerge_base_copy(root, 68)
+            current_note = self._numbered_note_copy(root, 70)
+            base_note = self._premerge_base_copy(root, 69)
 
             note = release_notes.validate_premerge_note(
                 current_note, self.history_source, base_note
             )
 
-            self.assertEqual(note.build, 69)
+            self.assertEqual(note.build, 70)
 
     def test_two_sequential_archive_workspaces_refuse_a_reused_note_draft(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            committed_draft = self._numbered_note_copy(root, 69).read_bytes()
+            committed_draft = self._numbered_note_copy(root, 70).read_bytes()
             first_workspace = root / "archive-one"
             second_workspace = root / "archive-two"
             first_workspace.mkdir()
@@ -351,19 +369,19 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             first_errors = StringIO()
             with redirect_stderr(first_errors):
                 first_status = release_notes.main([
-                    "validate", "--build-number", "69", "--source", str(first_source),
+                    "validate", "--build-number", "70", "--source", str(first_source),
                     "--history", str(self.history_source),
                 ])
             second_errors = StringIO()
             with redirect_stderr(second_errors):
                 second_status = release_notes.main([
-                    "validate", "--build-number", "70", "--source", str(second_source),
+                    "validate", "--build-number", "71", "--source", str(second_source),
                     "--history", str(self.history_source),
                 ])
 
             self.assertEqual(first_status, 0)
             self.assertEqual(second_status, 1)
-            self.assertIn("current draft is assigned to build 69", second_errors.getvalue())
+            self.assertIn("current draft is assigned to build 70", second_errors.getvalue())
             self.assertEqual(first_source.read_bytes(), committed_draft)
             self.assertEqual(second_source.read_bytes(), committed_draft)
 
@@ -422,8 +440,8 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_render_reads_the_app_version_from_the_exported_testflight_ipa(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 69)
-            signed_export = self._signed_export_copy(root, [("TightbeamTuner", 69)])
+            source = self._numbered_note_copy(root, 70)
+            signed_export = self._signed_export_copy(root, [("TightbeamTuner", 70)])
             output = root / "WhatToTest.en-US.txt"
 
             status = self._render_signed_export(source, signed_export, output)
@@ -431,13 +449,13 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(
                 output.read_text(encoding="utf-8"),
-                release_notes.note_for_build(source, self.history_source, 69).tester_text(),
+                release_notes.note_for_build(source, self.history_source, 70).tester_text(),
             )
 
     def test_render_rejects_an_exported_ipa_with_a_different_bundle_build(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 69)
+            source = self._numbered_note_copy(root, 70)
             signed_export = self._signed_export_copy(root, [("TightbeamTuner", 63)])
             output = root / "WhatToTest.en-US.txt"
             errors = StringIO()
@@ -446,13 +464,13 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 status = self._render_signed_export(source, signed_export, output)
 
             self.assertEqual(status, 1)
-            self.assertIn("signed app CFBundleVersion 63 does not match build 69", errors.getvalue())
+            self.assertIn("signed app CFBundleVersion 63 does not match build 70", errors.getvalue())
             self.assertFalse(output.exists())
 
     def test_render_refuses_signed_ipa_with_no_app_bundles_and_lists_names_only(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 69)
+            source = self._numbered_note_copy(root, 70)
             signed_export = self._signed_export_copy(root, [])
             output = root / "WhatToTest.en-US.txt"
             errors = StringIO()
@@ -470,9 +488,9 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_render_refuses_signed_ipa_with_multiple_app_bundles_and_lists_names_only(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 69)
+            source = self._numbered_note_copy(root, 70)
             signed_export = self._signed_export_copy(
-                root, [("TightbeamTuner", 69), ("UnexpectedApp", 69)]
+                root, [("TightbeamTuner", 70), ("UnexpectedApp", 70)]
             )
             output = root / "WhatToTest.en-US.txt"
             errors = StringIO()
