@@ -4,6 +4,10 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 69, date: "November 13, 2026", items: [
+            .init(symbol: "hourglass", title: "Keep waiting agents on their rows",
+                  detail: "After you send a prompt, the agent stays in its existing Recent and Agents rows with a spinner while it waits. Waiting agents stay in Recent even if the list grows beyond ten. After relaunch, agents still waiting regain their spinner, and existing Replies entries remain available. A reply stops the spinner and restores the existing Replies behavior; failed sends show no spinner."),
+        ]),
         ReleaseNote(version: "1.0", build: 68, date: "November 13, 2026", items: [
             .init(symbol: "person.2", title: "See each agent's model and effort",
                   detail: "The Agents list now shows each agent's archetype followed by its actual model and effort."),
