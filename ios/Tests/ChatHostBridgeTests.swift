@@ -1,3 +1,5 @@
+import ImageIO
+import UIKit
 import XCTest
 import WebKit
 @testable import TightbeamTuner
@@ -231,5 +233,150 @@ final class ChatHostBridgeTests: XCTestCase {
 
         XCTAssertEqual(webView.reloadCount, 1)
         XCTAssertNil(bridge.lastCommandJSON)
+    }
+
+    // MARK: Attachments
+
+    private let photo = ChatHostBridge.Attachment(filename: "photo-1.jpg", mimeType: "image/jpeg",
+                                                  data: Data([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]))
+
+    func testAttachmentsNeedChatToAdvertiseThem() {
+        let bridge = readyBridge(capabilities: ["text": true, "reconnect": true])
+        XCTAssertNil(bridge.attachmentCapabilities)
+        bridge.send("", attachments: [photo])
+        XCTAssertNil(bridge.outgoing)
+        XCTAssertNil(bridge.lastCommandJSON)
+        bridge.send("caption", attachments: [photo])
+        XCTAssertNil(bridge.outgoing, "a photo is never dropped by sending its caption alone")
+    }
+
+    func testReadyAdvertisesAttachmentLimits() throws {
+        let bridge = readyBridge(capabilities: ["text": true, "attachments": [
+            "mediaTypes": ["image/jpeg", "image/png"], "maxAttachments": 4, "maxAttachmentBytes": 1000
+        ]])
+        let capabilities = try XCTUnwrap(bridge.attachmentCapabilities)
+        XCTAssertEqual(capabilities.maxAttachments, 4)
+        XCTAssertEqual(capabilities.maxAttachmentBytes, 1000)
+        XCTAssertTrue(capabilities.acceptsPhotos)
+        XCTAssertTrue(capabilities.accepts("image/png"))
+        XCTAssertFalse(capabilities.accepts("image/heic"))
+        XCTAssertTrue(try XCTUnwrap(ChatHostBridge.AttachmentCapabilities([String: Any]())).accepts("image/jpeg"))
+        XCTAssertFalse(try XCTUnwrap(ChatHostBridge.AttachmentCapabilities(["mediaTypes": ["application/pdf"]])).acceptsPhotos)
+        XCTAssertTrue(try XCTUnwrap(ChatHostBridge.AttachmentCapabilities([String: Any]())).acceptsPhotos)
+
+        bridge.pageStarted()
+        XCTAssertNil(bridge.attachmentCapabilities)
+    }
+
+    func testPhotoOnlySendCarriesBase64Bytes() throws {
+        let bridge = readyBridge(capabilities: ["text": true, "attachments": [String: Any]()])
+        bridge.send("", attachments: [photo])
+        XCTAssertEqual(bridge.outgoing?.status, .sending)
+        XCTAssertEqual(bridge.outgoing?.attachments, [photo])
+        let command = try command(bridge)
+        XCTAssertEqual(command["content"] as? String, "")
+        let attachments = try XCTUnwrap(command["attachments"] as? [[String: Any]])
+        XCTAssertEqual(attachments.count, 1)
+        XCTAssertEqual(attachments[0]["filename"] as? String, "photo-1.jpg")
+        XCTAssertEqual(attachments[0]["mimeType"] as? String, "image/jpeg")
+        XCTAssertEqual((attachments[0]["data"] as? String).flatMap { Data(base64Encoded: $0) }, photo.data)
+        XCTAssertNil(command["retry"])
+
+        report(bridge, "accepted", bridge.outgoing!.correlationId)
+        XCTAssertEqual(bridge.outgoing?.status, .accepted)
+        report(bridge, "delivered", bridge.outgoing!.correlationId)
+        XCTAssertEqual(bridge.outgoing?.status, .delivered)
+    }
+
+    func testTextOnlySendHasNoAttachmentsField() throws {
+        let bridge = readyBridge(capabilities: ["attachments": [String: Any]()])
+        bridge.send("hello")
+        XCTAssertNil(try command(bridge)["attachments"])
+    }
+
+    func testRetryResendsTheSamePhotosWithTheSameCorrelation() throws {
+        let bridge = readyBridge(capabilities: ["attachments": [String: Any]()])
+        bridge.send("look", attachments: [photo])
+        let correlationId = bridge.outgoing!.correlationId
+        bridge.handle(type: "failed", event: ["event": "failed", "lifetimeId": lifetime, "correlationId": correlationId,
+                                               "attempt": 1, "reason": "upload-failed", "attachmentIndex": 0])
+        XCTAssertEqual(bridge.outgoing?.status, .failed("upload-failed"))
+
+        // The same photo, re-added as a new draft item, is still the same message.
+        let readded = ChatHostBridge.Attachment(filename: photo.filename, mimeType: photo.mimeType, data: photo.data)
+        bridge.send("look", attachments: [readded])
+        XCTAssertEqual(bridge.outgoing?.correlationId, correlationId)
+        let command = try command(bridge)
+        XCTAssertEqual(command["retry"] as? Bool, true)
+        XCTAssertEqual((command["attachments"] as? [[String: Any]])?.count, 1)
+    }
+
+    func testChangedPhotosAreANewMessage() {
+        let bridge = readyBridge(capabilities: ["attachments": [String: Any]()])
+        bridge.send("look", attachments: [photo])
+        let correlationId = bridge.outgoing!.correlationId
+        report(bridge, "failed", correlationId, reason: "refused")
+        let other = ChatHostBridge.Attachment(filename: "photo-2.png", mimeType: "image/png", data: Data([0x89, 0x50]))
+        bridge.send("look", attachments: [photo, other])
+        XCTAssertNotEqual(bridge.outgoing?.correlationId, correlationId)
+        report(bridge, "failed", bridge.outgoing!.correlationId, reason: "refused")
+        let second = bridge.outgoing!.correlationId
+        bridge.send("look")
+        XCTAssertNotEqual(bridge.outgoing?.correlationId, second, "dropping the photos makes a new message")
+    }
+
+    func testInvalidAttachmentsRejectionFailsTheSend() {
+        let bridge = readyBridge(capabilities: ["attachments": [String: Any]()])
+        bridge.send("", attachments: [photo])
+        bridge.handle(type: "rejected", event: ["event": "rejected", "lifetimeId": lifetime,
+                                                 "correlationId": bridge.outgoing!.correlationId,
+                                                 "reason": "invalid-attachments"])
+        XCTAssertEqual(bridge.outgoing?.status, .failed("invalid-attachments"))
+    }
+
+    func testPhotoEncodingKeepsJPEGAndPNGAndConvertsOtherFormats() throws {
+        let jpeg = try XCTUnwrap(PhotoAttachment.encoded(photo.data, name: "photo"))
+        XCTAssertEqual(jpeg.mimeType, "image/jpeg")
+        XCTAssertEqual(jpeg.data, photo.data)
+        XCTAssertTrue(jpeg.filename.hasPrefix("photo-") && jpeg.filename.hasSuffix(".jpg"))
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 6), format: format).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 8, height: 6))
+        }
+        let pngData = try XCTUnwrap(image.pngData())
+        let png = try XCTUnwrap(PhotoAttachment.encoded(pngData, name: "pasted-image"))
+        XCTAssertEqual(png.mimeType, "image/png")
+        XCTAssertEqual(png.data, pngData)
+
+        let tiff = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(tiff, "public.tiff" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(image.cgImage), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let converted = try XCTUnwrap(PhotoAttachment.encoded(tiff as Data, name: "photo"))
+        XCTAssertEqual(converted.mimeType, "image/jpeg")
+        XCTAssertTrue(converted.data.starts(with: [0xFF, 0xD8, 0xFF]))
+        XCTAssertEqual(UIImage(data: converted.data)?.size, CGSize(width: 8, height: 6))
+
+        XCTAssertNil(PhotoAttachment.encoded(Data("not an image".utf8), name: "photo"))
+    }
+
+    func testPhotoDraftsSurviveARelaunch() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "photo-drafts-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let other = ChatHostBridge.Attachment(filename: "pasted-image-2.png", mimeType: "image/png", data: Data([0x89, 0x50, 0x4E]))
+        PhotoDraftStore(root: root).save([photo, other], for: "agent:one")
+
+        let relaunched = PhotoDraftStore(root: root)
+        XCTAssertEqual(relaunched.load("agent:one"), [photo, other])
+        XCTAssertEqual(relaunched.load("agent:two"), [])
+
+        relaunched.save([other], for: "agent:one")
+        XCTAssertEqual(PhotoDraftStore(root: root).load("agent:one"), [other])
+
+        relaunched.save([], for: "agent:one")
+        XCTAssertEqual(PhotoDraftStore(root: root).load("agent:one"), [])
     }
 }

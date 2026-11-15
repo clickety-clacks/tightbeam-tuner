@@ -4,6 +4,10 @@ import WebKit
 
 /// Tuner's side of Chat's host composer seam (version 1).
 ///
+/// When `ready` advertises `capabilities.attachments`, a send may carry photos as
+/// `attachments: [{filename, mimeType, data}]` with base64 bytes; Chat prepares and uploads them
+/// as it does for its own composer. A retry resends the same text and the same attachments.
+///
 /// Chat keeps its own composer until it reports `ready` for the page it is running.
 /// Tuner shows its native composer only between `ready` and the end of that page or lifetime,
 /// sends only to the conversation named by the latest `ready`, and never resends on its own.
@@ -32,12 +36,62 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         case interrupted
     }
 
+    /// A photo (later, any file) the user added to a message. Chat prepares and uploads the bytes
+    /// exactly as it does for a pick in its own composer.
+    struct Attachment: Equatable, Identifiable {
+        let id: UUID
+        let filename: String
+        let mimeType: String
+        let data: Data
+
+        init(id: UUID = UUID(), filename: String, mimeType: String, data: Data) {
+            self.id = id
+            self.filename = filename
+            self.mimeType = mimeType
+            self.data = data
+        }
+
+        /// Same bytes under the same name and type: a retry may resend it.
+        func sameContent(as other: Attachment) -> Bool {
+            filename == other.filename && mimeType == other.mimeType && data == other.data
+        }
+    }
+
+    /// What Chat accepts from the host for the current lifetime, from `ready.capabilities.attachments`.
+    /// Only limits Chat actually reports are set.
+    struct AttachmentCapabilities: Equatable {
+        var mediaTypes: [String]?
+        var maxAttachments: Int?
+        var maxAttachmentBytes: Int?
+        var maxTotalBytes: Int?
+
+        init?(_ value: Any?) {
+            guard let value = value as? [String: Any] else { return nil }
+            mediaTypes = value["mediaTypes"] as? [String]
+            maxAttachments = value["maxAttachments"] as? Int
+            maxAttachmentBytes = value["maxAttachmentBytes"] as? Int
+            maxTotalBytes = value["maxTotalBytes"] as? Int
+        }
+
+        /// Photos are offered when Chat names no type list or lists JPEG or PNG.
+        var acceptsPhotos: Bool {
+            guard let mediaTypes else { return true }
+            return mediaTypes.contains("image/jpeg") || mediaTypes.contains("image/png")
+        }
+
+        /// Chat's list, or any type when it names none.
+        func accepts(_ mimeType: String) -> Bool {
+            mediaTypes?.contains(mimeType) ?? true
+        }
+    }
+
     /// The message the user last sent, or an earlier one that did not send. Kept until it is
     /// delivered or replaced, so it can be retried.
     struct Outgoing: Equatable {
         let correlationId: String
         let sessionKey: String
         let content: String
+        var attachments: [Attachment] = []
         var lifetimeId: String
         var attempt: Int?
         var status: Status
@@ -66,6 +120,8 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     private(set) var unavailableReason: String?
     private(set) var overlayOpen = false
     private(set) var lastCommandJSON: String?
+    /// Set while the current lifetime accepts attachments; nil hides the attachment controls.
+    private(set) var attachmentCapabilities: AttachmentCapabilities?
     private var reconnectSupported = false
     private var reportedConnection: Connection?
 
@@ -202,18 +258,26 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         overlayOpen = false
         reconnectSupported = false
         reportedConnection = nil
+        attachmentCapabilities = nil
     }
 
     // MARK: Sending
 
-    /// Sends `text` as a user action. Unchanged text after a failed, uncertain, or interrupted
-    /// result is a retry of the same message; edited text is a new message.
-    func send(_ text: String) {
-        guard case let .ready(lifetimeId, sessionKey) = phase,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !isSending else { return }
+    /// True when `outgoing` holds this exact text and these attachments.
+    static func isSameMessage(_ outgoing: Outgoing, content: String, attachments: [Attachment]) -> Bool {
+        outgoing.content == content && outgoing.attachments.count == attachments.count
+            && zip(outgoing.attachments, attachments).allSatisfy { $0.sameContent(as: $1) }
+    }
+
+    /// Sends `text` and any attachments as a user action. The same text and attachments after a
+    /// failed, uncertain, or interrupted result is a retry of that message; any edit is a new message.
+    func send(_ text: String, attachments: [Attachment] = []) {
+        guard case let .ready(lifetimeId, sessionKey) = phase, !isSending,
+              attachments.isEmpty || attachmentCapabilities != nil,
+              !attachments.isEmpty || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         var retry = false
         var correlationId = "c_" + UUID().uuidString.lowercased()
-        if let previous = outgoing, previous.content == text {
+        if let previous = outgoing, Self.isSameMessage(previous, content: text, attachments: attachments) {
             switch previous.status {
             case .failed, .uncertain, .interrupted:
                 correlationId = previous.correlationId
@@ -222,7 +286,8 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             }
         }
         if let previous = outgoing, previous.status == .accepted { earlier.append(previous) }
-        outgoing = Outgoing(correlationId: correlationId, sessionKey: sessionKey, content: text, lifetimeId: lifetimeId,
+        outgoing = Outgoing(correlationId: correlationId, sessionKey: sessionKey, content: text,
+                            attachments: attachments, lifetimeId: lifetimeId,
                             attempt: nil, status: .sending, attempted: retry)
         var command: [String: Any] = [
             "type": "send",
@@ -231,6 +296,11 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             "correlationId": correlationId,
             "content": text
         ]
+        if !attachments.isEmpty {
+            command["attachments"] = attachments.map {
+                ["filename": $0.filename, "mimeType": $0.mimeType, "data": $0.data.base64EncodedString()]
+            }
+        }
         if retry { command["retry"] = true }
         guard let data = try? JSONSerialization.data(withJSONObject: command),
               let json = String(data: data, encoding: .utf8) else { return }
@@ -286,7 +356,9 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             agentName = event["agentDisplayName"] as? String ?? agentName
             gatewayOrigin = event["gatewayOrigin"] as? String ?? gatewayOrigin
             unavailableReason = nil
-            reconnectSupported = (event["capabilities"] as? [String: Any])?["reconnect"] as? Bool ?? false
+            let capabilities = event["capabilities"] as? [String: Any]
+            reconnectSupported = capabilities?["reconnect"] as? Bool ?? false
+            attachmentCapabilities = AttachmentCapabilities(capabilities?["attachments"])
             hostComposerActive = true
         case "unavailable":
             if let lifetimeId, case let .ready(current, _) = phase, current == lifetimeId {

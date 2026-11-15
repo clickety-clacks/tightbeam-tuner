@@ -1,15 +1,26 @@
+import ImageIO
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Native message field inset at the selected transcript edge, shaped like Chat's own composer:
 /// a rounded field with the agent's name as placeholder and a separate send button beside it.
+/// When Chat accepts attachments, an add button beside the status dot offers Paste, Photo Library
+/// and Camera, and the photos wait above the field until they are sent.
 struct NativeChatComposer: View {
     @Binding var draft: String
+    @Binding var attachments: [ChatHostBridge.Attachment]
     let bridge: ChatHostBridge
     let glassHeight: CGFloat?
     let focusOnAppear: Bool
     let onFocusChange: (Bool) -> Void
     @FocusState private var focused: Bool
     @State private var showingStatus = false
+    @State private var showingLibrary = false
+    @State private var showingCamera = false
+    @State private var libraryPicks: [PhotosPickerItem] = []
+    @State private var loadingPhotos = 0
+    @State private var attachmentProblem: String?
     /// A comfortable line of body text, about 70 characters, plus the send button.
     /// Scales with Dynamic Type so the line length stays the same at any text size.
     @ScaledMetric(relativeTo: .body) private var maxWidth: CGFloat = 640
@@ -48,12 +59,14 @@ struct NativeChatComposer: View {
     private var cornerRadius: CGFloat { contentHeight / 2 + glassVerticalInset }
     init(
         draft: Binding<String>,
+        attachments: Binding<[ChatHostBridge.Attachment]>,
         bridge: ChatHostBridge,
         glassHeight: CGFloat?,
         focusOnAppear: Bool = false,
         onFocusChange: @escaping (Bool) -> Void
     ) {
         _draft = draft
+        _attachments = attachments
         self.bridge = bridge
         self.glassHeight = glassHeight
         self.focusOnAppear = focusOnAppear
@@ -63,12 +76,28 @@ struct NativeChatComposer: View {
     private var trimmed: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var canSend: Bool {
-        bridge.isReady && !bridge.isSending && !trimmed.isEmpty
+        guard bridge.isReady, !bridge.isSending, loadingPhotos == 0 else { return false }
+        // Photos go only to a Chat that accepts them; otherwise Send waits rather than dropping them.
+        if !attachments.isEmpty { return bridge.attachmentCapabilities != nil }
+        return !trimmed.isEmpty
     }
+
+    private var offersPhotos: Bool { bridge.attachmentCapabilities?.acceptsPhotos ?? false }
+
+    /// How many more photos Chat accepts in this message; nil when Chat sets no count.
+    private var remainingAttachments: Int? {
+        guard let limit = bridge.attachmentCapabilities?.maxAttachments else { return nil }
+        return max(0, limit - attachments.count - loadingPhotos)
+    }
+
+    private var canAddAttachment: Bool { remainingAttachments.map { $0 > 0 } ?? true }
 
     var body: some View {
         GlassEffectContainer(spacing: Self.glassMergeSpacing) {
             VStack(alignment: .leading, spacing: 8) {
+                if !attachments.isEmpty || loadingPhotos > 0 {
+                    DraftAttachmentStrip(attachments: $attachments, loading: loadingPhotos)
+                }
                 if let notice {
                     Label(notice, systemImage: "exclamationmark.circle")
                         .font(TunerTypography.supporting)
@@ -99,6 +128,11 @@ struct NativeChatComposer: View {
                         .popover(isPresented: $showingStatus) {
                             ConnectionDetails(bridge: bridge) { showingStatus = false }
                                 .presentationCompactAdaptation(.popover)
+                        }
+
+                        if offersPhotos {
+                            addAttachmentMenu
+                                .padding(.vertical, statusVerticalGap)
                         }
 
                         TextField(bridge.agentName ?? "Message", text: $draft, axis: .vertical)
@@ -138,6 +172,8 @@ struct NativeChatComposer: View {
         .padding(.horizontal, 12)
         .tint(Color.chatAccent)
         .animation(.default, value: notice)
+        .onChange(of: attachments) { attachmentProblem = nil }
+        .onChange(of: draft) { attachmentProblem = nil }
         .onChange(of: focused, initial: true) { _, focused in
             bridge.nativeComposerFocused = focused
             onFocusChange(focused)
@@ -158,6 +194,22 @@ struct NativeChatComposer: View {
                 focused = true
             }
         }
+        .photosPicker(isPresented: $showingLibrary, selection: $libraryPicks,
+                      maxSelectionCount: remainingAttachments, selectionBehavior: .ordered,
+                      matching: .images, preferredItemEncoding: .compatible)
+        .onChange(of: libraryPicks) { _, picks in
+            guard !picks.isEmpty else { return }
+            libraryPicks = []
+            addLibraryPhotos(picks)
+        }
+        .fullScreenCover(isPresented: $showingCamera) {
+            CameraCapture { image in
+                showingCamera = false
+                guard let image else { return }
+                if !add(PhotoAttachment.fromCamera(image)) { attachmentProblem = "Could not add the photo" }
+            }
+            .ignoresSafeArea()
+        }
         .onChange(of: bridge.outgoing) { _, outgoing in
             guard let outgoing else { return }
             switch outgoing.status {
@@ -167,8 +219,55 @@ struct NativeChatComposer: View {
         }
     }
 
+    private var addAttachmentMenu: some View {
+        Menu {
+            Button("Paste", systemImage: "doc.on.clipboard", action: pastePhoto)
+            Button("Photo Library", systemImage: "photo.on.rectangle") { showingLibrary = true }
+            Button("Camera", systemImage: "camera") { showingCamera = true }
+                .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.nordicText)
+                .frame(width: Self.statusButtonSize, height: Self.statusButtonSize)
+                .contentShape(.circle)
+        }
+        .disabled(!canAddAttachment)
+        .accessibilityLabel("Add attachment")
+    }
+
+    /// Adds a photo Chat accepts; false when there is none or Chat does not take its type.
+    private func add(_ attachment: ChatHostBridge.Attachment?) -> Bool {
+        guard let attachment, bridge.attachmentCapabilities?.accepts(attachment.mimeType) == true else { return false }
+        attachments.append(attachment)
+        return true
+    }
+
+    private func pastePhoto() {
+        let pasteboard = UIPasteboard.general
+        if !add(pasteboard.hasImages ? PhotoAttachment.fromPasteboard(pasteboard) : nil) {
+            attachmentProblem = "No photo to paste"
+        }
+    }
+
+    private func addLibraryPhotos(_ picks: [PhotosPickerItem]) {
+        let picks = remainingAttachments.map { Array(picks.prefix($0)) } ?? picks
+        loadingPhotos += picks.count
+        Task { @MainActor in
+            var failed = 0
+            for item in picks {
+                // The compatible encoding gives JPEG for HEIC photos, as Safari's photo picker does.
+                let data = try? await item.loadTransferable(type: Data.self)
+                if !add(data.flatMap(PhotoAttachment.fromLibrary)) { failed += 1 }
+                loadingPhotos -= 1
+            }
+            if failed > 0 { attachmentProblem = failed == 1 ? "Could not add a photo" : "Could not add \(failed) photos" }
+        }
+    }
+
     private var isRetry: Bool {
-        guard let outgoing = bridge.outgoing, outgoing.content == draft else { return false }
+        guard let outgoing = bridge.outgoing,
+              ChatHostBridge.isSameMessage(outgoing, content: draft, attachments: attachments) else { return false }
         switch outgoing.status {
         case .failed, .uncertain, .interrupted: return true
         default: return false
@@ -178,8 +277,10 @@ struct NativeChatComposer: View {
     private var sendTitle: String { isRetry ? "Retry" : "Send" }
 
     private var notice: String? {
+        if let attachmentProblem { return attachmentProblem }
         guard let outgoing = bridge.outgoing,
-              outgoing.content == draft || draft.hasPrefix(outgoing.content + "\n\n") else { return nil }
+              outgoing.content.isEmpty || outgoing.content == draft || draft.hasPrefix(outgoing.content + "\n\n"),
+              outgoing.attachments.allSatisfy({ sent in attachments.contains { $0.id == sent.id } }) else { return nil }
         switch outgoing.status {
         case .failed: return "Not sent"
         default: return nil
@@ -191,6 +292,8 @@ struct NativeChatComposer: View {
         // typed since, so nothing is lost.
         if trimmed.isEmpty { draft = outgoing.content }
         else if !draft.contains(outgoing.content) { draft = outgoing.content + "\n\n" + draft }
+        let missing = outgoing.attachments.filter { sent in !attachments.contains { $0.id == sent.id } }
+        attachments = missing + attachments
     }
 
     private func focusChatPage() {
@@ -204,8 +307,11 @@ struct NativeChatComposer: View {
     private func send() {
         guard canSend else { return }
         let text = draft
+        let files = attachments
         draft = ""
-        bridge.send(text)
+        attachments = []
+        attachmentProblem = nil
+        bridge.send(text, attachments: files)
     }
 }
 
@@ -265,5 +371,150 @@ private struct ConnectionDetails: View {
             Text(name).foregroundStyle(Color.nordicSecondaryText)
             Text(value ?? "Unavailable").textSelection(.enabled)
         }
+    }
+}
+
+/// Photos waiting to be sent with the message, each removable before Send.
+private struct DraftAttachmentStrip: View {
+    @Binding var attachments: [ChatHostBridge.Attachment]
+    let loading: Int
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(attachments) { attachment in
+                    DraftAttachmentThumbnail(attachment: attachment) {
+                        attachments.removeAll { $0.id == attachment.id }
+                    }
+                }
+                ForEach(0..<loading, id: \.self) { _ in
+                    ProgressView()
+                        .frame(width: DraftAttachmentThumbnail.size, height: DraftAttachmentThumbnail.size)
+                        .accessibilityLabel("Adding photo")
+                }
+            }
+            .padding(8)
+        }
+        .scrollIndicators(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
+        .glassEffect(.regular, in: .rect(cornerRadius: 20, style: .continuous))
+        .accessibilityLabel("Attachments in this draft")
+    }
+}
+
+private struct DraftAttachmentThumbnail: View {
+    static let size: CGFloat = 56
+    let attachment: ChatHostBridge.Attachment
+    let remove: () -> Void
+    @State private var image: UIImage?
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    Color.nordicSecondaryText.opacity(0.15)
+                }
+            }
+            .frame(width: Self.size, height: Self.size)
+            .clipShape(.rect(cornerRadius: 12, style: .continuous))
+
+            Button(action: remove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 20))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(Color.white, Color.black.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 6, y: -6)
+            .accessibilityLabel("Remove \(attachment.filename)")
+        }
+        .padding(.top, 6)
+        .padding(.trailing, 6)
+        .task(id: attachment.id) {
+            let data = attachment.data
+            let side = Self.size * displayScale
+            image = await Task.detached {
+                UIImage(data: data)?.preparingThumbnail(of: CGSize(width: side, height: side))
+            }.value
+        }
+    }
+}
+
+/// Turns a photo from the library, camera or pasteboard into the JPEG or PNG bytes Tuner hands to
+/// Chat. Chat then prepares them exactly as it does a photo picked in its own composer.
+enum PhotoAttachment {
+    static func fromLibrary(_ data: Data) -> ChatHostBridge.Attachment? {
+        encoded(data, name: "photo")
+    }
+
+    static func fromCamera(_ image: UIImage) -> ChatHostBridge.Attachment? {
+        guard let data = image.jpegData(compressionQuality: 0.9) else { return nil }
+        return ChatHostBridge.Attachment(filename: filename("camera", "jpg"), mimeType: "image/jpeg", data: data)
+    }
+
+    static func fromPasteboard(_ pasteboard: UIPasteboard) -> ChatHostBridge.Attachment? {
+        for type in [UTType.png, UTType.jpeg, UTType.heic, UTType.image] {
+            if let data = pasteboard.data(forPasteboardType: type.identifier), let attachment = encoded(data, name: "pasted-image") {
+                return attachment
+            }
+        }
+        guard let image = pasteboard.image, let data = image.pngData() else { return nil }
+        return ChatHostBridge.Attachment(filename: filename("pasted-image", "png"), mimeType: "image/png", data: data)
+    }
+
+    /// JPEG and PNG pass through unchanged; any other image format is re-encoded as JPEG,
+    /// keeping its orientation.
+    static func encoded(_ data: Data, name: String) -> ChatHostBridge.Attachment? {
+        if data.starts(with: [0xFF, 0xD8, 0xFF]) {
+            return ChatHostBridge.Attachment(filename: filename(name, "jpg"), mimeType: "image/jpeg", data: data)
+        }
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return ChatHostBridge.Attachment(filename: filename(name, "png"), mimeType: "image/png", data: data)
+        }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(source) > 0 else { return nil }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImageFromSource(destination, source, 0,
+                                             [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return ChatHostBridge.Attachment(filename: filename(name, "jpg"), mimeType: "image/jpeg", data: output as Data)
+    }
+
+    private static func filename(_ name: String, _ ext: String) -> String {
+        "\(name)-\(Int(Date().timeIntervalSince1970 * 1000)).\(ext)"
+    }
+}
+
+/// The system camera, returning the captured photo or nil when the user cancels.
+private struct CameraCapture: UIViewControllerRepresentable {
+    let finish: (UIImage?) -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.cameraCaptureMode = .photo
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(finish: finish) }
+
+    @MainActor final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let finish: (UIImage?) -> Void
+        init(finish: @escaping (UIImage?) -> Void) { self.finish = finish }
+
+        func imagePickerController(_ picker: UIImagePickerController,
+                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            finish(info[.originalImage] as? UIImage)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { finish(nil) }
     }
 }
