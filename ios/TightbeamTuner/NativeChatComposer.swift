@@ -5,8 +5,8 @@ import UniformTypeIdentifiers
 
 /// Native message field inset at the selected transcript edge, shaped like Chat's own composer:
 /// a rounded field with the agent's name as placeholder and a separate send button beside it.
-/// When Chat accepts attachments, an add button beside the status dot offers Paste, Photo Library
-/// and Camera, and the photos wait above the field until they are sent.
+/// An add button beside the status dot offers Paste, Photo Library and Camera when Chat accepts
+/// attachments, and is greyed out when it does not. Photos wait above the field until they are sent.
 struct NativeChatComposer: View {
     @Binding var draft: String
     @Binding var attachments: [ChatHostBridge.Attachment]
@@ -90,7 +90,9 @@ struct NativeChatComposer: View {
         return max(0, limit - attachments.count - loadingPhotos)
     }
 
-    private var canAddAttachment: Bool { remainingAttachments.map { $0 > 0 } ?? true }
+    /// The add button always shows; it is greyed out and disabled while Chat takes no photos or the
+    /// message already holds as many as Chat accepts.
+    private var canAddAttachment: Bool { offersPhotos && (remainingAttachments.map { $0 > 0 } ?? true) }
 
     var body: some View {
         GlassEffectContainer(spacing: Self.glassMergeSpacing) {
@@ -130,10 +132,8 @@ struct NativeChatComposer: View {
                                 .presentationCompactAdaptation(.popover)
                         }
 
-                        if offersPhotos {
-                            addAttachmentMenu
-                                .padding(.vertical, statusVerticalGap)
-                        }
+                        addAttachmentMenu
+                            .padding(.vertical, statusVerticalGap)
 
                         TextField(bridge.agentName ?? "Message", text: $draft, axis: .vertical)
                             .lineLimit(1...6)
@@ -228,7 +228,7 @@ struct NativeChatComposer: View {
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Color.nordicText)
+                .foregroundStyle(canAddAttachment ? Color.nordicText : Color.nordicSecondaryText.opacity(0.5))
                 .frame(width: Self.statusButtonSize, height: Self.statusButtonSize)
                 .contentShape(.circle)
         }

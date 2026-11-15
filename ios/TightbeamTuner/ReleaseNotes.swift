@@ -4,6 +4,10 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 71, date: "November 15, 2026", items: [
+            .init(symbol: "photo.on.rectangle", title: "Send photos from the message field",
+                  detail: "Tap + beside the status dot to paste a photo, choose photos from your library, or take one with the camera. Photos wait above the message field, where you can remove them, and send with or without words. A photo that does not send comes back with its words so you can retry. The + button appears when the conversation's Chat version accepts photos from Tuner; until then the message field is unchanged."),
+        ]),
         ReleaseNote(version: "1.0", build: 70, date: "November 14, 2026", items: [
             .init(symbol: "text.bubble", title: "Give the message field more room",
                   detail: "The one-line message field is taller and keeps its ends fully rounded. Multiline editing and Send remain available."),
