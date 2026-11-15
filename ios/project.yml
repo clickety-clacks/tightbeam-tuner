@@ -34,6 +34,7 @@ targets:
       properties:
         UIAppFonts:
           - DM-Sans-Variable.ttf
+        NSCameraUsageDescription: Take a photo to send to an agent.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
     dependencies:

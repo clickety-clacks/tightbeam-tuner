@@ -20,6 +20,8 @@ struct ContentView: View {
     /// Native composer drafts per agent. Kept in app defaults, not scene storage, so a draft
     /// survives a force-quit or iOS ending Tuner in the background. Send state is not kept.
     @AppStorage("composerDrafts") private var draftsData = Data()
+    /// Photos added to each agent's draft. Held in memory only: they are not saved with the text.
+    @State private var attachmentDrafts: [String: [ChatHostBridge.Attachment]] = [:]
 
     private var splitViewColumnVisibility: Binding<NavigationSplitViewVisibility> {
         Binding(
@@ -44,6 +46,13 @@ struct ContentView: View {
                 drafts[agentID] = value.isEmpty ? nil : value
                 draftsData = (try? JSONEncoder().encode(drafts)) ?? Data()
             }
+        )
+    }
+
+    private func attachmentsBinding(for agentID: String) -> Binding<[ChatHostBridge.Attachment]> {
+        Binding(
+            get: { attachmentDrafts[agentID] ?? [] },
+            set: { attachmentDrafts[agentID] = $0.isEmpty ? nil : $0 }
         )
     }
 
@@ -94,6 +103,7 @@ struct ContentView: View {
             Group {
                 if let agent = store.selectedAgent, let url = store.connection.chatURL(for: agent) {
                     AgentChatView(url: url, reloadToken: reloadToken, draft: draftBinding(for: agent.id),
+                                  attachments: attachmentsBinding(for: agent.id),
                                   repliedFeed: repliedFeed,
                                   isCompact: horizontalSizeClass == .compact)
                         .id(agent.id)
@@ -329,6 +339,7 @@ private struct AgentChatView: View {
     let url: URL
     let reloadToken: Int
     @Binding var draft: String
+    @Binding var attachments: [ChatHostBridge.Attachment]
     let repliedFeed: RepliedFeed
     let isCompact: Bool
     @State private var bridge: ChatHostBridge
@@ -339,12 +350,14 @@ private struct AgentChatView: View {
         url: URL,
         reloadToken: Int,
         draft: Binding<String>,
+        attachments: Binding<[ChatHostBridge.Attachment]>,
         repliedFeed: RepliedFeed,
         isCompact: Bool
     ) {
         self.url = url
         self.reloadToken = reloadToken
         _draft = draft
+        _attachments = attachments
         self.repliedFeed = repliedFeed
         self.isCompact = isCompact
         _bridge = State(initialValue: ChatHostBridge(
@@ -364,6 +377,7 @@ private struct AgentChatView: View {
                 if bridge.hostComposerActive {
                     NativeChatComposer(
                         draft: $draft,
+                        attachments: $attachments,
                         bridge: bridge,
                         glassHeight: isCompact ? NativeChatComposer.compactSearchHeight : nil
                     ) { _ in }
@@ -709,6 +723,7 @@ struct WI721CaptureFixtureView: View {
     @State private var selectedSessionKey: String? = WI721CaptureFixtureConfiguration.sessionKey
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
     @State private var draft = ""
+    @State private var attachments: [ChatHostBridge.Attachment] = []
     @State private var filterQuery = ""
     @State private var repliedFeed: RepliedFeed
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -746,6 +761,7 @@ struct WI721CaptureFixtureView: View {
                             url: chatURL,
                             reloadToken: 0,
                             draft: $draft,
+                            attachments: $attachments,
                             repliedFeed: repliedFeed,
                             isCompact: horizontalSizeClass == .compact
                         )
