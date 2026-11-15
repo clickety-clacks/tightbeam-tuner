@@ -362,4 +362,21 @@ final class ChatHostBridgeTests: XCTestCase {
 
         XCTAssertNil(PhotoAttachment.encoded(Data("not an image".utf8), name: "photo"))
     }
+
+    func testPhotoDraftsSurviveARelaunch() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "photo-drafts-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let other = ChatHostBridge.Attachment(filename: "pasted-image-2.png", mimeType: "image/png", data: Data([0x89, 0x50, 0x4E]))
+        PhotoDraftStore(root: root).save([photo, other], for: "agent:one")
+
+        let relaunched = PhotoDraftStore(root: root)
+        XCTAssertEqual(relaunched.load("agent:one"), [photo, other])
+        XCTAssertEqual(relaunched.load("agent:two"), [])
+
+        relaunched.save([other], for: "agent:one")
+        XCTAssertEqual(PhotoDraftStore(root: root).load("agent:one"), [other])
+
+        relaunched.save([], for: "agent:one")
+        XCTAssertEqual(PhotoDraftStore(root: root).load("agent:one"), [])
+    }
 }

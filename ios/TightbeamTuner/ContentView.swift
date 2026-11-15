@@ -20,8 +20,9 @@ struct ContentView: View {
     /// Native composer drafts per agent. Kept in app defaults, not scene storage, so a draft
     /// survives a force-quit or iOS ending Tuner in the background. Send state is not kept.
     @AppStorage("composerDrafts") private var draftsData = Data()
-    /// Photos added to each agent's draft. Held in memory only: they are not saved with the text.
+    /// Photos in each agent's draft. Saved to disk like the text draft, so they survive Tuner ending.
     @State private var attachmentDrafts: [String: [ChatHostBridge.Attachment]] = [:]
+    private let photoDrafts = PhotoDraftStore()
 
     private var splitViewColumnVisibility: Binding<NavigationSplitViewVisibility> {
         Binding(
@@ -51,8 +52,11 @@ struct ContentView: View {
 
     private func attachmentsBinding(for agentID: String) -> Binding<[ChatHostBridge.Attachment]> {
         Binding(
-            get: { attachmentDrafts[agentID] ?? [] },
-            set: { attachmentDrafts[agentID] = $0.isEmpty ? nil : $0 }
+            get: { attachmentDrafts[agentID] ?? photoDrafts.load(agentID) },
+            set: {
+                attachmentDrafts[agentID] = $0
+                photoDrafts.save($0, for: agentID)
+            }
         )
     }
 
@@ -839,3 +843,67 @@ struct WI721CaptureFixtureConfiguration {
     }
 }
 #endif
+
+/// Photos in each agent's draft, kept in Application Support so they survive Tuner ending as the
+/// text draft does. One folder per agent holds a manifest and one file per photo.
+/// Send state is not kept: after a relaunch, sending the restored draft is a new message with a new
+/// correlation, as it is for a restored text draft.
+final class PhotoDraftStore {
+    private struct Entry: Codable {
+        let id: UUID
+        let filename: String
+        let mimeType: String
+    }
+
+    private let root: URL
+    private var loaded: [String: [ChatHostBridge.Attachment]] = [:]
+
+    init(root: URL = URL.applicationSupportDirectory.appending(path: "ComposerPhotoDrafts", directoryHint: .isDirectory)) {
+        self.root = root
+    }
+
+    private func folder(for agentID: String) -> URL {
+        root.appending(path: Data(agentID.utf8).map { String(format: "%02x", $0) }.joined(), directoryHint: .isDirectory)
+    }
+
+    func load(_ agentID: String) -> [ChatHostBridge.Attachment] {
+        if let cached = loaded[agentID] { return cached }
+        let folder = folder(for: agentID)
+        let entries = (try? Data(contentsOf: folder.appending(path: "manifest.json")))
+            .flatMap { try? JSONDecoder().decode([Entry].self, from: $0) } ?? []
+        let attachments = entries.compactMap { entry in
+            (try? Data(contentsOf: folder.appending(path: entry.id.uuidString))).map {
+                ChatHostBridge.Attachment(id: entry.id, filename: entry.filename, mimeType: entry.mimeType, data: $0)
+            }
+        }
+        loaded[agentID] = attachments
+        return attachments
+    }
+
+    func save(_ attachments: [ChatHostBridge.Attachment], for agentID: String) {
+        loaded[agentID] = attachments
+        let folder = folder(for: agentID)
+        let manager = FileManager.default
+        guard !attachments.isEmpty else {
+            try? manager.removeItem(at: folder)
+            return
+        }
+        do {
+            try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+            for attachment in attachments {
+                let file = folder.appending(path: attachment.id.uuidString)
+                if !manager.fileExists(atPath: file.path(percentEncoded: false)) {
+                    try attachment.data.write(to: file, options: .atomic)
+                }
+            }
+            let manifest = attachments.map { Entry(id: $0.id, filename: $0.filename, mimeType: $0.mimeType) }
+            try JSONEncoder().encode(manifest).write(to: folder.appending(path: "manifest.json"), options: .atomic)
+            let kept = Set(attachments.map(\.id.uuidString) + ["manifest.json"])
+            for name in (try? manager.contentsOfDirectory(atPath: folder.path(percentEncoded: false))) ?? [] where !kept.contains(name) {
+                try? manager.removeItem(at: folder.appending(path: name))
+            }
+        } catch {
+            // The photos stay in the draft for this run; only their survival across a relaunch is lost.
+        }
+    }
+}
