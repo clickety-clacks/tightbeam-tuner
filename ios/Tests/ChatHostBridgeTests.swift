@@ -171,6 +171,47 @@ final class ChatHostBridgeTests: XCTestCase {
         XCTAssertEqual(bridge.connection, .connected)
     }
 
+    func testRecoveryObserverTracksUnavailableConnectionAndRestoredReadyState() {
+        let bridge = readyBridge()
+        var updates = 0
+        bridge.recoveryStateObserver = { updates += 1 }
+
+        bridge.handle(type: "unavailable", event: [
+            "event": "unavailable", "lifetimeId": lifetime, "reason": "disconnected"
+        ])
+        XCTAssertTrue(bridge.phaseIsUnavailable)
+        XCTAssertEqual(updates, 1)
+
+        reportReady(bridge, lifetimeId: lifetime)
+        XCTAssertFalse(bridge.phaseIsUnavailable)
+        XCTAssertEqual(updates, 2)
+
+        bridge.handle(type: "connection", event: [
+            "event": "connection", "version": 1, "lifetimeId": lifetime, "state": "disconnected"
+        ])
+        XCTAssertEqual(bridge.connection, .disconnected)
+        XCTAssertEqual(updates, 3)
+    }
+
+    func testHostModeDeclineIsReportedAndRemainsOnChatComposer() {
+        let bridge = ChatHostBridge(chatURL: URL(string: "https://chat.example:9443/")!)
+        var updates = 0
+        bridge.recoveryStateObserver = { updates += 1 }
+
+        bridge.handle(type: "declined", event: ["event": "declined"])
+
+        XCTAssertTrue(bridge.hostModeDeclined)
+        XCTAssertFalse(bridge.hostComposerActive)
+        XCTAssertEqual(updates, 1)
+    }
+
+    func testRecoveryBackoffDoublesToCapAndResets() {
+        var backoff = ChatRecoveryBackoff()
+        XCTAssertEqual((0..<7).map { _ in backoff.nextDelay() }, [1, 2, 4, 8, 16, 30, 30])
+        backoff.reset()
+        XCTAssertEqual(backoff.nextDelay(), 1)
+    }
+
     func testNotReadyRejectionDoesNotChangePhaseOrConnection() throws {
         let bridge = readyBridge()
         bridge.handle(type: "connection", event: [

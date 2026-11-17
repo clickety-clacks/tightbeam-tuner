@@ -102,6 +102,8 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     typealias OutgoingObserver = @MainActor (Outgoing) -> Void
 
     @ObservationIgnored private let outgoingObserver: OutgoingObserver?
+    @ObservationIgnored var recoveryStateObserver: (@MainActor () -> Void)?
+    @ObservationIgnored private(set) var hostModeDeclined = false
 
     private(set) var phase: Phase = .waiting
     private(set) var outgoing: Outgoing?
@@ -199,6 +201,11 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         return false
     }
 
+    var phaseIsUnavailable: Bool {
+        if case .unavailable = phase { return true }
+        return false
+    }
+
     /// Only a message Chat has not yet accepted holds the Send button.
     var isSending: Bool {
         outgoing?.status == .sending
@@ -227,6 +234,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     func pageStarted() {
         interruptUnresolved()
         phase = .waiting
+        hostModeDeclined = false
         hostComposerActive = false
         resetPageState()
     }
@@ -235,6 +243,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     func pageEnded() {
         interruptUnresolved()
         phase = .waiting
+        hostModeDeclined = false
         hostComposerActive = false
         resetPageState()
     }
@@ -353,6 +362,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
                   let sessionKey = event["sessionKey"] as? String else { return }
             reportedConnection = nil
             phase = .ready(lifetimeId: lifetimeId, sessionKey: sessionKey)
+            hostModeDeclined = false
             agentName = event["agentDisplayName"] as? String ?? agentName
             gatewayOrigin = event["gatewayOrigin"] as? String ?? gatewayOrigin
             unavailableReason = nil
@@ -360,10 +370,12 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             reconnectSupported = capabilities?["reconnect"] as? Bool ?? false
             attachmentCapabilities = AttachmentCapabilities(capabilities?["attachments"])
             hostComposerActive = true
+            recoveryStateObserver?()
         case "unavailable":
             if let lifetimeId, case let .ready(current, _) = phase, current == lifetimeId {
                 unavailableReason = event["reason"] as? String
                 phase = .unavailable(lifetimeId: lifetimeId)
+                recoveryStateObserver?()
             }
         case "lifetime-ended":
             if hostComposerActive, let lifetimeId {
@@ -371,11 +383,14 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
                 phase = .unavailable(lifetimeId: lifetimeId)
                 reconnectSupported = false
                 reportedConnection = nil
+                recoveryStateObserver?()
             }
         case "declined":
             phase = .waiting
+            hostModeDeclined = true
             hostComposerActive = false
             resetPageState()
+            recoveryStateObserver?()
         case "connection":
             guard (event["version"] as? Int) == 1, let lifetimeId,
                   lifetimeId == currentLifetimeId else { return }
@@ -385,6 +400,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             case "disconnected": reportedConnection = .disconnected
             default: break
             }
+            if reportedConnection != nil { recoveryStateObserver?() }
         case "overlay":
             guard (event["version"] as? Int) == 1, let lifetimeId,
                   lifetimeId == currentLifetimeId, let open = event["open"] as? Bool else { return }

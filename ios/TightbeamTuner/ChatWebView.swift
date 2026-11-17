@@ -1,6 +1,21 @@
 import SwiftUI
 import WebKit
 
+struct ChatRecoveryBackoff {
+    private(set) var nextInterval: TimeInterval = 1
+    private let maximumInterval: TimeInterval = 30
+
+    mutating func nextDelay() -> TimeInterval {
+        let delay = nextInterval
+        nextInterval = min(nextInterval * 2, maximumInterval)
+        return delay
+    }
+
+    mutating func reset() {
+        nextInterval = 1
+    }
+}
+
 /// Hosts Chat in a web view. The page reads its safe area as `env(safe-area-inset-*)`.
 /// SwiftUI's own safe areas reach the web view through UIKit, but a SwiftUI `safeAreaInset`
 /// does not, so the floating composer's height is added to the page's bottom safe area here.
@@ -86,6 +101,9 @@ struct ChatWebView: UIViewControllerRepresentable {
         bridge.webView = webView
         context.coordinator.bridge = bridge
         context.coordinator.webView = webView
+        bridge.recoveryStateObserver = { [weak coordinator = context.coordinator] in
+            coordinator?.bridgeStateDidChange()
+        }
         webView.load(URLRequest(url: url))
         context.coordinator.loadedURL = url
         let controller = UIViewController()
@@ -110,19 +128,31 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
         guard let webView = context.coordinator.webView else { return }
         if context.coordinator.loadedURL != url {
+            context.coordinator.cancelRecovery(resetBackoff: true)
             context.coordinator.loadedURL = url
             webView.load(URLRequest(url: url))
         } else if context.coordinator.reloadToken != reloadToken {
+            context.coordinator.cancelRecovery(resetBackoff: true)
             context.coordinator.reloadToken = reloadToken
             webView.reload()
         }
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    static func dismantleUIViewController(_ controller: UIViewController, coordinator: Coordinator) {
+        coordinator.stopRecovery()
+    }
+
+    @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var loadedURL: URL?
         var reloadToken = 0
         var pageController: UIViewController?
         weak var bridge: ChatHostBridge?
+        private var wasInactive = false
+        private var recoveryTask: Task<Void, Never>?
+        private var recoveryGeneration = 0
+        private var recoveryBackoff = ChatRecoveryBackoff()
+
+        private static let readyTimeout: TimeInterval = 3
 
         // Text size set by pinching, shared by every chat and kept across launches.
         private static let zoomKey = "chatTextZoom"
@@ -150,6 +180,12 @@ struct ChatWebView: UIViewControllerRepresentable {
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             bridge?.pageEnded()
+            scheduleRecovery()
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            bridge?.pageEnded()
+            scheduleRecovery()
         }
 
         // iOS can discard a background page's content process, which leaves the chat blank on
@@ -159,16 +195,35 @@ struct ChatWebView: UIViewControllerRepresentable {
 
         override init() {
             super.init()
+            NotificationCenter.default.addObserver(self, selector: #selector(willResignActive),
+                                                   name: UIApplication.willResignActiveNotification, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(becameActive),
                                                    name: UIApplication.didBecomeActiveNotification, object: nil)
         }
 
+        @objc private func willResignActive() {
+            wasInactive = true
+            cancelRecovery(resetBackoff: false)
+        }
+
         @objc private func becameActive() {
             guard let webView else { return }
-            if needsReload || webView.url == nil { restart(webView); return }
+            let resumed = wasInactive
+            wasInactive = false
+            if needsReload || webView.url == nil {
+                restart(webView)
+                if resumed { scheduleRecovery(after: Self.readyTimeout) }
+                return
+            }
             // A page whose content process is gone cannot run script.
             webView.evaluateJavaScript("1") { [weak self, weak webView] _, error in
-                if error != nil, let webView { self?.restart(webView) }
+                guard let self, let webView else { return }
+                if error != nil {
+                    self.restart(webView)
+                    if resumed { self.scheduleRecovery(after: Self.readyTimeout) }
+                } else if resumed {
+                    self.scheduleRecovery(after: Self.readyTimeout)
+                }
             }
         }
 
@@ -183,12 +238,88 @@ struct ChatWebView: UIViewControllerRepresentable {
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             bridge?.pageEnded()
-            if UIApplication.shared.applicationState == .active { restart(webView) } else { needsReload = true }
+            if UIApplication.shared.applicationState == .active {
+                restart(webView)
+                scheduleRecovery(after: Self.readyTimeout)
+            } else {
+                needsReload = true
+            }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             // A reload starts from the size chosen when this view opened; reapply the latest.
             webView.evaluateJavaScript("window.__tunerSetTextZoom?.(\(savedZoom))")
+            if isReadyAndConnected {
+                cancelRecovery(resetBackoff: true)
+            } else if bridge?.hostModeDeclined != true {
+                // A committed HTTP error page can finish without a WebKit navigation failure.
+                // If Chat never announces a healthy bridge, retry after its normal startup window.
+                scheduleRecovery(after: Self.readyTimeout)
+            }
+        }
+
+        func bridgeStateDidChange() {
+            if bridge?.hostModeDeclined == true || isReadyAndConnected {
+                cancelRecovery(resetBackoff: true)
+            } else if bridge?.phaseIsUnavailable == true || bridge?.connection == .disconnected {
+                scheduleRecovery()
+            }
+        }
+
+        private var isReadyAndConnected: Bool {
+            bridge?.isReady == true && bridge?.connection == .connected
+        }
+
+        private func scheduleRecovery(after delay: TimeInterval? = nil) {
+            guard recoveryTask == nil else { return }
+            guard bridge?.hostModeDeclined != true else { return }
+            guard UIApplication.shared.applicationState == .active, let webView else {
+                needsReload = true
+                return
+            }
+            guard !isReadyAndConnected else {
+                cancelRecovery(resetBackoff: true)
+                return
+            }
+
+            let generation = recoveryGeneration
+            let scheduledDelay = delay ?? recoveryBackoff.nextDelay()
+            recoveryTask = Task { @MainActor [weak self, weak webView] in
+                do {
+                    try await Task.sleep(for: .milliseconds(Int64(scheduledDelay * 1_000)))
+                } catch {
+                    return
+                }
+                guard let self, self.recoveryGeneration == generation else { return }
+                self.recoveryTask = nil
+                guard let webView, UIApplication.shared.applicationState == .active else {
+                    self.needsReload = true
+                    return
+                }
+                guard !self.isReadyAndConnected else {
+                    self.cancelRecovery(resetBackoff: true)
+                    return
+                }
+
+                if self.bridge?.isReady == true {
+                    self.bridge?.reconnect()
+                } else {
+                    webView.reload()
+                }
+                self.scheduleRecovery()
+            }
+        }
+
+        func cancelRecovery(resetBackoff: Bool) {
+            recoveryGeneration &+= 1
+            recoveryTask?.cancel()
+            recoveryTask = nil
+            if resetBackoff { recoveryBackoff.reset() }
+        }
+
+        func stopRecovery() {
+            cancelRecovery(resetBackoff: true)
+            bridge?.recoveryStateObserver = nil
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
