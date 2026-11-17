@@ -271,19 +271,48 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_shipped_build_76_note_remains_selectable_after_current_note_advances(self):
+        expected_items = [
+            (
+                "Compatibility",
+                "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Not yet verified with Chat v0.1.101.",
+            ),
+            ("Breaking changes", "None."),
+        ]
+        note = release_notes.exact_note(self.history, 76)
+        self.assertEqual(note.build, 76)
+        self.assertEqual(note.items, tuple(
+            release_notes.NoteItem(title=title, detail=detail)
+            for title, detail in expected_items
+        ))
+
+        selected = release_notes.note_for_build(
+            self.current_source, self.history_source, 76
+        )
+        self.assertEqual(selected, note)
+
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
-        self.assertEqual(current.build, 76)
+        self.assertEqual(current.build, 77)
         self.assertEqual(
             [item.title for item in current.items],
-            ["Compatibility", "Breaking changes"],
+            ["Keep Replies current after reconnecting", "Compatibility", "Breaking changes"],
+        )
+        replies_detail = next(
+            item.detail
+            for item in current.items
+            if item.title == "Keep Replies current after reconnecting"
+        )
+        self.assertIn(
+            "A reply received during disconnection for an older agent may appear in Replies after its next live update; opening that chat still shows it.",
+            replies_detail,
         )
         compatibility = next(
             item.detail for item in current.items if item.title == "Compatibility"
         )
         self.assertEqual(
             compatibility,
-            "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Not yet verified with Chat v0.1.101.",
+            "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Chat v0.1.101 does not work in Tuner.",
         )
         breaking_changes = next(
             item.detail for item in current.items if item.title == "Breaking changes"
@@ -296,7 +325,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 "current draft is not assigned to a numbered build",
             ):
                 release_notes.note_for_build(
-                    self.current_source, self.history_source, 76
+                    self.current_source, self.history_source, 77
                 )
             return
 
@@ -434,7 +463,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 75"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 76"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 struct RepliedMessage: Decodable, Sendable, Equatable {
     let seq: Int
@@ -115,6 +116,64 @@ struct RepliedSubscriptionState: Sendable {
 
     mutating func reset() {
         hasReceivedReady = false
+    }
+}
+
+enum RepliedSnapshotMode: Sendable, Equatable {
+    case initial
+    case reconnect
+}
+
+enum RepliedSnapshotSelection {
+    static let maximumRecentSessions = 8
+    static let maximumConcurrentFetches = 2
+
+    static func sessionKeys(
+        mode: RepliedSnapshotMode,
+        rosterSessionKeys: [String],
+        recentSessionKeys: [String],
+        pendingPromptSessionKeys: Set<String>,
+        changedReadMarkerSessionKeys: Set<String> = []
+    ) -> [String] {
+        let roster = Set(rosterSessionKeys)
+        var selected: [String] = []
+        var included: Set<String> = []
+
+        func append(_ keys: [String]) {
+            for key in keys where roster.contains(key) && included.insert(key).inserted {
+                selected.append(key)
+            }
+        }
+
+        append(pendingPromptSessionKeys.sorted())
+        if mode == .reconnect {
+            append(changedReadMarkerSessionKeys.sorted())
+        }
+        append(Array(recentSessionKeys.filter { roster.contains($0) }.prefix(maximumRecentSessions)))
+        return selected
+    }
+}
+
+enum RepliedSocketPhase: String, Sendable {
+    case send
+    case receive
+}
+
+enum RepliedSocketDiagnostic {
+    static func transportFailure(
+        _ error: Error,
+        phase: RepliedSocketPhase,
+        closeCode: Int,
+        closeReasonPresent: Bool,
+        lifetimeSeconds: Int
+    ) -> String {
+        let failure = error as NSError
+        let domain = failure.domain.isEmpty ? "unknown" : failure.domain
+        return "replied_websocket_drop phase=\(phase.rawValue) cause=transport_error error_domain=\(domain) error_code=\(failure.code) close_code=\(closeCode) close_reason_present=\(closeReasonPresent) lifetime_seconds=\(lifetimeSeconds)"
+    }
+
+    static func serverError(closeCode: Int, closeReasonPresent: Bool, lifetimeSeconds: Int) -> String {
+        "replied_websocket_drop phase=receive cause=server_error_frame close_code=\(closeCode) close_reason_present=\(closeReasonPresent) lifetime_seconds=\(lifetimeSeconds)"
     }
 }
 
@@ -292,12 +351,19 @@ struct RepliedState: Codable, Sendable {
         localReadMarkerBySession[sessionKey] = shownReply
         return true
     }
-    mutating func apply(_ marker: RepliedReadMarker, userID: String) {
+    @discardableResult
+    mutating func applyReadMarker(_ marker: RepliedReadMarker, userID: String) -> String? {
         let suffix = ":session-read-position"
-        guard marker.userId == userID, marker.scopeKey.hasSuffix(suffix) else { return }
+        guard marker.userId == userID, marker.scopeKey.hasSuffix(suffix) else { return nil }
         let key = String(marker.scopeKey.dropLast(suffix.count))
-        if let current = readMarkerBySession[key], current.updatedAt > marker.updatedAt { return }
+        if let current = readMarkerBySession[key], current.updatedAt > marker.updatedAt { return nil }
+        let didMove = readMarkerBySession[key]?.marker != marker.marker
         readMarkerBySession[key] = marker
+        return didMove ? key : nil
+    }
+
+    mutating func apply(_ marker: RepliedReadMarker, userID: String) {
+        _ = applyReadMarker(marker, userID: userID)
     }
     mutating func apply(_ frame: RepliedFrame, userID: String) {
         _ = apply(frame, userID: userID, shownSessionKey: nil)
@@ -348,14 +414,14 @@ struct RepliedState: Codable, Sendable {
         pendingPromptsByID.values.contains(where: { $0.sessionKey == sessionKey })
     }
 
-    func needsSnapshotRefresh(_ sessionKey: String) -> Bool {
-        latestReplyBySession[sessionKey] != nil || isWaitingForReply(sessionKey)
-    }
-
     func pendingPromptIDs(for sessionKey: String) -> Set<String> {
         Set(pendingPromptsByID.compactMap { correlationID, prompt in
             prompt.sessionKey == sessionKey ? correlationID : nil
         })
+    }
+
+    func pendingPromptSessionKeys() -> Set<String> {
+        Set(pendingPromptsByID.values.map(\.sessionKey))
     }
 
     func rowIndicator(for sessionKey: String) -> RepliesRowIndicator? {
@@ -391,11 +457,6 @@ struct RepliedState: Codable, Sendable {
     }
 }
 
-struct RepliedTaskKey: Equatable {
-    let connection: Connection
-    let sessionKeys: [String]
-}
-
 struct RepliedShownChat {
     let selectedSessionKey: String?
     let compactWidth: Bool
@@ -424,6 +485,7 @@ struct RepliedShownChat {
     private let defaults: UserDefaults
     private var activeConnection: Connection?
     private var subscriptionState = RepliedSubscriptionState()
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "TightbeamTuner", category: "RepliedFeed")
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -510,7 +572,8 @@ struct RepliedShownChat {
 
     func run(
         connection: Connection,
-        sessionKeys: [String],
+        sessionKeys: @escaping @MainActor () -> [String],
+        recentSessionKeys: @escaping @MainActor () -> [String],
         onRosterEvent: @escaping @MainActor (RepliedFrame) -> Void,
         onReconnect: @escaping @MainActor () async -> Void
     ) async {
@@ -519,16 +582,20 @@ struct RepliedShownChat {
         let user = connection.tightbeamUser
         guard let url = RepliedAPI.webSocketURL(gateway: gateway) else { return }
         var retry: UInt64 = 1
-        var firstLoad = true
         while !Task.isCancelled {
+            let socketStartedAt = ProcessInfo.processInfo.systemUptime
             let socket = URLSession.shared.webSocketTask(with: url)
             socket.resume()
             var snapshotTask: Task<Void, Never>?
             var ready = false
+            var phase = RepliedSocketPhase.send
+            var dropDiagnostic: String?
             await withTaskCancellationHandler {
                 do {
+                    phase = .send
                     try await socket.send(.string(RepliedAPI.subscriptionFrame))
                     receiveLoop: while !Task.isCancelled {
+                        phase = .receive
                         let message = try await socket.receive()
                         guard !Task.isCancelled else { break }
                         guard case .string(let text) = message else { continue }
@@ -538,21 +605,52 @@ struct RepliedShownChat {
                             guard !ready else { continue }
                             ready = true
                             retry = 1
-                            if subscriptionState.subscriptionReadyNeedsCatchUp() { await onReconnect() }
-                            let limit = firstLoad ? nil : 100
-                            firstLoad = false
-                            snapshotTask = Task { await self.loadSnapshot(gateway: gateway, user: user, sessionKeys: sessionKeys, limit: limit) }
-                        case .serverError: break receiveLoop
+                            let isReconnect = subscriptionState.subscriptionReadyNeedsCatchUp()
+                            if isReconnect { await onReconnect() }
+                            let mode: RepliedSnapshotMode = isReconnect ? .reconnect : .initial
+                            let limit = mode == .initial ? 500 : 100
+                            let currentSessionKeys = sessionKeys()
+                            let currentRecentSessionKeys = recentSessionKeys()
+                            snapshotTask = Task {
+                                await self.loadSnapshot(
+                                    gateway: gateway,
+                                    user: user,
+                                    sessionKeys: currentSessionKeys,
+                                    limit: limit,
+                                    recentSessionKeys: currentRecentSessionKeys,
+                                    mode: mode
+                                )
+                            }
+                        case .serverError:
+                            dropDiagnostic = RepliedSocketDiagnostic.serverError(
+                                closeCode: socket.closeCode.rawValue,
+                                closeReasonPresent: socket.closeReason != nil,
+                                lifetimeSeconds: max(0, Int(ProcessInfo.processInfo.systemUptime - socketStartedAt))
+                            )
+                            break receiveLoop
                         default:
                             apply(frame, userID: user)
                             if frame.changesRoster { onRosterEvent(frame) }
                         }
                     }
-                } catch { }
+                } catch {
+                    if !Task.isCancelled {
+                        dropDiagnostic = RepliedSocketDiagnostic.transportFailure(
+                            error,
+                            phase: phase,
+                            closeCode: socket.closeCode.rawValue,
+                            closeReasonPresent: socket.closeReason != nil,
+                            lifetimeSeconds: max(0, Int(ProcessInfo.processInfo.systemUptime - socketStartedAt))
+                        )
+                    }
+                }
             } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
             snapshotTask?.cancel()
             socket.cancel(with: .goingAway, reason: nil)
             guard !Task.isCancelled else { return }
+            if let dropDiagnostic {
+                logger.error("\(dropDiagnostic, privacy: .public) retry_in_seconds=\(retry, privacy: .public)")
+            }
             do { try await Task.sleep(nanoseconds: retry * 1_000_000_000) } catch { return }
             retry = min(retry * 2, 30)
         }
@@ -563,6 +661,8 @@ struct RepliedShownChat {
         user: String,
         sessionKeys: [String],
         limit: Int?,
+        recentSessionKeys: [String] = [],
+        mode: RepliedSnapshotMode = .reconnect,
         fetchMarkers: @escaping @Sendable (String, String) async -> [RepliedReadMarker] = RepliedAPI.fetchMarkers,
         fetchMessages: @escaping @Sendable (String, String, Int?) async -> [RepliedMessage]? = RepliedAPI.fetchMessages,
         fetchPendingMessages: @escaping @Sendable (String, String, Set<String>) async -> [RepliedMessage]? = RepliedAPI.fetchPendingMessages
@@ -570,23 +670,32 @@ struct RepliedShownChat {
         let markers = await fetchMarkers(gateway, user)
         guard !Task.isCancelled else { return }
         let previousState = state
-        for marker in markers { state.apply(marker, userID: user) }
+        var changedReadMarkerSessionKeys: Set<String> = []
+        for marker in markers {
+            if let sessionKey = state.applyReadMarker(marker, userID: user) {
+                changedReadMarkerSessionKeys.insert(sessionKey)
+            }
+        }
         defer {
             if state.hasPersistenceRelevantChanges(comparedTo: previousState) {
                 persistStateSnapshot()
             }
         }
-        let keysToFetch = markers.isEmpty
-            ? sessionKeys.filter { state.needsSnapshotRefresh($0) }
-            : sessionKeys
+        let keysToFetch = RepliedSnapshotSelection.sessionKeys(
+            mode: mode,
+            rosterSessionKeys: sessionKeys,
+            recentSessionKeys: recentSessionKeys,
+            pendingPromptSessionKeys: state.pendingPromptSessionKeys(),
+            changedReadMarkerSessionKeys: changedReadMarkerSessionKeys
+        )
         guard !keysToFetch.isEmpty else { return }
         let requests = keysToFetch.map { key -> (String, Set<String>, Int?) in
             let promptIDs = state.pendingPromptIDs(for: key)
             return (key, promptIDs, promptIDs.isEmpty ? (limit ?? 500) : nil)
         }
         await withTaskGroup(of: (String, [RepliedMessage]?).self) { group in
-            var next = min(6, requests.count)
-            for request in requests.prefix(6) {
+            var next = min(RepliedSnapshotSelection.maximumConcurrentFetches, requests.count)
+            for request in requests.prefix(RepliedSnapshotSelection.maximumConcurrentFetches) {
                 group.addTask {
                     if request.1.isEmpty {
                         return (request.0, await fetchMessages(gateway, request.0, request.2))

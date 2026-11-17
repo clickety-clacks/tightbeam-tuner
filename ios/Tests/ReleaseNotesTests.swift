@@ -54,6 +54,19 @@ final class ReleaseNotesTests: XCTestCase {
         XCTAssertEqual(unseen.first?.items.map(\.detail), latest.items.map(\.detail))
     }
 
+    func testShippedBuild76NoteRemainsInHistory() throws {
+        let shipped = try XCTUnwrap(ReleaseNotes.history.first(where: { $0.build == 76 }))
+
+        XCTAssertEqual(shipped.date, "November 17, 2026")
+        XCTAssertEqual(
+            shipped.items.map { ($0.title, $0.detail) }.map { "\($0.0)|\($0.1)" },
+            [
+                "Compatibility|Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Not yet verified with Chat v0.1.101.",
+                "Breaking changes|None.",
+            ]
+        )
+    }
+
     func testFirstLaunchAfterUpdateShowsTheExactCurrentBuildNote() {
         let latest = ReleaseNote(version: "1.0", build: 900001, date: "", items: [
             .init(symbol: "text.bubble", title: "Current build", detail: "Current details.")
