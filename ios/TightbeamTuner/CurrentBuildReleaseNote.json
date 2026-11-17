@@ -1,8 +1,13 @@
 {
   "version": "1.0",
-  "build": 73,
+  "build": 74,
   "date": "November 17, 2026",
   "items": [
+    {
+      "symbol": "arrow.clockwise",
+      "title": "Recover embedded Chat automatically",
+      "detail": "Tuner now checks embedded Chat after a navigation or connection failure and tries to restore it if it stays unavailable. When you return to Tuner, it waits before checking so a slow page has time to load."
+    },
     {
       "symbol": "info.circle",
       "title": "Compatibility",
