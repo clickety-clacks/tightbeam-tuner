@@ -1,6 +1,67 @@
 import SwiftUI
 import WebKit
 
+struct ChatRecoveryBackoff {
+    private(set) var nextInterval: TimeInterval = 1
+    private let maximumInterval: TimeInterval = 120
+
+    func delay(minimum: TimeInterval = 0) -> TimeInterval {
+        max(minimum, nextInterval)
+    }
+
+    mutating func advance(minimum: TimeInterval = 0) {
+        nextInterval = min(max(minimum, nextInterval) * 2, maximumInterval)
+    }
+
+    mutating func nextDelay(minimum: TimeInterval = 0) -> TimeInterval {
+        let delay = self.delay(minimum: minimum)
+        advance(minimum: minimum)
+        return delay
+    }
+
+    mutating func reset() {
+        nextInterval = 1
+    }
+}
+
+enum ChatRecoveryAction: Equatable {
+    case wait
+    case reload
+    case reconnect
+}
+
+enum ChatRecoveryPolicy {
+    static let resumeHealthCheckDelay: TimeInterval = 20
+
+    static func action(
+        isReady: Bool,
+        connection: ChatHostBridge.Connection,
+        canReconnectInPlace: Bool,
+        reconnectIsPending: Bool,
+        chatReconnectIsPending: Bool = false,
+        isUnavailable: Bool = false
+    ) -> ChatRecoveryAction {
+        guard !reconnectIsPending, !chatReconnectIsPending else { return .wait }
+
+        switch connection {
+        case .connected:
+            return .wait
+        case .reconnecting:
+            return isUnavailable ? .reload : .wait
+        case .unsupported, .unauthorized:
+            return .wait
+        case .connecting:
+            if isUnavailable { return .reload }
+            return isReady ? .wait : .reload
+        case .disconnected:
+            if isReady {
+                return canReconnectInPlace ? .reconnect : .reload
+            }
+            return .reload
+        }
+    }
+}
+
 /// Hosts Chat in a web view. The page reads its safe area as `env(safe-area-inset-*)`.
 /// SwiftUI's own safe areas reach the web view through UIKit, but a SwiftUI `safeAreaInset`
 /// does not, so the floating composer's height is added to the page's bottom safe area here.
@@ -86,6 +147,9 @@ struct ChatWebView: UIViewControllerRepresentable {
         bridge.webView = webView
         context.coordinator.bridge = bridge
         context.coordinator.webView = webView
+        bridge.recoveryStateObserver = { [weak coordinator = context.coordinator] in
+            coordinator?.bridgeStateDidChange()
+        }
         webView.load(URLRequest(url: url))
         context.coordinator.loadedURL = url
         let controller = UIViewController()
@@ -110,19 +174,34 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
         guard let webView = context.coordinator.webView else { return }
         if context.coordinator.loadedURL != url {
+            context.coordinator.cancelRecovery(resetBackoff: true)
+            context.coordinator.cancelReconnectAttempt()
             context.coordinator.loadedURL = url
             webView.load(URLRequest(url: url))
         } else if context.coordinator.reloadToken != reloadToken {
+            context.coordinator.cancelRecovery(resetBackoff: true)
+            context.coordinator.cancelReconnectAttempt()
             context.coordinator.reloadToken = reloadToken
             webView.reload()
         }
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    static func dismantleUIViewController(_ controller: UIViewController, coordinator: Coordinator) {
+        coordinator.stopRecovery()
+    }
+
+    @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var loadedURL: URL?
         var reloadToken = 0
         var pageController: UIViewController?
         weak var bridge: ChatHostBridge?
+        private var wasInactive = false
+        private var recoveryTask: Task<Void, Never>?
+        private var recoveryGeneration = 0
+        private var recoveryBackoff = ChatRecoveryBackoff()
+        private var reconnectIsPending = false
+        private var reconnectPendingTimeoutElapsed = false
+        private var reconnectTimeoutTask: Task<Void, Never>?
 
         // Text size set by pinching, shared by every chat and kept across launches.
         private static let zoomKey = "chatTextZoom"
@@ -145,35 +224,75 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            cancelRecovery(resetBackoff: false)
+            cancelReconnectAttempt()
             bridge?.pageStarted()
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             bridge?.pageEnded()
+            scheduleRecovery()
         }
 
-        // iOS can discard a background page's content process, which leaves the chat blank on
-        // return. Reload it as soon as Tuner is in front again.
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            bridge?.pageEnded()
+            scheduleRecovery()
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationResponse: WKNavigationResponse
+        ) async -> WKNavigationResponsePolicy {
+            guard navigationResponse.isForMainFrame,
+                  let response = navigationResponse.response as? HTTPURLResponse,
+                  (500...599).contains(response.statusCode) else { return .allow }
+            bridge?.pageEnded()
+            scheduleRecovery()
+            return .allow
+        }
+
+        // iOS can discard a background page's content process. A dead process is an immediate
+        // failure signal; otherwise, foreground return gets a delayed health check.
         weak var webView: WKWebView?
         private var needsReload = false
+        private var needsHealthCheck = false
 
         override init() {
             super.init()
+            NotificationCenter.default.addObserver(self, selector: #selector(willResignActive),
+                                                   name: UIApplication.willResignActiveNotification, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(becameActive),
                                                    name: UIApplication.didBecomeActiveNotification, object: nil)
         }
 
+        @objc private func willResignActive() {
+            wasInactive = true
+            cancelRecovery(resetBackoff: false)
+        }
+
         @objc private func becameActive() {
             guard let webView else { return }
-            if needsReload || webView.url == nil { restart(webView); return }
+            let shouldCheckHealth = wasInactive || needsHealthCheck
+            wasInactive = false
+            needsHealthCheck = false
+            if needsReload || webView.url == nil {
+                restart(webView)
+                return
+            }
             // A page whose content process is gone cannot run script.
             webView.evaluateJavaScript("1") { [weak self, weak webView] _, error in
-                if error != nil, let webView { self?.restart(webView) }
+                guard let self, let webView else { return }
+                if error != nil {
+                    self.restart(webView)
+                } else if shouldCheckHealth {
+                    self.scheduleRecovery(minimumDelay: ChatRecoveryPolicy.resumeHealthCheckDelay)
+                }
             }
         }
 
         private func restart(_ webView: WKWebView) {
             needsReload = false
+            needsHealthCheck = false
             if webView.url == nil, let loadedURL {
                 webView.load(URLRequest(url: loadedURL))
             } else {
@@ -182,13 +301,155 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            cancelRecovery(resetBackoff: false)
+            cancelReconnectAttempt()
             bridge?.pageEnded()
-            if UIApplication.shared.applicationState == .active { restart(webView) } else { needsReload = true }
+            if UIApplication.shared.applicationState == .active {
+                restart(webView)
+            } else {
+                needsReload = true
+            }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             // A reload starts from the size chosen when this view opened; reapply the latest.
             webView.evaluateJavaScript("window.__tunerSetTextZoom?.(\(savedZoom))")
+            if isReadyAndConnected {
+                cancelRecovery(resetBackoff: true)
+            } else if bridge?.hostModeDeclined != true {
+                // Give Chat longer than its Gateway request budget before resetting an unready page.
+                scheduleRecovery(minimumDelay: ChatRecoveryPolicy.resumeHealthCheckDelay)
+            }
+        }
+
+        func bridgeStateDidChange() {
+            if bridge?.hostModeDeclined == true {
+                cancelReconnectAttempt()
+                cancelRecovery(resetBackoff: true)
+            } else if isReadyAndConnected {
+                cancelReconnectAttempt()
+                cancelRecovery(resetBackoff: true)
+            } else if bridge?.connection == .unsupported || bridge?.connection == .unauthorized {
+                cancelReconnectAttempt()
+                cancelRecovery(resetBackoff: false)
+            } else if bridge?.isReconnectInProgress == true
+                        || (bridge?.isReady == true && bridge?.connection == .connecting) {
+                // Chat is already making progress; don't reset its page or queue another command.
+                cancelRecovery(resetBackoff: false)
+            } else if bridge?.connection == .disconnected || bridge?.phaseIsUnavailable == true {
+                if reconnectIsPending {
+                    guard reconnectPendingTimeoutElapsed else { return }
+                    cancelReconnectAttempt()
+                }
+                scheduleRecovery(minimumDelay: ChatRecoveryPolicy.resumeHealthCheckDelay)
+            }
+        }
+
+        private var isReadyAndConnected: Bool {
+            bridge?.isReady == true && bridge?.connection == .connected
+        }
+
+        private func scheduleRecovery(minimumDelay: TimeInterval = ChatRecoveryPolicy.resumeHealthCheckDelay) {
+            guard recoveryTask == nil else { return }
+            guard bridge?.hostModeDeclined != true else { return }
+            guard UIApplication.shared.applicationState == .active, let webView else {
+                needsHealthCheck = true
+                return
+            }
+            guard !isReadyAndConnected else {
+                cancelRecovery(resetBackoff: true)
+                return
+            }
+            guard !reconnectIsPending,
+                  bridge?.isReconnectInProgress != true,
+                  !(bridge?.isReady == true && bridge?.connection == .connecting) else { return }
+
+            let generation = recoveryGeneration
+            let scheduledDelay = recoveryBackoff.delay(minimum: minimumDelay)
+            recoveryTask = Task { @MainActor [weak self, weak webView] in
+                do {
+                    try await Task.sleep(for: .milliseconds(Int64(scheduledDelay * 1_000)))
+                } catch {
+                    return
+                }
+                guard let self, self.recoveryGeneration == generation else { return }
+                self.recoveryTask = nil
+                guard let webView, UIApplication.shared.applicationState == .active else {
+                    self.needsHealthCheck = true
+                    return
+                }
+                guard !self.isReadyAndConnected else {
+                    self.cancelRecovery(resetBackoff: true)
+                    return
+                }
+
+                let action = ChatRecoveryPolicy.action(
+                    isReady: self.bridge?.isReady == true,
+                    connection: self.bridge?.connection ?? .connecting,
+                    canReconnectInPlace: self.bridge?.canReconnectInPlace == true,
+                    reconnectIsPending: self.reconnectIsPending,
+                    chatReconnectIsPending: self.bridge?.isReconnectInProgress == true,
+                    isUnavailable: self.bridge?.phaseIsUnavailable == true
+                )
+                switch action {
+                case .wait:
+                    return
+                case .reload:
+                    self.recoveryBackoff.advance(minimum: minimumDelay)
+                    webView.reload()
+                case .reconnect:
+                    self.recoveryBackoff.advance(minimum: minimumDelay)
+                    self.beginReconnect()
+                }
+            }
+        }
+
+        private func beginReconnect() {
+            guard !reconnectIsPending, let bridge else { return }
+            reconnectIsPending = true
+            reconnectPendingTimeoutElapsed = false
+            bridge.reconnect()
+            reconnectTimeoutTask?.cancel()
+            reconnectTimeoutTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(ChatRecoveryPolicy.resumeHealthCheckDelay))
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                if self.bridge?.connection == .reconnecting || self.bridge?.connection == .connecting {
+                    self.reconnectPendingTimeoutElapsed = true
+                    self.reconnectTimeoutTask = nil
+                    return
+                }
+                if self.bridge?.connection == .disconnected {
+                    self.cancelReconnectAttempt()
+                    self.scheduleRecovery(minimumDelay: ChatRecoveryPolicy.resumeHealthCheckDelay)
+                } else {
+                    self.reconnectPendingTimeoutElapsed = true
+                    self.reconnectTimeoutTask = nil
+                }
+            }
+        }
+
+        func cancelReconnectAttempt() {
+            reconnectTimeoutTask?.cancel()
+            reconnectTimeoutTask = nil
+            reconnectIsPending = false
+            reconnectPendingTimeoutElapsed = false
+        }
+
+        func cancelRecovery(resetBackoff: Bool) {
+            recoveryGeneration &+= 1
+            recoveryTask?.cancel()
+            recoveryTask = nil
+            if resetBackoff { recoveryBackoff.reset() }
+        }
+
+        func stopRecovery() {
+            cancelRecovery(resetBackoff: true)
+            cancelReconnectAttempt()
+            bridge?.recoveryStateObserver = nil
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {

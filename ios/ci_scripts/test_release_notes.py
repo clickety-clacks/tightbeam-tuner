@@ -225,11 +225,25 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
-    def test_current_compatibility_note_is_selected_only_for_its_assigned_build(self):
+    def test_shipped_build_73_note_is_preserved_in_history(self):
+        note = release_notes.exact_note(self.history, 73)
+        self.assertEqual(note.build, 73)
+        self.assertEqual(
+            [(item.title, item.detail) for item in note.items],
+            [
+                (
+                    "Compatibility",
+                    "Compatible with Tightbeam CLI 0.1.16 and Gateway 0.1.16 (build 4283), plus Chat v0.1.100, for the tested paths: the CLI roster returned the required fields, and Tuner opened a conversation, sent one prompt, and showed the reply. Tuner's in-app SSH roster fetch was not exercised.",
+                ),
+                ("Breaking changes", "None."),
+            ],
+        )
+
+    def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
         self.assertEqual(
             [item.title for item in current.items],
-            ["Compatibility", "Breaking changes"],
+            ["Recover embedded Chat automatically", "Compatibility", "Breaking changes"],
         )
 
         if current.build == 0:
@@ -238,7 +252,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 "current draft is not assigned to a numbered build",
             ):
                 release_notes.note_for_build(
-                    self.current_source, self.history_source, 73
+                    self.current_source, self.history_source, 74
                 )
             return
 
@@ -376,7 +390,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 72"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 73"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )

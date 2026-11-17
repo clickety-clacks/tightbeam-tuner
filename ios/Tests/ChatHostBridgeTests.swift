@@ -171,6 +171,97 @@ final class ChatHostBridgeTests: XCTestCase {
         XCTAssertEqual(bridge.connection, .connected)
     }
 
+    func testRecoveryObserverTracksUnavailableConnectionAndRestoredReadyState() {
+        let bridge = readyBridge()
+        var updates = 0
+        bridge.recoveryStateObserver = { updates += 1 }
+
+        bridge.handle(type: "unavailable", event: [
+            "event": "unavailable", "lifetimeId": lifetime, "reason": "disconnected"
+        ])
+        XCTAssertTrue(bridge.phaseIsUnavailable)
+        XCTAssertEqual(updates, 1)
+
+        reportReady(bridge, lifetimeId: lifetime)
+        XCTAssertFalse(bridge.phaseIsUnavailable)
+        XCTAssertEqual(updates, 2)
+
+        bridge.handle(type: "connection", event: [
+            "event": "connection", "version": 1, "lifetimeId": lifetime, "state": "disconnected"
+        ])
+        XCTAssertEqual(bridge.connection, .disconnected)
+        XCTAssertEqual(updates, 3)
+    }
+
+    func testHostModeDeclineIsReportedAndRemainsOnChatComposer() {
+        let bridge = ChatHostBridge(chatURL: URL(string: "https://chat.example:9443/")!)
+        var updates = 0
+        bridge.recoveryStateObserver = { updates += 1 }
+
+        bridge.handle(type: "declined", event: ["event": "declined"])
+
+        XCTAssertTrue(bridge.hostModeDeclined)
+        XCTAssertFalse(bridge.hostComposerActive)
+        XCTAssertEqual(updates, 1)
+    }
+
+    func testRecoveryBackoffDoublesToCapAndResets() {
+        var backoff = ChatRecoveryBackoff()
+        XCTAssertEqual((0..<8).map { _ in backoff.nextDelay() }, [1, 2, 4, 8, 16, 32, 64, 120])
+        backoff.reset()
+        XCTAssertEqual(backoff.nextDelay(), 1)
+    }
+
+    func testRecoveryRetryScheduleWaitsBeyondGatewayTimeoutAndGrowsAcrossAttempts() {
+        var backoff = ChatRecoveryBackoff()
+        XCTAssertGreaterThanOrEqual(ChatRecoveryPolicy.resumeHealthCheckDelay, 20)
+        XCTAssertEqual((0..<5).map { _ in backoff.nextDelay(minimum: ChatRecoveryPolicy.resumeHealthCheckDelay) },
+                       [20, 40, 80, 120, 120])
+        backoff.reset()
+        XCTAssertEqual(backoff.nextDelay(minimum: ChatRecoveryPolicy.resumeHealthCheckDelay), 20)
+    }
+
+    func testRecoveryPolicyDoesNotInterruptProgressOrPendingReconnect() {
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: true, connection: .connected, canReconnectInPlace: true, reconnectIsPending: false
+        ), .wait)
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: true, connection: .reconnecting, canReconnectInPlace: true, reconnectIsPending: false
+        ), .wait)
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: true, connection: .disconnected, canReconnectInPlace: true, reconnectIsPending: true
+        ), .wait)
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: false, connection: .reconnecting, canReconnectInPlace: false,
+            reconnectIsPending: false, chatReconnectIsPending: true, isUnavailable: true
+        ), .wait)
+    }
+
+    func testRecoveryPolicyReloadsOrReconnectsOnlyForUnhealthyStates() {
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: false, connection: .connecting, canReconnectInPlace: false, reconnectIsPending: false
+        ), .reload)
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: true, connection: .connecting, canReconnectInPlace: true, reconnectIsPending: false
+        ), .wait)
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: false, connection: .disconnected, canReconnectInPlace: false, reconnectIsPending: false
+        ), .reload)
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: true, connection: .disconnected, canReconnectInPlace: true, reconnectIsPending: false
+        ), .reconnect)
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: true, connection: .disconnected, canReconnectInPlace: false, reconnectIsPending: false
+        ), .reload)
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: false, connection: .unauthorized, canReconnectInPlace: false, reconnectIsPending: false
+        ), .wait)
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: false, connection: .reconnecting, canReconnectInPlace: false,
+            reconnectIsPending: false, isUnavailable: true
+        ), .reload)
+    }
+
     func testNotReadyRejectionDoesNotChangePhaseOrConnection() throws {
         let bridge = readyBridge()
         bridge.handle(type: "connection", event: [
