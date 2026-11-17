@@ -239,12 +239,37 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_shipped_build_74_note_is_preserved_in_history(self):
+        note = release_notes.exact_note(self.history, 74)
+        self.assertEqual(note.build, 74)
+        self.assertEqual(
+            [(item.title, item.detail) for item in note.items],
+            [
+                (
+                    "Recover embedded Chat automatically",
+                    "Tuner now checks embedded Chat after a navigation or connection failure and tries to restore it if it stays unavailable. When you return to Tuner, it waits before checking so a slow page has time to load.",
+                ),
+                (
+                    "Compatibility",
+                    "Compatible with Tightbeam CLI 0.1.16 and Gateway 0.1.16 (build 4283), plus Chat v0.1.100, for the tested paths: the CLI roster returned the required fields, and Tuner opened a conversation, sent one prompt, and showed the reply. Tuner's in-app SSH roster fetch was not exercised.",
+                ),
+                ("Breaking changes", "None."),
+            ],
+        )
+
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
         self.assertEqual(
             [item.title for item in current.items],
-            ["Recover embedded Chat automatically", "Compatibility", "Breaking changes"],
+            ["Compatibility", "Breaking changes"],
         )
+        compatibility = next(
+            item.detail for item in current.items if item.title == "Compatibility"
+        )
+        self.assertIn("pre-recovery Tuner Debug build", compatibility)
+        self.assertIn("predates the recovery change", compatibility)
+        self.assertIn("has not been exercised with Chat v0.1.101", compatibility)
+        self.assertIn("in-app SSH roster fetch was not exercised", compatibility)
 
         if current.build == 0:
             with self.assertRaisesRegex(
@@ -252,7 +277,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 "current draft is not assigned to a numbered build",
             ):
                 release_notes.note_for_build(
-                    self.current_source, self.history_source, 74
+                    self.current_source, self.history_source, 75
                 )
             return
 
@@ -390,7 +415,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 73"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 74"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )
