@@ -92,6 +92,9 @@ struct SettingsView: View {
                     }
                     Section("About") {
                         LabeledContent("Version", value: ReleaseNotes.currentVersion)
+                        if let compatibility = ReleaseNotes.currentCompatibilityStatement {
+                            LabeledContent("Compatibility", value: compatibility)
+                        }
                         NavigationLink("Release Notes") { ReleaseNotesView() }
                     }
                 }
