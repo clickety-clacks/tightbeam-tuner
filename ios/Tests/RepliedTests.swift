@@ -191,7 +191,7 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(state.agents(from: roster).map(\.id), ["agent:12"])
     }
 
-    func testInitialSnapshotSelectionUsesOnlyBoundedRecentSessions() {
+    func testInitialSnapshotIncludesPendingSessionsAndBoundedRecentSessions() {
         let roster = (1...20).map { "agent:\($0)" }
         let selected = RepliedSnapshotSelection.sessionKeys(
             mode: .initial,
@@ -201,8 +201,8 @@ final class RepliedTests: XCTestCase {
             changedReadMarkerSessionKeys: Set(roster)
         )
 
-        XCTAssertEqual(selected, (1...8).map { "agent:\($0)" })
-        XCTAssertEqual(selected.count, RepliedSnapshotSelection.maximumRecentSessions)
+        XCTAssertEqual(selected, ["agent:20"] + (1...8).map { "agent:\($0)" })
+        XCTAssertEqual(selected.count, RepliedSnapshotSelection.maximumRecentSessions + 1)
     }
 
     func testReconnectSelectionUsesChangedMarkersPendingAndBoundedRecentSessions() {
@@ -999,8 +999,8 @@ final class RepliedTests: XCTestCase {
         )
 
         let fetchedKeys = await fetched.values
-        XCTAssertEqual(Set(fetchedKeys), Set((1...8).map { "agent:\($0)" }))
-        XCTAssertEqual(fetchedKeys.count, RepliedSnapshotSelection.maximumRecentSessions)
+        XCTAssertEqual(Set(fetchedKeys), Set((1...8).map { "agent:\($0)" } + ["agent:20"]))
+        XCTAssertEqual(fetchedKeys.count, RepliedSnapshotSelection.maximumRecentSessions + 1)
     }
 
     @MainActor func testSnapshotFetchConcurrencyIsLimitedToTwo() async throws {
@@ -1126,6 +1126,8 @@ final class RepliedTests: XCTestCase {
             user: "reader",
             sessionKeys: ["agent:alpha"],
             limit: 100,
+            recentSessionKeys: ["agent:alpha"],
+            mode: .initial,
             fetchMarkers: { _, _ in markers },
             fetchMessages: { _, _, _ in [reply] }
         )
@@ -1179,6 +1181,8 @@ final class RepliedTests: XCTestCase {
             user: connection.tightbeamUser,
             sessionKeys: ["agent:pending", "agent:replied"],
             limit: nil,
+            recentSessionKeys: ["agent:replied"],
+            mode: .initial,
             fetchMarkers: { _, _ in [readMarker] },
             fetchMessages: { _, key, _ in
                 key == "agent:replied" ? repliedMessages : []

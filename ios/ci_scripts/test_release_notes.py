@@ -273,17 +273,17 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
-        self.assertEqual(current.build, 76)
+        self.assertEqual(current.build, 77)
         self.assertEqual(
             [item.title for item in current.items],
-            ["Compatibility", "Breaking changes"],
+            ["Keep Replies current after reconnecting", "Compatibility", "Breaking changes"],
         )
         compatibility = next(
             item.detail for item in current.items if item.title == "Compatibility"
         )
         self.assertEqual(
             compatibility,
-            "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Not yet verified with Chat v0.1.101.",
+            "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Chat v0.1.101 does not work in Tuner.",
         )
         breaking_changes = next(
             item.detail for item in current.items if item.title == "Breaking changes"
@@ -296,7 +296,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 "current draft is not assigned to a numbered build",
             ):
                 release_notes.note_for_build(
-                    self.current_source, self.history_source, 76
+                    self.current_source, self.history_source, 77
                 )
             return
 

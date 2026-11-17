@@ -145,8 +145,8 @@ enum RepliedSnapshotSelection {
             }
         }
 
+        append(pendingPromptSessionKeys.sorted())
         if mode == .reconnect {
-            append(pendingPromptSessionKeys.sorted())
             append(changedReadMarkerSessionKeys.sorted())
         }
         append(Array(recentSessionKeys.filter { roster.contains($0) }.prefix(maximumRecentSessions)))
