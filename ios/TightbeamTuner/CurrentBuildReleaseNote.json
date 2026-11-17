@@ -1,12 +1,17 @@
 {
   "version": "1.0",
-  "build": 72,
-  "date": "November 15, 2026",
+  "build": 73,
+  "date": "November 17, 2026",
   "items": [
     {
-      "symbol": "plus.circle",
-      "title": "See the photo button in every conversation",
-      "detail": "The + button beside the status dot now always shows. It is greyed out when the conversation's Chat version does not yet accept photos from Tuner, and works as before when it does."
+      "symbol": "info.circle",
+      "title": "Compatibility",
+      "detail": "Compatible with Tightbeam CLI 0.1.16 and Gateway 0.1.16 (build 4283), plus Chat v0.1.100, for the tested paths: the CLI roster returned the required fields, and Tuner opened a conversation, sent one prompt, and showed the reply. Tuner's in-app SSH roster fetch was not exercised."
+    },
+    {
+      "symbol": "exclamationmark.triangle",
+      "title": "Breaking changes",
+      "detail": "None to Tuner's service interfaces or conversation behavior. This release adds compatibility information; the in-app roster fetch remains unverified."
     }
   ]
 }

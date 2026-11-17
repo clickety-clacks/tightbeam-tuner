@@ -32,6 +32,10 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def _numbered_note_copy(self, root, build_number):
         path = root / "CurrentBuildReleaseNote.json"
         data = json.loads(self.current_source.read_text(encoding="utf-8"))
+        data["items"] = [
+            item for item in data["items"]
+            if item["title"].casefold() not in {"compatibility", "breaking changes"}
+        ]
         data["items"].extend([
             {
                 "symbol": "info.circle",
@@ -78,7 +82,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
     def _render_signed_export(self, source, signed_export, output):
         return release_notes.main([
-            "render", "--build-number", "72", "--source", str(source),
+            "render", "--build-number", str(TEST_CURRENT_BUILD), "--source", str(source),
             "--history", str(self.history_source), "--signed-app-path", str(signed_export),
             "--output", str(output),
         ])
@@ -221,6 +225,24 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_current_build_73_note_is_selected_only_for_build_73(self):
+        note = release_notes.note_for_build(
+            self.current_source, self.history_source, 73
+        )
+        self.assertEqual(note.build, 73)
+        self.assertEqual(
+            [item.title for item in note.items],
+            ["Compatibility", "Breaking changes"],
+        )
+
+        with self.assertRaisesRegex(
+            release_notes.ReleaseNoteError,
+            "current draft is assigned to build 73",
+        ):
+            release_notes.note_for_build(
+                self.current_source, self.history_source, 74
+            )
+
     def test_missing_historical_build_does_not_fall_back_to_latest(self):
         with self.assertRaisesRegex(release_notes.ReleaseNoteError, "build 57"):
             release_notes.exact_note(self.history, 57)
@@ -265,7 +287,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                     source, self.history_source, TEST_CURRENT_BUILD + 1
                 )
 
-    def test_shipped_build_72_remains_selectable_after_copying_it_to_history(self):
+    def test_shipped_build_72_remains_selectable_after_current_note_advances(self):
         note = release_notes.note_for_build(
             self.current_source, self.history_source, 72
         )
@@ -299,7 +321,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             release_notes.ReleaseNoteError,
-            "current draft is assigned to build 72",
+            "current draft is assigned to build 73",
         ):
             release_notes.note_for_build(self.current_source, self.history_source, 61)
 
@@ -350,8 +372,8 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_premerge_refuses_empty_author_note_items(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            current_note = self._numbered_note_copy(root, 72)
-            base_note = self._premerge_base_copy(root, 71)
+            current_note = self._numbered_note_copy(root, TEST_CURRENT_BUILD)
+            base_note = self._premerge_base_copy(root, TEST_BASE_BUILD)
             data = json.loads(current_note.read_text(encoding="utf-8"))
             data["items"] = []
             current_note.write_text(json.dumps(data), encoding="utf-8")
@@ -478,7 +500,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_two_sequential_archive_workspaces_refuse_a_reused_note_draft(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            committed_draft = self._numbered_note_copy(root, 72).read_bytes()
+            committed_draft = self._numbered_note_copy(root, TEST_CURRENT_BUILD).read_bytes()
             first_workspace = root / "archive-one"
             second_workspace = root / "archive-two"
             first_workspace.mkdir()
@@ -491,7 +513,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             first_errors = StringIO()
             with redirect_stderr(first_errors):
                 first_status = release_notes.main([
-                    "validate", "--build-number", "72", "--source", str(first_source),
+                    "validate", "--build-number", str(TEST_CURRENT_BUILD), "--source", str(first_source),
                     "--history", str(self.history_source),
                 ])
             second_errors = StringIO()
@@ -503,7 +525,10 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
             self.assertEqual(first_status, 0)
             self.assertEqual(second_status, 1)
-            self.assertIn("current draft is assigned to build 72", second_errors.getvalue())
+            self.assertIn(
+                f"current draft is assigned to build {TEST_CURRENT_BUILD}",
+                second_errors.getvalue(),
+            )
             self.assertEqual(first_source.read_bytes(), committed_draft)
             self.assertEqual(second_source.read_bytes(), committed_draft)
 
@@ -562,8 +587,10 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_render_reads_the_app_version_from_the_exported_testflight_ipa(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 72)
-            signed_export = self._signed_export_copy(root, [("TightbeamTuner", 72)])
+            source = self._numbered_note_copy(root, TEST_CURRENT_BUILD)
+            signed_export = self._signed_export_copy(
+                root, [("TightbeamTuner", TEST_CURRENT_BUILD)]
+            )
             output = root / "WhatToTest.en-US.txt"
 
             status = self._render_signed_export(source, signed_export, output)
@@ -571,14 +598,18 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(
                 output.read_text(encoding="utf-8"),
-                release_notes.note_for_build(source, self.history_source, 72).tester_text(),
+                release_notes.note_for_build(
+                    source, self.history_source, TEST_CURRENT_BUILD
+                ).tester_text(),
             )
 
     def test_render_rejects_an_exported_ipa_with_a_different_bundle_build(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 72)
-            signed_export = self._signed_export_copy(root, [("TightbeamTuner", 63)])
+            source = self._numbered_note_copy(root, TEST_CURRENT_BUILD)
+            signed_export = self._signed_export_copy(
+                root, [("TightbeamTuner", TEST_CURRENT_BUILD - 1)]
+            )
             output = root / "WhatToTest.en-US.txt"
             errors = StringIO()
 
@@ -586,13 +617,17 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 status = self._render_signed_export(source, signed_export, output)
 
             self.assertEqual(status, 1)
-            self.assertIn("signed app CFBundleVersion 63 does not match build 72", errors.getvalue())
+            self.assertIn(
+                "signed app CFBundleVersion "
+                f"{TEST_CURRENT_BUILD - 1} does not match build {TEST_CURRENT_BUILD}",
+                errors.getvalue(),
+            )
             self.assertFalse(output.exists())
 
     def test_render_refuses_signed_ipa_with_no_app_bundles_and_lists_names_only(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 72)
+            source = self._numbered_note_copy(root, TEST_CURRENT_BUILD)
             signed_export = self._signed_export_copy(root, [])
             output = root / "WhatToTest.en-US.txt"
             errors = StringIO()
@@ -610,9 +645,13 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
     def test_render_refuses_signed_ipa_with_multiple_app_bundles_and_lists_names_only(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            source = self._numbered_note_copy(root, 72)
+            source = self._numbered_note_copy(root, TEST_CURRENT_BUILD)
             signed_export = self._signed_export_copy(
-                root, [("TightbeamTuner", 72), ("UnexpectedApp", 72)]
+                root,
+                [
+                    ("TightbeamTuner", TEST_CURRENT_BUILD),
+                    ("UnexpectedApp", TEST_CURRENT_BUILD),
+                ],
             )
             output = root / "WhatToTest.en-US.txt"
             errors = StringIO()

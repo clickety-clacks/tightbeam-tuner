@@ -362,7 +362,6 @@ def note_for_build(source_path: Path, history_path: Path, build_number: int) -> 
         raise ReleaseNoteError("Xcode Cloud build number must be positive")
 
     history = load_notes(history_path)
-    history_builds = {entry.build for entry in history}
     try:
         return exact_note(history, build_number)
     except ReleaseNoteError:
@@ -378,8 +377,7 @@ def note_for_build(source_path: Path, history_path: Path, build_number: int) -> 
             f"no exact user-facing release notes are recorded for build {build_number}; "
             "the current draft is not assigned to a numbered build"
         )
-    if current.build not in history_builds:
-        _validate_current_build_against_history(current, history_path)
+    _validate_current_build_against_history(current, history_path)
     if current.build == build_number:
         return current
     try:
