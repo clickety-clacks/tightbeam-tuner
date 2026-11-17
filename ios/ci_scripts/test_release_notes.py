@@ -278,6 +278,15 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             [item.title for item in current.items],
             ["Keep Replies current after reconnecting", "Compatibility", "Breaking changes"],
         )
+        replies_detail = next(
+            item.detail
+            for item in current.items
+            if item.title == "Keep Replies current after reconnecting"
+        )
+        self.assertIn(
+            "A reply received during disconnection for an older agent may appear in Replies after its next live update; opening that chat still shows it.",
+            replies_detail,
+        )
         compatibility = next(
             item.detail for item in current.items if item.title == "Compatibility"
         )
