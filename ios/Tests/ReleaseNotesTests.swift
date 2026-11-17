@@ -11,8 +11,12 @@ final class ReleaseNotesTests: XCTestCase {
         let withoutCompatibility = ReleaseNote(version: "1.0", build: 987653, date: "December 31, 2026", items: [
             .init(symbol: "text.bubble", title: "Other", detail: "No compatibility entry."),
         ])
+        let lowercaseCompatibility = ReleaseNote(version: "1.0", build: 987652, date: "December 30, 2026", items: [
+            .init(symbol: "info.circle", title: "compatibility", detail: statement),
+        ])
 
         XCTAssertEqual(ReleaseNotes.compatibilityStatement(in: current), statement)
+        XCTAssertEqual(ReleaseNotes.compatibilityStatement(in: lowercaseCompatibility), statement)
         XCTAssertNil(ReleaseNotes.compatibilityStatement(in: withoutCompatibility))
         XCTAssertNil(ReleaseNotes.compatibilityStatement(in: nil))
     }

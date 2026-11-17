@@ -257,6 +257,14 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             self.assertTrue(note.items)
             self.assertEqual(source.read_bytes(), original)
 
+            with self.assertRaisesRegex(
+                release_notes.ReleaseNoteError,
+                f"current draft is assigned to build {TEST_CURRENT_BUILD}",
+            ):
+                release_notes.note_for_build(
+                    source, self.history_source, TEST_CURRENT_BUILD + 1
+                )
+
     def test_shipped_build_72_remains_selectable_after_copying_it_to_history(self):
         note = release_notes.note_for_build(
             self.current_source, self.history_source, 72

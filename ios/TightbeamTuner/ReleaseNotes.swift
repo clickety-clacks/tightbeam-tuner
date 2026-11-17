@@ -279,7 +279,7 @@ enum ReleaseNotes {
     }
 
     static func compatibilityStatement(in note: ReleaseNote?) -> String? {
-        note?.items.first(where: { $0.title == "Compatibility" })?.detail
+        note?.items.first(where: { $0.title.caseInsensitiveCompare("Compatibility") == .orderedSame })?.detail
     }
 
     static var currentCompatibilityStatement: String? {
