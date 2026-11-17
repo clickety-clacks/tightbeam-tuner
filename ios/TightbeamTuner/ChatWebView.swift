@@ -432,7 +432,7 @@ struct ChatWebView: UIViewControllerRepresentable {
             }
         }
 
-        private func cancelReconnectAttempt() {
+        func cancelReconnectAttempt() {
             reconnectTimeoutTask?.cancel()
             reconnectTimeoutTask = nil
             reconnectIsPending = false
