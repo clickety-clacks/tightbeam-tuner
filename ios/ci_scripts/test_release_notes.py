@@ -271,6 +271,26 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_shipped_build_76_note_remains_selectable_after_current_note_advances(self):
+        expected_items = [
+            (
+                "Compatibility",
+                "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Not yet verified with Chat v0.1.101.",
+            ),
+            ("Breaking changes", "None."),
+        ]
+        note = release_notes.exact_note(self.history, 76)
+        self.assertEqual(note.build, 76)
+        self.assertEqual(note.items, tuple(
+            release_notes.NoteItem(title=title, detail=detail)
+            for title, detail in expected_items
+        ))
+
+        selected = release_notes.note_for_build(
+            self.current_source, self.history_source, 76
+        )
+        self.assertEqual(selected, note)
+
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
         self.assertEqual(current.build, 77)
@@ -443,7 +463,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 75"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 76"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )
