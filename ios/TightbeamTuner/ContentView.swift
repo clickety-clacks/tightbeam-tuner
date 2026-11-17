@@ -74,6 +74,14 @@ struct ContentView: View {
         ).sessionKeyOnScreen
     }
 
+    private var repliedSnapshotRecentSessionKeys: [String] {
+        var keys = store.recentAgents.map(\.id)
+        if let selectedID = store.selectedID, !keys.contains(selectedID) {
+            keys.insert(selectedID, at: 0)
+        }
+        return Array(keys.prefix(RepliedSnapshotSelection.maximumRecentSessions))
+    }
+
     private func openRepliedAgent(_ id: String) {
         let selectionChanged = store.selectedID != id
         if selectionChanged {
@@ -147,15 +155,15 @@ struct ContentView: View {
             if store.connection.isComplete { await store.refresh() }
             else { showingSettings = true }
         }
-        .task(id: RepliedTaskKey(
-            connection: store.connection,
-            sessionKeys: store.agents.map(\.id).sorted()
-        )) {
-            let sessionKeys = store.agents.map(\.id).sorted()
+        .task(id: store.connection) {
             guard store.connection.isComplete else { return }
-            await repliedFeed.run(connection: store.connection, sessionKeys: sessionKeys,
-                                  onRosterEvent: { frame in store.applyRosterEvent(frame) },
-                                  onReconnect: { await store.refresh() })
+            await repliedFeed.run(
+                connection: store.connection,
+                sessionKeys: { store.agents.map(\.id) },
+                recentSessionKeys: { repliedSnapshotRecentSessionKeys },
+                onRosterEvent: { frame in store.applyRosterEvent(frame) },
+                onReconnect: { await store.refresh() }
+            )
         }
         .onChange(of: shownChatSessionKey, initial: true) { _, key in
             repliedFeed.updateShownSessionKey(key)

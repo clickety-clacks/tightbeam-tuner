@@ -191,6 +191,37 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(state.agents(from: roster).map(\.id), ["agent:12"])
     }
 
+    func testInitialSnapshotSelectionUsesOnlyBoundedRecentSessions() {
+        let roster = (1...20).map { "agent:\($0)" }
+        let selected = RepliedSnapshotSelection.sessionKeys(
+            mode: .initial,
+            rosterSessionKeys: roster,
+            recentSessionKeys: (1...20).map { "agent:\($0)" },
+            pendingPromptSessionKeys: ["agent:20", "agent:missing"],
+            changedReadMarkerSessionKeys: Set(roster)
+        )
+
+        XCTAssertEqual(selected, (1...8).map { "agent:\($0)" })
+        XCTAssertEqual(selected.count, RepliedSnapshotSelection.maximumRecentSessions)
+    }
+
+    func testReconnectSelectionUsesChangedMarkersPendingAndBoundedRecentSessions() {
+        let roster = (1...20).map { "agent:\($0)" }
+        let selected = RepliedSnapshotSelection.sessionKeys(
+            mode: .reconnect,
+            rosterSessionKeys: roster,
+            recentSessionKeys: (1...20).map { "agent:\($0)" },
+            pendingPromptSessionKeys: ["agent:20"],
+            changedReadMarkerSessionKeys: ["agent:18", "agent:2", "agent:missing"]
+        )
+
+        XCTAssertEqual(
+            selected,
+            ["agent:20", "agent:18", "agent:2"] + (1...8).map { "agent:\($0)" }
+        )
+        XCTAssertEqual(selected.count, 11)
+    }
+
     @MainActor func testRegularWidthShownReplyKeepsBaselineReadOnArrival() throws {
         let (defaults, suiteName) = try testDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -898,12 +929,21 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
     }
 
-    @MainActor func testNonEmptyMarkersStillReadMessageHistory() async throws {
+    @MainActor func testMovedReadMarkerOnlyReadsThatSessionHistory() async throws {
         let (defaults, suiteName) = try testDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let feed = RepliedFeed(defaults: defaults)
         let reads = FetchCounter()
-        let markers = try JSONDecoder().decode(RepliedMarkersPage.self, from: Data(#"{"items":[{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":3,"updatedAt":1}],"page":{"hasMoreAfter":false}}"#.utf8)).items
+        let decoder = JSONDecoder()
+        let oldMarkers = try decoder.decode(
+            [RepliedReadMarker].self,
+            from: Data(#"[{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":2,"updatedAt":1},{"userId":"reader","scopeKey":"agent:beta:session-read-position","marker":5,"updatedAt":1}]"#.utf8)
+        )
+        for marker in oldMarkers { feed.apply(.readMarker(marker), userID: "reader") }
+        let markers = try decoder.decode(
+            RepliedMarkersPage.self,
+            from: Data(#"{"items":[{"userId":"reader","scopeKey":"agent:alpha:session-read-position","marker":3,"updatedAt":2},{"userId":"reader","scopeKey":"agent:beta:session-read-position","marker":5,"updatedAt":2}],"page":{"hasMoreAfter":false}}"#.utf8)
+        ).items
         let history = [try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)]
         let roster = try makeAgents(["agent:alpha", "agent:beta"])
 
@@ -920,9 +960,76 @@ final class RepliedTests: XCTestCase {
         )
 
         let messageFetches = await reads.messageFetches
-        XCTAssertEqual(messageFetches, 2)
+        XCTAssertEqual(messageFetches, 1)
         let visible = feed.state.agents(from: roster).map(\.id)
         XCTAssertEqual(visible, ["agent:alpha"])
+    }
+
+    @MainActor func testInitialSnapshotDoesNotReadEverySessionWithAStoredMarker() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let rosterKeys = (1...20).map { "agent:\($0)" }
+        feed.observePromptStatus(.accepted, sessionKey: "agent:20", correlationID: "pending")
+        let markersJSON = (1...20).map {
+            #"{"userId":"reader","scopeKey":"agent:\#($0):session-read-position","marker":0,"updatedAt":1}"#
+        }.joined(separator: ",")
+        let markers = try JSONDecoder().decode(
+            [RepliedReadMarker].self,
+            from: Data("[\(markersJSON)]".utf8)
+        )
+        let fetched = FetchKeyRecorder()
+
+        await feed.loadSnapshot(
+            gateway: "https://gateway.example.test",
+            user: "reader",
+            sessionKeys: rosterKeys,
+            limit: 500,
+            recentSessionKeys: rosterKeys,
+            mode: .initial,
+            fetchMarkers: { _, _ in markers },
+            fetchMessages: { _, key, _ in
+                await fetched.record(key)
+                return []
+            },
+            fetchPendingMessages: { _, key, _ in
+                await fetched.record(key)
+                return []
+            }
+        )
+
+        let fetchedKeys = await fetched.values
+        XCTAssertEqual(Set(fetchedKeys), Set((1...8).map { "agent:\($0)" }))
+        XCTAssertEqual(fetchedKeys.count, RepliedSnapshotSelection.maximumRecentSessions)
+    }
+
+    @MainActor func testSnapshotFetchConcurrencyIsLimitedToTwo() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let recentKeys = (1...8).map { "agent:\($0)" }
+        let concurrency = FetchConcurrencyProbe()
+
+        await feed.loadSnapshot(
+            gateway: "https://gateway.example.test",
+            user: "reader",
+            sessionKeys: recentKeys,
+            limit: 100,
+            recentSessionKeys: recentKeys,
+            mode: .initial,
+            fetchMarkers: { _, _ in [] },
+            fetchMessages: { _, _, _ in
+                await concurrency.begin()
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                await concurrency.finish()
+                return []
+            }
+        )
+
+        let maximumObserved = await concurrency.maximumObserved
+        let activeRequests = await concurrency.activeRequests
+        XCTAssertEqual(maximumObserved, 2)
+        XCTAssertEqual(activeRequests, 0)
     }
 
     @MainActor func testOpeningHidesReplyUntilNewerReplyAndSurvivesRelaunch() async throws {
@@ -1191,6 +1298,41 @@ final class RepliedTests: XCTestCase {
         XCTAssertFalse(state.subscriptionReadyNeedsCatchUp())
     }
 
+    func testSocketDropDiagnosticsIdentifyPhaseAndPlatformFailureWithoutLoggingReasonText() {
+        let error = NSError(
+            domain: NSURLErrorDomain,
+            code: -1001,
+            userInfo: [NSLocalizedDescriptionKey: "agent:private-session details"]
+        )
+        let diagnostic = RepliedSocketDiagnostic.transportFailure(
+            error,
+            phase: .receive,
+            closeCode: 1006,
+            closeReasonPresent: true,
+            lifetimeSeconds: 2_700
+        )
+
+        XCTAssertTrue(diagnostic.contains("phase=receive"))
+        XCTAssertTrue(diagnostic.contains("cause=transport_error"))
+        XCTAssertTrue(diagnostic.contains("error_domain=\(NSURLErrorDomain)"))
+        XCTAssertTrue(diagnostic.contains("error_code=-1001"))
+        XCTAssertTrue(diagnostic.contains("close_code=1006"))
+        XCTAssertTrue(diagnostic.contains("close_reason_present=true"))
+        XCTAssertTrue(diagnostic.contains("lifetime_seconds=2700"))
+        XCTAssertFalse(diagnostic.contains("private-session"))
+    }
+
+    func testSocketServerErrorDiagnosticIdentifiesServerRejection() {
+        let diagnostic = RepliedSocketDiagnostic.serverError(
+            closeCode: 1008,
+            closeReasonPresent: true,
+            lifetimeSeconds: 12
+        )
+
+        XCTAssertTrue(diagnostic.contains("cause=server_error_frame"))
+        XCTAssertTrue(diagnostic.contains("close_code=1008"))
+    }
+
     func testSessionKeyIsPercentEncodedAsOnePathSegment() throws {
         XCTAssertEqual(RepliedAPI.percentEncodedPathSegment("agent:main:x s_1"), "agent%3Amain%3Ax%20s_1")
         let url = try XCTUnwrap(RepliedAPI.messagesURL(
@@ -1283,6 +1425,23 @@ final class RepliedTests: XCTestCase {
     private actor FetchPromptIDsRecorder {
         private(set) var values: [Set<String>] = []
         func record(_ value: Set<String>) { values.append(value) }
+    }
+
+    private actor FetchKeyRecorder {
+        private(set) var values: [String] = []
+        func record(_ value: String) { values.append(value) }
+    }
+
+    private actor FetchConcurrencyProbe {
+        private(set) var activeRequests = 0
+        private(set) var maximumObserved = 0
+
+        func begin() {
+            activeRequests += 1
+            maximumObserved = max(maximumObserved, activeRequests)
+        }
+
+        func finish() { activeRequests -= 1 }
     }
 }
 
