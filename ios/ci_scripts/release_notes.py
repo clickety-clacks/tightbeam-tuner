@@ -334,6 +334,26 @@ def validate_premerge_note(
                 f"current release note build {note.build} must be one greater than observed latest Xcode Cloud run {observed_run}"
             )
 
+    compatibility_items = [item for item in note.items if item.title.casefold() == "compatibility"]
+    if len(compatibility_items) != 1:
+        raise ReleaseNoteError(
+            "premerge release note must contain exactly one `Compatibility` item"
+        )
+    compatibility = compatibility_items[0].detail
+    if not re.search(r"\bTightbeam(?:\s+CLI)?\s+v?\d+\.\d+\.\d+\b", compatibility, re.IGNORECASE):
+        raise ReleaseNoteError(
+            "premerge Compatibility item must name a Tightbeam semantic version"
+        )
+    if not re.search(r"\bChat\s+v?\d+\.\d+\.\d+\b", compatibility, re.IGNORECASE):
+        raise ReleaseNoteError(
+            "premerge Compatibility item must name a Chat semantic version"
+        )
+    breaking_items = [item for item in note.items if item.title.casefold() == "breaking changes"]
+    if len(breaking_items) != 1:
+        raise ReleaseNoteError(
+            "premerge release note must contain exactly one `Breaking changes` item"
+        )
+
     return note
 
 
@@ -342,6 +362,7 @@ def note_for_build(source_path: Path, history_path: Path, build_number: int) -> 
         raise ReleaseNoteError("Xcode Cloud build number must be positive")
 
     history = load_notes(history_path)
+    history_builds = {entry.build for entry in history}
     try:
         return exact_note(history, build_number)
     except ReleaseNoteError:
@@ -357,7 +378,8 @@ def note_for_build(source_path: Path, history_path: Path, build_number: int) -> 
             f"no exact user-facing release notes are recorded for build {build_number}; "
             "the current draft is not assigned to a numbered build"
         )
-    _validate_current_build_against_history(current, history_path)
+    if current.build not in history_builds:
+        _validate_current_build_against_history(current, history_path)
     if current.build == build_number:
         return current
     try:

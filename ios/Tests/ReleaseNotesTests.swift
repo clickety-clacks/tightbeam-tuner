@@ -2,6 +2,21 @@ import XCTest
 @testable import TightbeamTuner
 
 final class ReleaseNotesTests: XCTestCase {
+    func testCompatibilityStatementComesFromTheCurrentReleaseNoteItem() {
+        let statement = "Tightbeam CLI 0.0.0 and Chat v0.0.0 (test fixture)."
+        let current = ReleaseNote(version: "1.0", build: 987654, date: "January 1, 2027", items: [
+            .init(symbol: "info.circle", title: "Compatibility", detail: statement),
+            .init(symbol: "exclamationmark.triangle", title: "Breaking changes", detail: "Test fixture."),
+        ])
+        let withoutCompatibility = ReleaseNote(version: "1.0", build: 987653, date: "December 31, 2026", items: [
+            .init(symbol: "text.bubble", title: "Other", detail: "No compatibility entry."),
+        ])
+
+        XCTAssertEqual(ReleaseNotes.compatibilityStatement(in: current), statement)
+        XCTAssertNil(ReleaseNotes.compatibilityStatement(in: withoutCompatibility))
+        XCTAssertNil(ReleaseNotes.compatibilityStatement(in: nil))
+    }
+
     func testBoundCurrentBuildNoteParticipatesInFirstLaunchSelection() {
         let current = ReleaseNote(version: "1.0", build: 987654, date: "November 11, 2026", items: [
             .init(symbol: "text.bubble", title: "Current release", detail: "Current details.")
