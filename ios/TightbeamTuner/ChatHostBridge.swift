@@ -201,6 +201,15 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         return false
     }
 
+    var canReconnectInPlace: Bool {
+        if case .ready = phase { return reconnectSupported }
+        return false
+    }
+
+    var isReconnectInProgress: Bool {
+        reportedConnection == .reconnecting
+    }
+
     var phaseIsUnavailable: Bool {
         if case .unavailable = phase { return true }
         return false
