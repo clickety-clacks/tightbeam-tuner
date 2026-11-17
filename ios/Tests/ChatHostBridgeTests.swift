@@ -212,6 +212,13 @@ final class ChatHostBridgeTests: XCTestCase {
         XCTAssertEqual(backoff.nextDelay(), 1)
     }
 
+    func testRecoveryRetryScheduleRespectsChatReadyWindow() {
+        var backoff = ChatRecoveryBackoff()
+        XCTAssertEqual((0..<7).map { _ in backoff.nextDelay(minimum: 3) }, [3, 3, 4, 8, 16, 30, 30])
+        backoff.reset()
+        XCTAssertEqual(backoff.nextDelay(minimum: 3), 3)
+    }
+
     func testNotReadyRejectionDoesNotChangePhaseOrConnection() throws {
         let bridge = readyBridge()
         bridge.handle(type: "connection", event: [

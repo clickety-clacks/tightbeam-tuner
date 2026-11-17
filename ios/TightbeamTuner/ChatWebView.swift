@@ -5,8 +5,8 @@ struct ChatRecoveryBackoff {
     private(set) var nextInterval: TimeInterval = 1
     private let maximumInterval: TimeInterval = 30
 
-    mutating func nextDelay() -> TimeInterval {
-        let delay = nextInterval
+    mutating func nextDelay(minimum: TimeInterval = 0) -> TimeInterval {
+        let delay = max(minimum, nextInterval)
         nextInterval = min(nextInterval * 2, maximumInterval)
         return delay
     }
@@ -175,6 +175,8 @@ struct ChatWebView: UIViewControllerRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            // A new document needs its own full startup window before recovery retries again.
+            cancelRecovery(resetBackoff: false)
             bridge?.pageStarted()
         }
 
@@ -306,7 +308,10 @@ struct ChatWebView: UIViewControllerRepresentable {
                 } else {
                     webView.reload()
                 }
-                self.scheduleRecovery()
+                if self.bridge?.isReady == true {
+                    // Reconnect attempts should leave Chat time to catch up before the next one.
+                    self.scheduleRecovery(after: self.recoveryBackoff.nextDelay(minimum: Self.readyTimeout))
+                }
             }
         }
 
