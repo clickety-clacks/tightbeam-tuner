@@ -152,7 +152,9 @@ struct ChatWebView: UIViewControllerRepresentable {
         private var recoveryGeneration = 0
         private var recoveryBackoff = ChatRecoveryBackoff()
 
-        private static let readyTimeout: TimeInterval = 3
+        // Chat's Gateway request can stay in flight for up to 15 seconds. Leave at least that
+        // much time both for a page to become ready and between reconnect attempts.
+        private static let readyTimeout: TimeInterval = 15
 
         // Text size set by pinching, shared by every chat and kept across launches.
         private static let zoomKey = "chatTextZoom"
@@ -255,8 +257,9 @@ struct ChatWebView: UIViewControllerRepresentable {
                 cancelRecovery(resetBackoff: true)
             } else if bridge?.hostModeDeclined != true {
                 // A committed HTTP error page can finish without a WebKit navigation failure.
-                // If Chat never announces a healthy bridge, retry after its normal startup window.
-                scheduleRecovery(after: Self.readyTimeout)
+                // Chat may still be waiting on its Gateway request. Preserve that full window
+                // and carry the backoff forward if another reload is needed.
+                scheduleRecovery(minimumDelay: Self.readyTimeout)
             }
         }
 
@@ -272,7 +275,7 @@ struct ChatWebView: UIViewControllerRepresentable {
             bridge?.isReady == true && bridge?.connection == .connected
         }
 
-        private func scheduleRecovery(after delay: TimeInterval? = nil) {
+        private func scheduleRecovery(after delay: TimeInterval? = nil, minimumDelay: TimeInterval = 0) {
             guard recoveryTask == nil else { return }
             guard bridge?.hostModeDeclined != true else { return }
             guard UIApplication.shared.applicationState == .active, let webView else {
@@ -285,7 +288,9 @@ struct ChatWebView: UIViewControllerRepresentable {
             }
 
             let generation = recoveryGeneration
-            let scheduledDelay = delay ?? recoveryBackoff.nextDelay()
+            let chatIsRecovering = bridge?.isReady == true || bridge?.phaseIsUnavailable == true
+            let stateMinimum = chatIsRecovering ? Self.readyTimeout : 0
+            let scheduledDelay = delay ?? recoveryBackoff.nextDelay(minimum: max(minimumDelay, stateMinimum))
             recoveryTask = Task { @MainActor [weak self, weak webView] in
                 do {
                     try await Task.sleep(for: .milliseconds(Int64(scheduledDelay * 1_000)))
@@ -310,7 +315,7 @@ struct ChatWebView: UIViewControllerRepresentable {
                 }
                 if self.bridge?.isReady == true {
                     // Reconnect attempts should leave Chat time to catch up before the next one.
-                    self.scheduleRecovery(after: self.recoveryBackoff.nextDelay(minimum: Self.readyTimeout))
+                    self.scheduleRecovery(minimumDelay: Self.readyTimeout)
                 }
             }
         }
