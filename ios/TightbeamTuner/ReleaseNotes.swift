@@ -4,6 +4,12 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 75, date: "November 17, 2026", items: [
+            .init(symbol: "info.circle", title: "Compatibility",
+                  detail: "Known compatibility evidence is limited to these checks: Tightbeam CLI 0.1.16 and Gateway 0.1.16 (build 4283) roster output contained the required string fields; a pre-recovery Tuner Debug build opened a conversation, sent one prompt, and displayed the reply with Chat v0.1.100. That conversation check predates the recovery change. The recovery change has not been exercised with Chat v0.1.101, and Tuner's in-app SSH roster fetch was not exercised."),
+            .init(symbol: "exclamationmark.triangle", title: "Breaking changes",
+                  detail: "None."),
+        ]),
         ReleaseNote(version: "1.0", build: 74, date: "November 17, 2026", items: [
             .init(symbol: "arrow.clockwise", title: "Recover embedded Chat automatically",
                   detail: "Tuner now checks embedded Chat after a navigation or connection failure and tries to restore it if it stays unavailable. When you return to Tuner, it waits before checking so a slow page has time to load."),
