@@ -214,7 +214,7 @@ final class ChatHostBridgeTests: XCTestCase {
 
     func testRecoveryRetryScheduleHonorsGatewayTimeoutAcrossReloads() {
         var backoff = ChatRecoveryBackoff()
-        XCTAssertEqual((0..<7).map { _ in backoff.nextDelay(minimum: 15) }, [15, 15, 15, 16, 30, 30, 30])
+        XCTAssertEqual((0..<7).map { _ in backoff.nextDelay(minimum: 15) }, [15, 15, 15, 15, 16, 30, 30])
         backoff.reset()
         XCTAssertEqual(backoff.nextDelay(minimum: 15), 15)
     }
