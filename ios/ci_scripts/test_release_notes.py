@@ -257,8 +257,23 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_shipped_build_75_note_is_preserved_in_history(self):
+        note = release_notes.exact_note(self.history, 75)
+        self.assertEqual(note.build, 75)
+        self.assertEqual(
+            [(item.title, item.detail) for item in note.items],
+            [
+                (
+                    "Compatibility",
+                    "Known compatibility evidence is limited to these checks: Tightbeam CLI 0.1.16 and Gateway 0.1.16 (build 4283) roster output contained the required string fields; a pre-recovery Tuner Debug build opened a conversation, sent one prompt, and displayed the reply with Chat v0.1.100. That conversation check predates the recovery change. The recovery change has not been exercised with Chat v0.1.101, and Tuner's in-app SSH roster fetch was not exercised.",
+                ),
+                ("Breaking changes", "None."),
+            ],
+        )
+
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
+        self.assertEqual(current.build, 76)
         self.assertEqual(
             [item.title for item in current.items],
             ["Compatibility", "Breaking changes"],
@@ -266,10 +281,14 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
         compatibility = next(
             item.detail for item in current.items if item.title == "Compatibility"
         )
-        self.assertIn("pre-recovery Tuner Debug build", compatibility)
-        self.assertIn("predates the recovery change", compatibility)
-        self.assertIn("has not been exercised with Chat v0.1.101", compatibility)
-        self.assertIn("in-app SSH roster fetch was not exercised", compatibility)
+        self.assertEqual(
+            compatibility,
+            "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Not yet verified with Chat v0.1.101.",
+        )
+        breaking_changes = next(
+            item.detail for item in current.items if item.title == "Breaking changes"
+        )
+        self.assertEqual(breaking_changes, "None.")
 
         if current.build == 0:
             with self.assertRaisesRegex(
@@ -277,7 +296,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 "current draft is not assigned to a numbered build",
             ):
                 release_notes.note_for_build(
-                    self.current_source, self.history_source, 75
+                    self.current_source, self.history_source, 76
                 )
             return
 
@@ -415,7 +434,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 74"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 75"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )
