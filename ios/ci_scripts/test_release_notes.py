@@ -225,22 +225,34 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
-    def test_current_build_73_note_is_selected_only_for_build_73(self):
-        note = release_notes.note_for_build(
-            self.current_source, self.history_source, 73
-        )
-        self.assertEqual(note.build, 73)
+    def test_current_compatibility_note_is_selected_only_for_its_assigned_build(self):
+        current, _ = release_notes.load_current_note(self.current_source)
         self.assertEqual(
-            [item.title for item in note.items],
+            [item.title for item in current.items],
             ["Compatibility", "Breaking changes"],
         )
 
+        if current.build == 0:
+            with self.assertRaisesRegex(
+                release_notes.ReleaseNoteError,
+                "current draft is not assigned to a numbered build",
+            ):
+                release_notes.note_for_build(
+                    self.current_source, self.history_source, 73
+                )
+            return
+
+        selected = release_notes.note_for_build(
+            self.current_source, self.history_source, current.build
+        )
+        self.assertEqual(selected, current)
+
         with self.assertRaisesRegex(
             release_notes.ReleaseNoteError,
-            "current draft is assigned to build 73",
+            f"current draft is assigned to build {current.build}",
         ):
             release_notes.note_for_build(
-                self.current_source, self.history_source, 74
+                self.current_source, self.history_source, current.build + 1
             )
 
     def test_missing_historical_build_does_not_fall_back_to_latest(self):
@@ -321,7 +333,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             release_notes.ReleaseNoteError,
-            "current draft is assigned to build 73",
+            "no exact user-facing release notes are recorded for build 61",
         ):
             release_notes.note_for_build(self.current_source, self.history_source, 61)
 
@@ -519,7 +531,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             second_errors = StringIO()
             with redirect_stderr(second_errors):
                 second_status = release_notes.main([
-                    "validate", "--build-number", str(TEST_CURRENT_BUILD), "--source", str(second_source),
+                    "validate", "--build-number", str(TEST_CURRENT_BUILD + 1), "--source", str(second_source),
                     "--history", str(self.history_source),
                 ])
 

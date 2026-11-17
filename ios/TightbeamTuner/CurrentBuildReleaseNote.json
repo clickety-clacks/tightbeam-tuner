@@ -1,7 +1,7 @@
 {
   "version": "1.0",
-  "build": 73,
-  "date": "November 17, 2026",
+  "build": 0,
+  "date": "",
   "items": [
     {
       "symbol": "info.circle",
@@ -11,7 +11,7 @@
     {
       "symbol": "exclamationmark.triangle",
       "title": "Breaking changes",
-      "detail": "None to Tuner's service interfaces or conversation behavior. This release adds compatibility information; the in-app roster fetch remains unverified."
+      "detail": "None."
     }
   ]
 }
