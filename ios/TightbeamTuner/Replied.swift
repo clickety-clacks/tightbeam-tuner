@@ -41,6 +41,15 @@ struct RepliedMessagesPage: Decodable, Sendable {
     let items: [RepliedMessage]
     let page: Page?
 }
+struct RepliedSessionMessageSequence: Decodable, Sendable, Equatable {
+    let sessionKey: String
+    let latestMessageSeq: Int
+}
+
+struct RepliedSequencesPage: Decodable, Sendable {
+    let items: [RepliedSessionMessageSequence]
+}
+
 struct RepliedMarkersPage: Decodable, Sendable {
     struct Page: Decodable, Sendable { let hasMoreAfter: Bool; let newestCursor: String? }
     let items: [RepliedReadMarker]
@@ -133,7 +142,8 @@ enum RepliedSnapshotSelection {
         rosterSessionKeys: [String],
         recentSessionKeys: [String],
         pendingPromptSessionKeys: Set<String>,
-        changedReadMarkerSessionKeys: Set<String> = []
+        changedReadMarkerSessionKeys: Set<String> = [],
+        changedMessageSessionKeys: Set<String> = []
     ) -> [String] {
         let roster = Set(rosterSessionKeys)
         var selected: [String] = []
@@ -148,6 +158,7 @@ enum RepliedSnapshotSelection {
         append(pendingPromptSessionKeys.sorted())
         if mode == .reconnect {
             append(changedReadMarkerSessionKeys.sorted())
+            append(changedMessageSessionKeys.sorted())
         }
         append(Array(recentSessionKeys.filter { roster.contains($0) }.prefix(maximumRecentSessions)))
         return selected
@@ -475,6 +486,7 @@ struct RepliedShownChat {
         let schemaVersion: Int
         let connection: Connection
         let state: RepliedState
+        let messageSequenceWatermarks: [String: Int]?
     }
 
     private(set) var state = RepliedState()
@@ -485,6 +497,7 @@ struct RepliedShownChat {
     private let defaults: UserDefaults
     private var activeConnection: Connection?
     private var subscriptionState = RepliedSubscriptionState()
+    private var messageSequenceWatermarks: [String: Int]?
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "TightbeamTuner", category: "RepliedFeed")
 
     init(defaults: UserDefaults = .standard) {
@@ -505,7 +518,9 @@ struct RepliedShownChat {
            snapshot.schemaVersion == Self.stateSnapshotSchemaVersion,
            snapshot.connection == connection {
             state = snapshot.state
+            messageSequenceWatermarks = snapshot.messageSequenceWatermarks
         } else {
+            messageSequenceWatermarks = nil
             state = RepliedState(localReadMarkerBySession: Self.localReadMarkers(from: defaults))
         }
     }
@@ -564,7 +579,8 @@ struct RepliedShownChat {
         let snapshot = StateSnapshot(
             schemaVersion: Self.stateSnapshotSchemaVersion,
             connection: activeConnection,
-            state: state
+            state: state,
+            messageSequenceWatermarks: messageSequenceWatermarks
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         defaults.set(data, forKey: Self.stateSnapshotKey)
@@ -663,13 +679,31 @@ struct RepliedShownChat {
         limit: Int?,
         recentSessionKeys: [String] = [],
         mode: RepliedSnapshotMode = .reconnect,
+        fetchSequences: @escaping @Sendable (String, String) async -> [RepliedSessionMessageSequence]? = RepliedAPI.fetchSequences,
         fetchMarkers: @escaping @Sendable (String, String) async -> [RepliedReadMarker] = RepliedAPI.fetchMarkers,
         fetchMessages: @escaping @Sendable (String, String, Int?) async -> [RepliedMessage]? = RepliedAPI.fetchMessages,
         fetchPendingMessages: @escaping @Sendable (String, String, Set<String>) async -> [RepliedMessage]? = RepliedAPI.fetchPendingMessages
     ) async {
         let markers = await fetchMarkers(gateway, user)
         guard !Task.isCancelled else { return }
+        let sequences = await fetchSequences(gateway, user)
+        guard !Task.isCancelled else { return }
         let previousState = state
+        let previousWatermarks = messageSequenceWatermarks
+        var observedSequences: [String: Int] = [:]
+        for item in sequences ?? [] {
+            observedSequences[item.sessionKey] = item.latestMessageSeq
+        }
+        var changedMessageSessionKeys: Set<String> = []
+        if let baseline = messageSequenceWatermarks {
+            changedMessageSessionKeys = Set(observedSequences.compactMap { key, seq in
+                seq > (baseline[key] ?? 0) ? key : nil
+            })
+        } else if sequences != nil {
+            // First capability observation establishes a baseline, not a full-roster
+            // history sweep. Older gateways keep the existing bounded fallback.
+            messageSequenceWatermarks = observedSequences
+        }
         var changedReadMarkerSessionKeys: Set<String> = []
         for marker in markers {
             if let sessionKey = state.applyReadMarker(marker, userID: user) {
@@ -677,7 +711,8 @@ struct RepliedShownChat {
             }
         }
         defer {
-            if state.hasPersistenceRelevantChanges(comparedTo: previousState) {
+            if state.hasPersistenceRelevantChanges(comparedTo: previousState)
+                || messageSequenceWatermarks != previousWatermarks {
                 persistStateSnapshot()
             }
         }
@@ -686,9 +721,16 @@ struct RepliedShownChat {
             rosterSessionKeys: sessionKeys,
             recentSessionKeys: recentSessionKeys,
             pendingPromptSessionKeys: state.pendingPromptSessionKeys(),
-            changedReadMarkerSessionKeys: changedReadMarkerSessionKeys
+            changedReadMarkerSessionKeys: changedReadMarkerSessionKeys,
+            changedMessageSessionKeys: changedMessageSessionKeys
         )
         guard !keysToFetch.isEmpty else { return }
+        if previousWatermarks == nil, sequences != nil {
+            // Selected histories are not caught up until their first read succeeds.
+            for key in keysToFetch where observedSequences[key] != nil {
+                messageSequenceWatermarks?[key] = 0
+            }
+        }
         let requests = keysToFetch.map { key -> (String, Set<String>, Int?) in
             let promptIDs = state.pendingPromptIDs(for: key)
             return (key, promptIDs, promptIDs.isEmpty ? (limit ?? 500) : nil)
@@ -706,6 +748,11 @@ struct RepliedShownChat {
             while let (key, messages) = await group.next() {
                 guard !Task.isCancelled else { group.cancelAll(); return }
                 if let messages {
+                    // Acknowledge only the sequence observed BEFORE this history read.
+                    // Failure/cancellation leaves the older watermark for the next catch-up.
+                    if let seq = observedSequences[key] {
+                        messageSequenceWatermarks?[key] = seq
+                    }
                     for message in messages where message.sessionKey == key {
                         apply(.message(message), userID: user, shownSessionKey: shownSessionKey,
                               persistSnapshot: false)
@@ -755,6 +802,21 @@ enum RepliedAPI {
         url.path = "/ws/changes"
         url.queryItems = [URLQueryItem(name: "protocolVersion", value: "2")]
         return url.url
+    }
+
+    static func sequencesURL(gateway: String, user: String) -> URL? {
+        guard let base = URL(string: gateway),
+              var url = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        url.path = "/api/session-message-sequences"
+        url.queryItems = [URLQueryItem(name: "asUser", value: user)]
+        return url.url
+    }
+
+    static func fetchSequences(gateway: String, user: String) async -> [RepliedSessionMessageSequence]? {
+        guard let url = sequencesURL(gateway: gateway, user: user),
+              let data = await get(url),
+              let page = try? JSONDecoder().decode(RepliedSequencesPage.self, from: data) else { return nil }
+        return page.items
     }
 
     static func fetchMessages(gateway: String, sessionKey: String, limit: Int?) async -> [RepliedMessage]? {

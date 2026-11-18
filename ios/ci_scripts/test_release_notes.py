@@ -291,20 +291,40 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(selected, note)
 
+    def test_shipped_build_77_note_is_preserved_in_history(self):
+        note = release_notes.note_for_build(self.current_source, self.history_source, 77)
+        self.assertEqual(
+            [(item.title, item.detail) for item in note.items],
+            [
+                (
+                    "Keep Replies current after reconnecting",
+                    "Tuner catches up pending prompts and changed read positions, plus a small set of recent conversations. On first load, it checks recent conversations and restores pending prompts. A reply received during disconnection for an older agent may appear in Replies after its next live update; opening that chat still shows it.",
+                ),
+                (
+                    "Compatibility",
+                    "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Chat v0.1.101 does not work in Tuner.",
+                ),
+                (
+                    "Breaking changes",
+                    "None.",
+                ),
+            ],
+        )
+
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
-        self.assertEqual(current.build, 77)
+        self.assertEqual(current.build, 78)
         self.assertEqual(
             [item.title for item in current.items],
-            ["Keep Replies current after reconnecting", "Compatibility", "Breaking changes"],
+            ["Catch up older Replies after reconnecting", "Compatibility", "Breaking changes"],
         )
         replies_detail = next(
             item.detail
             for item in current.items
-            if item.title == "Keep Replies current after reconnecting"
+            if item.title == "Catch up older Replies after reconnecting"
         )
         self.assertIn(
-            "A reply received during disconnection for an older agent may appear in Replies after its next live update; opening that chat still shows it.",
+            "With Tightbeam 0.1.16, it continues checking pending prompts, changed read positions and recent conversations; older Replies may wait for a live update.",
             replies_detail,
         )
         compatibility = next(
@@ -312,7 +332,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(
             compatibility,
-            "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Chat v0.1.101 does not work in Tuner.",
+            "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
         )
         breaking_changes = next(
             item.detail for item in current.items if item.title == "Breaking changes"
@@ -325,7 +345,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 "current draft is not assigned to a numbered build",
             ):
                 release_notes.note_for_build(
-                    self.current_source, self.history_source, 77
+                    self.current_source, self.history_source, 78
                 )
             return
 
@@ -463,7 +483,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 76"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 77"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )
