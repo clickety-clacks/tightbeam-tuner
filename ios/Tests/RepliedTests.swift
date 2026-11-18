@@ -324,9 +324,9 @@ final class RepliedTests: XCTestCase {
 
         XCTAssertEqual(
             selected,
-            ["agent:20", "agent:18", "agent:2"] + (1...8).map { "agent:\($0)" }
+            ["agent:20", "agent:18", "agent:2"] + ([1] + Array(3...8)).map { "agent:\($0)" }
         )
-        XCTAssertEqual(selected.count, 11)
+        XCTAssertEqual(selected.count, 10)
     }
 
     @MainActor func testRegularWidthShownReplyKeepsBaselineReadOnArrival() throws {
