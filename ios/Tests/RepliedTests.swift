@@ -76,6 +76,39 @@ final class RepliedTests: XCTestCase {
         XCTAssertTrue(recoveredCalls.contains("older"))
     }
 
+    @MainActor func testBulkChangedSessionsUseTwoFetchesAndSkipUnchangedAndEmpty() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let keys = (1...20).map { "older:\($0)" }
+        let initial = keys.map { RepliedSessionMessageSequence(sessionKey: $0, latestMessageSeq: 5) }
+        await feed.loadSnapshot(gateway: "https://gateway.example.test", user: "reader", sessionKeys: keys, limit: 500,
+            mode: .initial, fetchSequences: { _, _ in initial }, fetchMarkers: { _, _ in [] })
+        let changed = keys.map { RepliedSessionMessageSequence(sessionKey: $0, latestMessageSeq: 6) }
+            + [RepliedSessionMessageSequence(sessionKey: "empty", latestMessageSeq: 0)]
+        let concurrency = FetchConcurrencyProbe()
+        let fetched = FetchKeyRecorder()
+        await feed.loadSnapshot(gateway: "https://gateway.example.test", user: "reader", sessionKeys: keys + ["empty"], limit: 100,
+            fetchSequences: { _, _ in changed }, fetchMarkers: { _, _ in [] },
+            fetchMessages: { _, key, _ in
+                await concurrency.begin()
+                await fetched.record(key)
+                try? await Task.sleep(nanoseconds: 1_000_000)
+                await concurrency.finish()
+                return []
+            })
+        let calls = await fetched.values
+        let maximum = await concurrency.maximumObserved
+        XCTAssertEqual(Set(calls), Set(keys))
+        XCTAssertEqual(maximum, 2)
+        let unchangedCalls = FetchKeyRecorder()
+        await feed.loadSnapshot(gateway: "https://gateway.example.test", user: "reader", sessionKeys: keys + ["empty"], limit: 100,
+            fetchSequences: { _, _ in changed }, fetchMarkers: { _, _ in [] },
+            fetchMessages: { _, key, _ in await unchangedCalls.record(key); return [] })
+        let remaining = await unchangedCalls.values
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
     func testShownChatUsesCompactColumnAndKeepsRegularDetailVisible() {
         XCTAssertNil(RepliedShownChat(
             selectedSessionKey: "agent:alpha",

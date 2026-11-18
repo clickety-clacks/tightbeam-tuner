@@ -704,8 +704,7 @@ struct RepliedShownChat {
             // history sweep. Older gateways keep the existing bounded fallback.
             messageSequenceWatermarks = observedSequences
         }
-        var changedReadMarkerSessionKeys: Set<String> = [],
-        changedMessageSessionKeys: Set<String> = []
+        var changedReadMarkerSessionKeys: Set<String> = []
         for marker in markers {
             if let sessionKey = state.applyReadMarker(marker, userID: user) {
                 changedReadMarkerSessionKeys.insert(sessionKey)
