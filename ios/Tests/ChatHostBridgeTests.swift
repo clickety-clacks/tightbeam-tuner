@@ -1,4 +1,5 @@
 import ImageIO
+import JavaScriptCore
 import UIKit
 import XCTest
 import WebKit
@@ -604,5 +605,199 @@ final class ChatHostBridgeTests: XCTestCase {
 
         relaunched.save([], for: "agent:one")
         XCTAssertEqual(PhotoDraftStore(root: root).load("agent:one"), [])
+    }
+
+    // MARK: Failed-turn restore (Chat's optional restore-requested event)
+
+    private func restoreEvent(lifetimeId: String? = nil, sessionKey: String = "agent:test", messageId: String = "m_failed",
+                              correlationId: String? = nil, content: String = "summarize the logs",
+                              extra: [String: Any] = [:]) -> [String: Any] {
+        var event: [String: Any] = ["event": "restore-requested", "version": 1, "lifetimeId": lifetimeId ?? lifetime,
+                                    "sessionKey": sessionKey, "messageId": messageId, "content": content]
+        if let correlationId { event["correlationId"] = correlationId }
+        return event.merging(extra) { $1 }
+    }
+
+    /// Runs the injected script in a bare JavaScript context, as the Chat page would see it.
+    func testDeclarationOptsIntoRestoreRequestedVersionOne() throws {
+        let bridge = ChatHostBridge(chatURL: URL(string: "https://chat.example:9443/")!)
+        let context = try XCTUnwrap(JSContext())
+        context.evaluateScript("""
+            var posted = [];
+            var window = { location: { origin: 'https://chat.example:9443' },
+              webkit: { messageHandlers: { tunerChatHost: { postMessage: (m) => posted.push(m) } } } };
+            """)
+        context.evaluateScript(bridge.declarationScript.source)
+        let declaration = "window.__TIGHTBEAM_CHAT_HOST__"
+        XCTAssertEqual(context.evaluateScript("JSON.stringify(\(declaration).versions)")?.toString(), "[1]")
+        XCTAssertEqual(context.evaluateScript("JSON.stringify(\(declaration).events)")?.toString(),
+                       #"{"restore-requested":[1]}"#)
+        XCTAssertTrue(context.evaluateScript("typeof \(declaration).onEvent === 'function'")?.toBool() ?? false)
+
+        let elsewhere = try XCTUnwrap(JSContext())
+        elsewhere.evaluateScript("""
+            var window = { location: { origin: 'https://other.example' },
+              webkit: { messageHandlers: { tunerChatHost: { postMessage: () => {} } } } };
+            """)
+        elsewhere.evaluateScript(bridge.declarationScript.source)
+        XCTAssertTrue(elsewhere.evaluateScript("window.__TIGHTBEAM_CHAT_HOST__ === undefined")?.toBool() ?? false)
+    }
+
+    func testRestoreForTheCurrentReadyLifetimeWaitsForTheComposerAndSendsNothing() {
+        let bridge = readyBridge()
+        bridge.handle(type: "restore-requested", event: restoreEvent(correlationId: "c_from-another-device"))
+        let request = bridge.pendingRestore
+        XCTAssertEqual(request?.messageId, "m_failed")
+        XCTAssertEqual(request?.content, "summarize the logs")
+        XCTAssertEqual(request?.attachments, [])
+        XCTAssertEqual(request?.attachmentsUnavailable, false)
+        XCTAssertNil(bridge.lastCommandJSON, "a restore never sends by itself")
+        XCTAssertNil(bridge.outgoing)
+
+        bridge.restoreTaken(request!)
+        XCTAssertNil(bridge.pendingRestore)
+    }
+
+    func testRestoreIsIgnoredUnlessItMatchesTheCurrentReadyLifetime() {
+        let waiting = ChatHostBridge(chatURL: URL(string: "https://chat.example:9443/")!)
+        waiting.handle(type: "restore-requested", event: restoreEvent())
+        XCTAssertNil(waiting.pendingRestore, "no ready lifetime yet")
+
+        let bridge = readyBridge()
+        bridge.handle(type: "restore-requested", event: restoreEvent(lifetimeId: "l_old"))
+        bridge.handle(type: "restore-requested", event: restoreEvent(sessionKey: "agent:other"))
+        bridge.handle(type: "restore-requested", event: restoreEvent(extra: ["version": 2]))
+        bridge.handle(type: "restore-requested", event: restoreEvent(extra: ["content": NSNull()]))
+        XCTAssertNil(bridge.pendingRestore)
+
+        bridge.handle(type: "unavailable", event: ["event": "unavailable", "version": 1, "lifetimeId": lifetime,
+                                                    "reason": "unauthorized"])
+        bridge.handle(type: "restore-requested", event: restoreEvent())
+        XCTAssertNil(bridge.pendingRestore, "the lifetime is not ready")
+
+        bridge.handle(type: "lifetime-ended", event: ["event": "lifetime-ended", "version": 1, "lifetimeId": lifetime,
+                                                       "reason": "target-changed"])
+        reportReady(bridge, lifetimeId: "l_next")
+        bridge.handle(type: "restore-requested", event: restoreEvent())
+        XCTAssertNil(bridge.pendingRestore, "a tap from the ended lifetime")
+        bridge.handle(type: "restore-requested", event: restoreEvent(lifetimeId: "l_next"))
+        XCTAssertNotNil(bridge.pendingRestore)
+        XCTAssertNil(bridge.lastCommandJSON)
+    }
+
+    func testRestoredPromptGoesOutOnlyOnSendAsANewCorrelationWithoutRetry() throws {
+        let bridge = readyBridge()
+        bridge.send("summarize the logs")
+        let original = bridge.outgoing!.correlationId
+        report(bridge, "accepted", original)
+        report(bridge, "delivered", original)
+        let sentBefore = bridge.lastCommandJSON
+
+        // The agent's turn then failed; the person taps Edit and resend in Chat.
+        bridge.handle(type: "restore-requested", event: restoreEvent(correlationId: original))
+        var draft = ""
+        var photos: [ChatHostBridge.Attachment] = []
+        let lost = ChatHostBridge.apply(try XCTUnwrap(bridge.pendingRestore), draft: &draft, attachments: &photos) { _ in true }
+        XCTAssertFalse(lost)
+        XCTAssertEqual(draft, "summarize the logs")
+        reportReady(bridge, lifetimeId: lifetime)
+        XCTAssertEqual(bridge.lastCommandJSON, sentBefore, "nothing is sent until the person taps Send")
+
+        bridge.send(draft + ", briefly")
+        let resend = try command(bridge)
+        let correlationId = try XCTUnwrap(resend["correlationId"] as? String)
+        XCTAssertNotEqual(correlationId, original)
+        XCTAssertTrue(correlationId.hasPrefix("c_"))
+        XCTAssertNotNil(UUID(uuidString: String(correlationId.dropFirst(2))))
+        XCTAssertNil(resend["retry"])
+        XCTAssertEqual(resend["content"] as? String, "summarize the logs, briefly")
+
+        // Unedited, it is still a new message rather than a retry of the failed prompt.
+        report(bridge, "accepted", correlationId)
+        report(bridge, "delivered", correlationId)
+        bridge.send("summarize the logs")
+        let unedited = try command(bridge)
+        XCTAssertNotEqual(unedited["correlationId"] as? String, original)
+        XCTAssertNil(unedited["retry"])
+    }
+
+    func testRestoreKeepsTypedTextAndARepeatedTapAddsNothing() throws {
+        let bridge = readyBridge(capabilities: ["attachments": [String: Any]()])
+        let data = photo.data.base64EncodedString()
+        bridge.handle(type: "restore-requested", event: restoreEvent(extra: [
+            "attachments": [["filename": "photo.jpg", "mimeType": "image/jpeg", "data": data]]
+        ]))
+        let first = try XCTUnwrap(bridge.pendingRestore)
+        XCTAssertEqual(first.attachments.map(\.data), [photo.data])
+        XCTAssertFalse(first.attachmentsUnavailable)
+
+        var draft = "and also check disk usage"
+        var photos: [ChatHostBridge.Attachment] = []
+        _ = ChatHostBridge.apply(first, draft: &draft, attachments: &photos) { _ in true }
+        XCTAssertEqual(draft, "summarize the logs\n\nand also check disk usage")
+        XCTAssertEqual(photos.count, 1)
+
+        bridge.handle(type: "restore-requested", event: restoreEvent(extra: [
+            "attachments": [["filename": "photo.jpg", "mimeType": "image/jpeg", "data": data]]
+        ]))
+        let second = try XCTUnwrap(bridge.pendingRestore)
+        XCTAssertNotEqual(second.id, first.id, "each tap is its own request")
+        _ = ChatHostBridge.apply(second, draft: &draft, attachments: &photos) { _ in true }
+        XCTAssertEqual(draft, "summarize the logs\n\nand also check disk usage")
+        XCTAssertEqual(photos.count, 1)
+
+        bridge.send(draft, attachments: photos)
+        let resend = try command(bridge)
+        XCTAssertNil(resend["retry"])
+        let sent = try XCTUnwrap(resend["attachments"] as? [[String: Any]])
+        XCTAssertEqual(sent.first?["data"] as? String, data)
+    }
+
+    func testUnavailablePhotosRestoreTheTextAndAreReported() throws {
+        let bridge = readyBridge(capabilities: ["attachments": [String: Any]()])
+        bridge.handle(type: "restore-requested", event: restoreEvent(extra: ["attachmentsUnavailable": true]))
+        let request = try XCTUnwrap(bridge.pendingRestore)
+        XCTAssertTrue(request.attachmentsUnavailable)
+        var draft = ""
+        var photos: [ChatHostBridge.Attachment] = []
+        XCTAssertTrue(ChatHostBridge.apply(request, draft: &draft, attachments: &photos) { _ in true })
+        XCTAssertEqual(draft, "summarize the logs")
+        XCTAssertEqual(photos, [])
+
+        // Photo bytes that cannot be decoded, or a type this lifetime does not take, are reported the same way.
+        bridge.handle(type: "restore-requested", event: restoreEvent(extra: [
+            "attachments": [["filename": "photo.jpg", "mimeType": "image/jpeg", "data": "not base64!"]]
+        ]))
+        XCTAssertEqual(bridge.pendingRestore?.attachmentsUnavailable, true)
+        bridge.handle(type: "restore-requested", event: restoreEvent(content: "", extra: [
+            "attachments": [["filename": "photo.jpg", "mimeType": "image/jpeg", "data": photo.data.base64EncodedString()]]
+        ]))
+        draft = ""
+        XCTAssertTrue(ChatHostBridge.apply(try XCTUnwrap(bridge.pendingRestore), draft: &draft, attachments: &photos) { _ in false })
+        XCTAssertEqual(photos, [])
+        XCTAssertEqual(draft, "")
+    }
+
+    func testRestoreLeavesARefusedSendAndItsRetryAlone() throws {
+        let bridge = readyBridge()
+        bridge.send("refused words")
+        let refused = bridge.outgoing!.correlationId
+        report(bridge, "failed", refused, reason: "refused")
+        bridge.handle(type: "restore-requested", event: restoreEvent())
+        XCTAssertEqual(bridge.outgoing?.status, .failed("refused"))
+        XCTAssertEqual(bridge.outgoing?.content, "refused words")
+
+        bridge.send("refused words")
+        let retry = try command(bridge)
+        XCTAssertEqual(retry["correlationId"] as? String, refused)
+        XCTAssertEqual(retry["retry"] as? Bool, true)
+    }
+
+    func testANewPageDropsAnUntakenRestore() {
+        let bridge = readyBridge()
+        bridge.handle(type: "restore-requested", event: restoreEvent())
+        XCTAssertNotNil(bridge.pendingRestore)
+        bridge.pageStarted()
+        XCTAssertNil(bridge.pendingRestore)
     }
 }
