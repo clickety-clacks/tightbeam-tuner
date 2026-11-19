@@ -8,6 +8,11 @@ import WebKit
 /// `attachments: [{filename, mimeType, data}]` with base64 bytes; Chat prepares and uploads them
 /// as it does for its own composer. A retry resends the same text and the same attachments.
 ///
+/// Tuner also opts into Chat's optional `restore-requested` event. When the person taps Edit and
+/// resend on a prompt whose turn failed, Chat hands Tuner that prompt's words (and photos it still
+/// holds); Tuner puts them in the native composer for editing and sends them only when the person
+/// taps Send, as a new message.
+///
 /// Chat keeps its own composer until it reports `ready` for the page it is running.
 /// Tuner shows its native composer only between `ready` and the end of that page or lifetime,
 /// sends only to the conversation named by the latest `ready`, and never resends on its own.
@@ -99,6 +104,19 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         var attempted = false
     }
 
+    /// A failed-turn prompt Chat handed back after the person tapped Edit and resend, waiting for
+    /// the composer to put it in the draft. It is never sent by itself.
+    struct RestoreRequest: Equatable {
+        /// Distinguishes two taps on the same prompt.
+        let id = UUID()
+        /// Chat's canonical row ID of the failed prompt. Its client correlation is never reused.
+        let messageId: String
+        let content: String
+        let attachments: [Attachment]
+        /// The prompt had photos that cannot come back.
+        let attachmentsUnavailable: Bool
+    }
+
     typealias OutgoingObserver = @MainActor (Outgoing) -> Void
 
     @ObservationIgnored private let outgoingObserver: OutgoingObserver?
@@ -107,6 +125,8 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
 
     private(set) var phase: Phase = .waiting
     private(set) var outgoing: Outgoing?
+    /// The latest Edit and resend from Chat that the composer has not yet taken.
+    private(set) var pendingRestore: RestoreRequest?
     /// Earlier messages Chat accepted but has not yet reported delivered, oldest first.
     /// The user can send again once a message is accepted; each message keeps its own outcome.
     private(set) var earlier: [Outgoing] = []
@@ -212,6 +232,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
           if (!handler) return;
           window.\(Self.declarationName) = Object.freeze({
             versions: [1],
+            events: Object.freeze({ 'restore-requested': Object.freeze([1]) }),
             onEvent: (event) => handler.postMessage(JSON.stringify(event))
           });
         })();
@@ -302,6 +323,12 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         reportedConnection = nil
         attachmentCapabilities = nil
         clearReconnectStall()
+        pendingRestore = nil
+    }
+
+    /// The composer put `request` in the draft.
+    func restoreTaken(_ request: RestoreRequest) {
+        if pendingRestore?.id == request.id { pendingRestore = nil }
     }
 
     /// Starts timing a `reconnecting` report, or clears the stall when Chat reports anything else.
@@ -339,6 +366,30 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     static func isSameMessage(_ outgoing: Outgoing, content: String, attachments: [Attachment]) -> Bool {
         outgoing.content == content && outgoing.attachments.count == attachments.count
             && zip(outgoing.attachments, attachments).allSatisfy { $0.sameContent(as: $1) }
+    }
+
+    /// Returned words go ahead of anything typed since, so nothing is lost; words already in the
+    /// draft are not added twice.
+    static func draft(_ draft: String, restoring content: String) -> String {
+        if content.isEmpty || draft.contains(content) { return draft }
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return content }
+        return content + "\n\n" + draft
+    }
+
+    /// Puts a failed-turn prompt into the draft for editing. Photos the current lifetime accepts go
+    /// ahead of those already in the draft, once each. Returns true when any of the prompt's photos
+    /// could not come back.
+    static func apply(_ request: RestoreRequest, draft: inout String, attachments: inout [Attachment],
+                      accepts: (String) -> Bool) -> Bool {
+        draft = Self.draft(draft, restoring: request.content)
+        var lost = request.attachmentsUnavailable
+        var restored: [Attachment] = []
+        for photo in request.attachments {
+            guard accepts(photo.mimeType) else { lost = true; continue }
+            if !(attachments + restored).contains(where: { $0.sameContent(as: photo) }) { restored.append(photo) }
+        }
+        if !restored.isEmpty { attachments = restored + attachments }
+        return lost
     }
 
     /// Sends `text` and any attachments as a user action. The same text and attachments after a
@@ -451,6 +502,31 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
                 reportedConnection = nil
                 clearReconnectStall()
                 recoveryStateObserver?()
+            }
+        case "restore-requested":
+            // Only for the conversation this composer sends to now; an older lifetime's tap is dropped.
+            guard (event["version"] as? Int) == 1, case let .ready(current, sessionKey) = phase,
+                  lifetimeId == current, event["sessionKey"] as? String == sessionKey,
+                  let messageId = event["messageId"] as? String,
+                  let content = event["content"] as? String else { return }
+            let items = event["attachments"] as? [[String: Any]] ?? []
+            let photos = items.compactMap { item -> Attachment? in
+                guard let filename = item["filename"] as? String, let mimeType = item["mimeType"] as? String,
+                      let base64 = item["data"] as? String, let data = Data(base64Encoded: base64),
+                      !data.isEmpty else { return nil }
+                return Attachment(filename: filename, mimeType: mimeType, data: data)
+            }
+            pendingRestore = RestoreRequest(
+                messageId: messageId, content: content, attachments: photos,
+                attachmentsUnavailable: event["attachmentsUnavailable"] as? Bool == true || photos.count < items.count)
+            // Chat holds a canonical row for this prompt, so a copy Tuner still keeps for retry was
+            // delivered. Retiring it makes the next Send a new message instead of a retry of the failed prompt.
+            if let sent = event["correlationId"] as? String {
+                earlier.removeAll { $0.correlationId == sent }
+                if var current = outgoing, current.correlationId == sent, current.status != .delivered {
+                    current.status = .delivered
+                    outgoing = current
+                }
             }
         case "declined":
             phase = .waiting

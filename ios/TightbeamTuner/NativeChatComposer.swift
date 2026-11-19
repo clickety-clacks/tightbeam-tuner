@@ -21,6 +21,8 @@ struct NativeChatComposer: View {
     @State private var libraryPicks: [PhotosPickerItem] = []
     @State private var loadingPhotos = 0
     @State private var attachmentProblem: String?
+    /// Set when Edit and resend could not bring back a failed prompt's photos; cleared on Send.
+    @State private var restoreProblem: String?
     /// A comfortable line of body text, about 70 characters, plus the send button.
     /// Scales with Dynamic Type so the line length stays the same at any text size.
     @ScaledMetric(relativeTo: .body) private var maxWidth: CGFloat = 640
@@ -181,6 +183,7 @@ struct NativeChatComposer: View {
         .onAppear {
             if focusOnAppear { focused = true }
             if let outgoing = bridge.outgoing, outgoing.status == .interrupted { restoreDraft(outgoing) }
+            if let request = bridge.pendingRestore { takeRestore(request) }
             if bridge.overlayOpen { focusChatPage() }
         }
         .onDisappear {
@@ -209,6 +212,9 @@ struct NativeChatComposer: View {
                 if !add(PhotoAttachment.fromCamera(image)) { attachmentProblem = "Could not add the photo" }
             }
             .ignoresSafeArea()
+        }
+        .onChange(of: bridge.pendingRestore) { _, request in
+            if let request { takeRestore(request) }
         }
         .onChange(of: bridge.outgoing) { _, outgoing in
             guard let outgoing else { return }
@@ -278,6 +284,7 @@ struct NativeChatComposer: View {
 
     private var notice: String? {
         if let attachmentProblem { return attachmentProblem }
+        if let restoreProblem { return restoreProblem }
         guard let outgoing = bridge.outgoing,
               outgoing.content.isEmpty || outgoing.content == draft || draft.hasPrefix(outgoing.content + "\n\n"),
               outgoing.attachments.allSatisfy({ sent in attachments.contains { $0.id == sent.id } }) else { return nil }
@@ -290,10 +297,20 @@ struct NativeChatComposer: View {
     private func restoreDraft(_ outgoing: ChatHostBridge.Outgoing) {
         // Give the words back so the user can retry or edit them, ahead of anything
         // typed since, so nothing is lost.
-        if trimmed.isEmpty { draft = outgoing.content }
-        else if !draft.contains(outgoing.content) { draft = outgoing.content + "\n\n" + draft }
+        draft = ChatHostBridge.draft(draft, restoring: outgoing.content)
         let missing = outgoing.attachments.filter { sent in !attachments.contains { $0.id == sent.id } }
         attachments = missing + attachments
+    }
+
+    /// Edit and resend on a failed turn in Chat: the prompt comes back as a draft to edit, and goes
+    /// out only when the person taps Send, as a new message.
+    private func takeRestore(_ request: ChatHostBridge.RestoreRequest) {
+        bridge.restoreTaken(request)
+        let lost = ChatHostBridge.apply(request, draft: &draft, attachments: &attachments) {
+            bridge.attachmentCapabilities?.accepts($0) == true
+        }
+        restoreProblem = lost ? "Photos from that message couldn't be restored" : nil
+        focused = true
     }
 
     private func focusChatPage() {
@@ -311,6 +328,7 @@ struct NativeChatComposer: View {
         draft = ""
         attachments = []
         attachmentProblem = nil
+        restoreProblem = nil
         bridge.send(text, attachments: files)
     }
 }
