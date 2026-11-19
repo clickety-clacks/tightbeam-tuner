@@ -1,12 +1,12 @@
 {
   "version": "1.0",
-  "build": 78,
-  "date": "November 18, 2026",
+  "build": 79,
+  "date": "November 19, 2026",
   "items": [
     {
       "symbol": "arrow.clockwise",
-      "title": "Catch up older Replies after reconnecting",
-      "detail": "When the Gateway provides message-sequence summaries, Tuner checks older conversations that changed while disconnected without reloading every conversation. With Tightbeam 0.1.16, it continues checking pending prompts, changed read positions and recent conversations; older Replies may wait for a live update."
+      "title": "Connect stays available while Chat reconnects",
+      "detail": "If Chat is still reconnecting after a few seconds, tapping the connection dot offers Connect, and Tuner retries on its own on the same schedule it uses when Chat shows disconnected. The dot stays yellow until Chat reports a change."
     },
     {
       "symbol": "info.circle",

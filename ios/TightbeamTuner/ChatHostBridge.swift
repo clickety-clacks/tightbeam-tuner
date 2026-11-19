@@ -126,6 +126,17 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     private(set) var attachmentCapabilities: AttachmentCapabilities?
     private var reconnectSupported = false
     private var reportedConnection: Connection?
+    /// True once Chat has reported `reconnecting` for `stalledReconnectDelay` without a change.
+    private(set) var reconnectStalled = false
+    @ObservationIgnored private var stallTask: Task<Void, Never>?
+    @ObservationIgnored private let stalledReconnectDelay: Duration
+
+    /// How long Chat may report `reconnecting` before Tuner offers Connect and lets its own
+    /// recovery run, as it does for `disconnected`. Chat turns the dot yellow 1 s into an outage
+    /// and, through v0.1.106, red at 10 s, so Connect appeared 9 s after yellow. Chat that keeps
+    /// reporting `reconnecting` while it retries gets Connect at that same moment; older Chat turns
+    /// red at that moment, so its behavior is unchanged.
+    static let defaultStalledReconnectDelay: Duration = .seconds(9)
 
     /// Chat's connection state, as its own composer's status dot shows it.
     enum Connection: Equatable {
@@ -142,6 +153,16 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             }
         }
     }
+
+    /// The state Connect and Tuner's own recovery act on. It is Chat's state, except that a
+    /// stalled reconnect counts as `disconnected`. The dot and its label follow `connection`.
+    var recoveryConnection: Connection {
+        let connection = connection
+        return connection == .reconnecting && reconnectStalled ? .disconnected : connection
+    }
+
+    /// The connection details offer Connect.
+    var offersConnect: Bool { recoveryConnection.isDown }
 
     var connection: Connection {
         if let reportedConnection { return reportedConnection }
@@ -169,8 +190,10 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
 
     init(
         chatURL: URL,
-        outgoingObserver: OutgoingObserver? = nil
+        outgoingObserver: OutgoingObserver? = nil,
+        stalledReconnectDelay: Duration = ChatHostBridge.defaultStalledReconnectDelay
     ) {
+        self.stalledReconnectDelay = stalledReconnectDelay
         var parts = URLComponents()
         parts.scheme = chatURL.scheme
         parts.host = chatURL.host
@@ -206,8 +229,9 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         return false
     }
 
+    /// Chat is reconnecting and has not stalled; Tuner leaves it to its own retries.
     var isReconnectInProgress: Bool {
-        reportedConnection == .reconnecting
+        reportedConnection == .reconnecting && !reconnectStalled
     }
 
     var phaseIsUnavailable: Bool {
@@ -277,6 +301,36 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         reconnectSupported = false
         reportedConnection = nil
         attachmentCapabilities = nil
+        clearReconnectStall()
+    }
+
+    /// Starts timing a `reconnecting` report, or clears the stall when Chat reports anything else.
+    /// Chat sends `connection` only when its state changes, so the timer runs from the first report.
+    private func trackReconnectStall() {
+        guard reportedConnection == .reconnecting else {
+            clearReconnectStall()
+            return
+        }
+        guard stallTask == nil, !reconnectStalled else { return }
+        let delay = stalledReconnectDelay
+        stallTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.stallTask = nil
+            guard self.reportedConnection == .reconnecting else { return }
+            self.reconnectStalled = true
+            self.recoveryStateObserver?()
+        }
+    }
+
+    private func clearReconnectStall() {
+        stallTask?.cancel()
+        stallTask = nil
+        reconnectStalled = false
     }
 
     // MARK: Sending
@@ -369,6 +423,9 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         case "ready":
             guard (event["version"] as? Int) == 1, let lifetimeId,
                   let sessionKey = event["sessionKey"] as? String else { return }
+            // A repeated `ready` for the same lifetime is followed by the same `connection` state,
+            // so a reconnect already being timed keeps its start.
+            if currentLifetimeId != lifetimeId { clearReconnectStall() }
             reportedConnection = nil
             phase = .ready(lifetimeId: lifetimeId, sessionKey: sessionKey)
             hostModeDeclined = false
@@ -392,6 +449,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
                 phase = .unavailable(lifetimeId: lifetimeId)
                 reconnectSupported = false
                 reportedConnection = nil
+                clearReconnectStall()
                 recoveryStateObserver?()
             }
         case "declined":
@@ -409,7 +467,10 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             case "disconnected": reportedConnection = .disconnected
             default: break
             }
-            if reportedConnection != nil { recoveryStateObserver?() }
+            if reportedConnection != nil {
+                trackReconnectStall()
+                recoveryStateObserver?()
+            }
         case "overlay":
             guard (event["version"] as? Int) == 1, let lifetimeId,
                   lifetimeId == currentLifetimeId, let open = event["open"] as? Bool else { return }

@@ -336,7 +336,7 @@ struct ChatWebView: UIViewControllerRepresentable {
                         || (bridge?.isReady == true && bridge?.connection == .connecting) {
                 // Chat is already making progress; don't reset its page or queue another command.
                 cancelRecovery(resetBackoff: false)
-            } else if bridge?.connection == .disconnected || bridge?.phaseIsUnavailable == true {
+            } else if bridge?.recoveryConnection == .disconnected || bridge?.phaseIsUnavailable == true {
                 if reconnectIsPending {
                     guard reconnectPendingTimeoutElapsed else { return }
                     cancelReconnectAttempt()
@@ -385,7 +385,7 @@ struct ChatWebView: UIViewControllerRepresentable {
 
                 let action = ChatRecoveryPolicy.action(
                     isReady: self.bridge?.isReady == true,
-                    connection: self.bridge?.connection ?? .connecting,
+                    connection: self.bridge?.recoveryConnection ?? .connecting,
                     canReconnectInPlace: self.bridge?.canReconnectInPlace == true,
                     reconnectIsPending: self.reconnectIsPending,
                     chatReconnectIsPending: self.bridge?.isReconnectInProgress == true,
@@ -417,12 +417,15 @@ struct ChatWebView: UIViewControllerRepresentable {
                     return
                 }
                 guard let self else { return }
-                if self.bridge?.connection == .reconnecting || self.bridge?.connection == .connecting {
+                // Chat may still report `reconnecting` after this command without a new event; once that
+                // reconnect has stalled, it is retried on the same schedule as `disconnected`.
+                let connection = self.bridge?.recoveryConnection
+                if connection == .reconnecting || connection == .connecting {
                     self.reconnectPendingTimeoutElapsed = true
                     self.reconnectTimeoutTask = nil
                     return
                 }
-                if self.bridge?.connection == .disconnected {
+                if connection == .disconnected {
                     self.cancelReconnectAttempt()
                     self.scheduleRecovery(minimumDelay: ChatRecoveryPolicy.resumeHealthCheckDelay)
                 } else {

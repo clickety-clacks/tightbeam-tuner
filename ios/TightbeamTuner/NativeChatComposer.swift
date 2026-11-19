@@ -316,7 +316,8 @@ struct NativeChatComposer: View {
 }
 
 extension ChatHostBridge.Connection {
-    /// Red: Chat cannot reach the conversation. The dot's details then offer Connect.
+    /// Red: Chat cannot reach the conversation. The dot's details then offer Connect, as they
+    /// also do once a reconnect has stalled (`ChatHostBridge.offersConnect`).
     var isDown: Bool {
         switch self {
         case .disconnected, .unsupported, .unauthorized: true
@@ -352,7 +353,7 @@ private struct ConnectionDetails: View {
                 row("Agent", bridge.agentName)
             }
             .font(TunerTypography.compactBody)
-            if bridge.connection.isDown {
+            if bridge.offersConnect {
                 Button("Connect", systemImage: "arrow.clockwise") {
                     dismiss()
                     bridge.reconnect()
