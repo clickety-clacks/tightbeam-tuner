@@ -519,6 +519,15 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             pendingRestore = RestoreRequest(
                 messageId: messageId, content: content, attachments: photos,
                 attachmentsUnavailable: event["attachmentsUnavailable"] as? Bool == true || photos.count < items.count)
+            // Chat holds a canonical row for this prompt, so a copy Tuner still keeps for retry was
+            // delivered. Retiring it makes the next Send a new message instead of a retry of the failed prompt.
+            if let sent = event["correlationId"] as? String {
+                earlier.removeAll { $0.correlationId == sent }
+                if var current = outgoing, current.correlationId == sent, current.status != .delivered {
+                    current.status = .delivered
+                    outgoing = current
+                }
+            }
         case "declined":
             phase = .waiting
             hostModeDeclined = true

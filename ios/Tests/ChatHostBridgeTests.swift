@@ -793,6 +793,24 @@ final class ChatHostBridgeTests: XCTestCase {
         XCTAssertEqual(retry["retry"] as? Bool, true)
     }
 
+    func testRestoreOfAnInterruptedSendIsANewMessageNotARetry() throws {
+        // A page reload interrupted Tuner's send; Chat later shows it delivered and its turn failed.
+        let bridge = readyBridge()
+        bridge.send("summarize the logs")
+        let original = bridge.outgoing!.correlationId
+        report(bridge, "accepted", original)
+        bridge.pageStarted()
+        XCTAssertEqual(bridge.outgoing?.status, .interrupted)
+        reportReady(bridge, lifetimeId: "l_after_reload")
+
+        bridge.handle(type: "restore-requested", event: restoreEvent(lifetimeId: "l_after_reload", correlationId: original))
+        XCTAssertEqual(bridge.outgoing?.status, .delivered)
+        bridge.send("summarize the logs")
+        let resend = try command(bridge)
+        XCTAssertNotEqual(resend["correlationId"] as? String, original)
+        XCTAssertNil(resend["retry"])
+    }
+
     func testANewPageDropsAnUntakenRestore() {
         let bridge = readyBridge()
         bridge.handle(type: "restore-requested", event: restoreEvent())
