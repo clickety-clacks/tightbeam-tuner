@@ -336,7 +336,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
         self.assertEqual(current.build, 79)
         self.assertEqual(
             [item.title for item in current.items],
-            ["Connect stays available while Chat reconnects", "Compatibility", "Breaking changes"],
+            ["Connect stays available while Chat reconnects", "Edit and resend a failed prompt", "Compatibility", "Breaking changes"],
         )
         connect_detail = next(
             item.detail
@@ -347,6 +347,12 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             "If Chat is still reconnecting after a few seconds, tapping the connection dot offers Connect",
             connect_detail,
         )
+        restore_detail = next(
+            item.detail
+            for item in current.items
+            if item.title == "Edit and resend a failed prompt"
+        )
+        self.assertIn("Nothing is sent until you tap Send.", restore_detail)
         compatibility = next(
             item.detail for item in current.items if item.title == "Compatibility"
         )

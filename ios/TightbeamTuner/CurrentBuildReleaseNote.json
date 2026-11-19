@@ -9,6 +9,11 @@
       "detail": "If Chat is still reconnecting after a few seconds, tapping the connection dot offers Connect, and Tuner retries on its own on the same schedule it uses when Chat shows disconnected. The dot stays yellow until Chat reports a change."
     },
     {
+      "symbol": "arrow.uturn.backward",
+      "title": "Edit and resend a failed prompt",
+      "detail": "When an agent can't answer a prompt, tap Edit and resend under it in Chat. The prompt's words come back to the message field, with its photos when Chat still has them; Tuner says so when it can't restore the photos. Edit and tap Send to send it as a new message. Nothing is sent until you tap Send. Needs a Chat version that offers Edit and resend to Tuner; with earlier Chat versions, the failed prompt shows as before."
+    },
+    {
       "symbol": "info.circle",
       "title": "Compatibility",
       "detail": "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner."
