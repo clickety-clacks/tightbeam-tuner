@@ -311,21 +311,41 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_shipped_build_78_note_is_preserved_in_history(self):
+        note = release_notes.note_for_build(self.current_source, self.history_source, 78)
+        self.assertEqual(
+            [(item.title, item.detail) for item in note.items],
+            [
+                (
+                    "Catch up older Replies after reconnecting",
+                    "When the Gateway provides message-sequence summaries, Tuner checks older conversations that changed while disconnected without reloading every conversation. With Tightbeam 0.1.16, it continues checking pending prompts, changed read positions and recent conversations; older Replies may wait for a live update.",
+                ),
+                (
+                    "Compatibility",
+                    "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
+                ),
+                (
+                    "Breaking changes",
+                    "None.",
+                ),
+            ],
+        )
+
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
-        self.assertEqual(current.build, 78)
+        self.assertEqual(current.build, 79)
         self.assertEqual(
             [item.title for item in current.items],
-            ["Catch up older Replies after reconnecting", "Compatibility", "Breaking changes"],
+            ["Connect stays available while Chat reconnects", "Compatibility", "Breaking changes"],
         )
-        replies_detail = next(
+        connect_detail = next(
             item.detail
             for item in current.items
-            if item.title == "Catch up older Replies after reconnecting"
+            if item.title == "Connect stays available while Chat reconnects"
         )
         self.assertIn(
-            "With Tightbeam 0.1.16, it continues checking pending prompts, changed read positions and recent conversations; older Replies may wait for a live update.",
-            replies_detail,
+            "If Chat is still reconnecting after a few seconds, tapping the connection dot offers Connect",
+            connect_detail,
         )
         compatibility = next(
             item.detail for item in current.items if item.title == "Compatibility"
@@ -345,7 +365,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 "current draft is not assigned to a numbered build",
             ):
                 release_notes.note_for_build(
-                    self.current_source, self.history_source, 78
+                    self.current_source, self.history_source, 79
                 )
             return
 
@@ -483,7 +503,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 77"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 78"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )

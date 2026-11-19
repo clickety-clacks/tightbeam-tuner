@@ -193,6 +193,141 @@ final class ChatHostBridgeTests: XCTestCase {
         XCTAssertEqual(updates, 3)
     }
 
+    private func reportConnection(_ bridge: ChatHostBridge, _ state: String, lifetimeId: String? = nil) {
+        bridge.handle(type: "connection", event: [
+            "event": "connection", "version": 1, "lifetimeId": lifetimeId ?? lifetime, "state": state
+        ])
+    }
+
+    private func stallBridge() -> ChatHostBridge {
+        let bridge = ChatHostBridge(chatURL: URL(string: "https://chat.example:9443/")!,
+                                    stalledReconnectDelay: .milliseconds(50))
+        bridge.handle(type: "ready", event: [
+            "event": "ready", "version": 1, "lifetimeId": lifetime, "sessionKey": "agent:test",
+            "capabilities": ["text": true, "reconnect": true]
+        ])
+        return bridge
+    }
+
+    /// Waits past the test bridge's stall delay for its timer to run.
+    private func waitPastStallDelay() async throws {
+        try await Task.sleep(for: .milliseconds(200))
+    }
+
+    func testStalledReconnectDelayMatchesOlderChatsDisconnectedTiming() {
+        // Chat turns yellow 1 s into an outage and older Chat turns red at 10 s.
+        XCTAssertEqual(ChatHostBridge.defaultStalledReconnectDelay, .seconds(9))
+    }
+
+    func testSustainedReconnectingOffersConnectAndRecoveryAfterStallDelay() async throws {
+        let bridge = stallBridge()
+        var updates = 0
+        bridge.recoveryStateObserver = { updates += 1 }
+
+        reportConnection(bridge, "reconnecting")
+        XCTAssertEqual(updates, 1)
+        XCTAssertFalse(bridge.offersConnect)
+        XCTAssertTrue(bridge.isReconnectInProgress)
+        XCTAssertEqual(bridge.recoveryConnection, .reconnecting)
+
+        try await waitPastStallDelay()
+        XCTAssertEqual(updates, 2, "the stall wakes Tuner's recovery")
+        XCTAssertTrue(bridge.reconnectStalled)
+        XCTAssertTrue(bridge.offersConnect)
+        XCTAssertFalse(bridge.isReconnectInProgress)
+        XCTAssertEqual(bridge.recoveryConnection, .disconnected)
+        // The dot and its label keep following Chat's own state.
+        XCTAssertEqual(bridge.connection, .reconnecting)
+        XCTAssertEqual(bridge.connection.label, "Reconnecting; conversation may be out of date")
+        XCTAssertEqual(ChatRecoveryPolicy.action(
+            isReady: bridge.isReady, connection: bridge.recoveryConnection,
+            canReconnectInPlace: bridge.canReconnectInPlace, reconnectIsPending: false,
+            chatReconnectIsPending: bridge.isReconnectInProgress, isUnavailable: bridge.phaseIsUnavailable
+        ), .reconnect)
+
+        // Connect while stalled is the protocol's in-place reconnect.
+        bridge.reconnect()
+        XCTAssertEqual(try command(bridge)["type"] as? String, "reconnect")
+
+        reportConnection(bridge, "connected")
+        XCTAssertFalse(bridge.reconnectStalled)
+        XCTAssertFalse(bridge.offersConnect)
+        XCTAssertEqual(bridge.recoveryConnection, .connected)
+    }
+
+    func testEarlyDisconnectedKeepsTodaysConnectAndDoesNotStall() async throws {
+        let bridge = stallBridge()
+        var updates = 0
+        bridge.recoveryStateObserver = { updates += 1 }
+
+        reportConnection(bridge, "reconnecting")
+        reportConnection(bridge, "disconnected")
+        XCTAssertTrue(bridge.offersConnect)
+        XCTAssertEqual(bridge.connection.label, "Disconnected")
+        XCTAssertEqual(bridge.recoveryConnection, .disconnected)
+
+        try await waitPastStallDelay()
+        XCTAssertEqual(updates, 2, "no extra recovery wake after Chat already reported disconnected")
+        XCTAssertFalse(bridge.reconnectStalled)
+        XCTAssertEqual(bridge.connection, .disconnected)
+    }
+
+    func testStallTimingRestartsWhenChatLeavesReconnecting() async throws {
+        let bridge = stallBridge()
+        reportConnection(bridge, "reconnecting")
+        try await waitPastStallDelay()
+        XCTAssertTrue(bridge.offersConnect)
+
+        // Older Chat: Tuner's reconnect turns red, then yellow again while Chat retries.
+        reportConnection(bridge, "disconnected")
+        reportConnection(bridge, "reconnecting")
+        XCTAssertFalse(bridge.reconnectStalled)
+        XCTAssertFalse(bridge.offersConnect)
+        try await waitPastStallDelay()
+        XCTAssertTrue(bridge.offersConnect)
+    }
+
+    func testReconnectingBrieflyNeverOffersConnect() async throws {
+        let bridge = stallBridge()
+        reportConnection(bridge, "reconnecting")
+        reportConnection(bridge, "connected")
+        try await waitPastStallDelay()
+        XCTAssertFalse(bridge.reconnectStalled)
+        XCTAssertFalse(bridge.offersConnect)
+    }
+
+    func testStallClearsOnPageStartAndNewLifetimeButSurvivesRepeatedReady() async throws {
+        let bridge = stallBridge()
+        reportConnection(bridge, "reconnecting")
+        try await waitPastStallDelay()
+        XCTAssertTrue(bridge.reconnectStalled)
+
+        // Chat repeats ready for the same lifetime, then the same connection state.
+        reportReady(bridge, lifetimeId: lifetime)
+        reportConnection(bridge, "reconnecting")
+        XCTAssertTrue(bridge.reconnectStalled)
+
+        reportReady(bridge, lifetimeId: "l_next")
+        XCTAssertFalse(bridge.reconnectStalled)
+        reportConnection(bridge, "reconnecting", lifetimeId: "l_next")
+        try await waitPastStallDelay()
+        XCTAssertTrue(bridge.reconnectStalled)
+
+        bridge.pageStarted()
+        XCTAssertFalse(bridge.reconnectStalled)
+        XCTAssertFalse(bridge.offersConnect)
+        try await waitPastStallDelay()
+        XCTAssertFalse(bridge.reconnectStalled)
+    }
+
+    func testUnsupportedAndUnauthorizedStillOfferConnect() {
+        let bridge = readyBridge()
+        bridge.handle(type: "unavailable", event: [
+            "event": "unavailable", "lifetimeId": lifetime, "reason": "unauthorized"
+        ])
+        XCTAssertTrue(bridge.offersConnect)
+    }
+
     func testHostModeDeclineIsReportedAndRemainsOnChatComposer() {
         let bridge = ChatHostBridge(chatURL: URL(string: "https://chat.example:9443/")!)
         var updates = 0

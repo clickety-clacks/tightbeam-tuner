@@ -4,6 +4,14 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 78, date: "November 18, 2026", items: [
+            .init(symbol: "arrow.clockwise", title: "Catch up older Replies after reconnecting",
+                  detail: "When the Gateway provides message-sequence summaries, Tuner checks older conversations that changed while disconnected without reloading every conversation. With Tightbeam 0.1.16, it continues checking pending prompts, changed read positions and recent conversations; older Replies may wait for a live update."),
+            .init(symbol: "info.circle", title: "Compatibility",
+                  detail: "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner."),
+            .init(symbol: "exclamationmark.triangle", title: "Breaking changes",
+                  detail: "None."),
+        ]),
         ReleaseNote(version: "1.0", build: 77, date: "November 17, 2026", items: [
             .init(symbol: "arrow.clockwise", title: "Keep Replies current after reconnecting",
                   detail: "Tuner catches up pending prompts and changed read positions, plus a small set of recent conversations. On first load, it checks recent conversations and restores pending prompts. A reply received during disconnection for an older agent may appear in Replies after its next live update; opening that chat still shows it."),
