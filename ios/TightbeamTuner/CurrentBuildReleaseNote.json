@@ -1,13 +1,8 @@
 {
   "version": "1.0",
-  "build": 79,
+  "build": 80,
   "date": "November 19, 2026",
   "items": [
-    {
-      "symbol": "arrow.clockwise",
-      "title": "Connect stays available while Chat reconnects",
-      "detail": "If Chat is still reconnecting after a few seconds, tapping the connection dot offers Connect, and Tuner retries on its own on the same schedule it uses when Chat shows disconnected. The dot stays yellow until Chat reports a change."
-    },
     {
       "symbol": "arrow.uturn.backward",
       "title": "Edit and resend a failed prompt",
