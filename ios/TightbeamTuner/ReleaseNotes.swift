@@ -4,6 +4,14 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 80, date: "November 19, 2026", items: [
+            .init(symbol: "arrow.uturn.backward", title: "Edit and resend a failed prompt",
+                  detail: "When an agent can't answer a prompt, tap Edit and resend under it in Chat. The prompt's words come back to the message field, with its photos when Chat still has them; Tuner says so when it can't restore the photos. Edit and tap Send to send it as a new message. Nothing is sent until you tap Send. Needs a Chat version that offers Edit and resend to Tuner; with earlier Chat versions, the failed prompt shows as before."),
+            .init(symbol: "info.circle", title: "Compatibility",
+                  detail: "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner."),
+            .init(symbol: "exclamationmark.triangle", title: "Breaking changes",
+                  detail: "None."),
+        ]),
         ReleaseNote(version: "1.0", build: 79, date: "November 19, 2026", items: [
             .init(symbol: "arrow.clockwise", title: "Connect stays available while Chat reconnects",
                   detail: "If Chat is still reconnecting after a few seconds, tapping the connection dot offers Connect, and Tuner retries on its own on the same schedule it uses when Chat shows disconnected. The dot stays yellow until Chat reports a change."),

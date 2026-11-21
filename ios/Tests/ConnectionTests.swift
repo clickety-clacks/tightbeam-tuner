@@ -9,6 +9,51 @@ final class ConnectionTests: XCTestCase {
         XCTAssertFalse(SSHRoster.validHostKey("ssh-ed25519 invalid"))
     }
 
+    private static let rosterJSON = Data(#"{"sessions":[{"sessionKey":"agent:one s_1","displayName":"One","state":"active","archetype":"coder","model":"model-a","effort":"high"}]}"#.utf8)
+    private static let shellWarning = Data(".zshenv:.:19: no such file or directory: ~/.cargo/env\n".utf8)
+
+    func testRosterLoadsWhenCommandExitsZeroWithStderrWarnings() throws {
+        let result = SSHRoster.CommandResult(exitCode: nil, stdout: Self.rosterJSON, stderr: Self.shellWarning)
+        let data = try SSHRoster.rosterData(from: result)
+        let roster = try JSONDecoder().decode(Roster.self, from: data)
+        XCTAssertEqual(roster.sessions.map(\.name), ["One"])
+        XCTAssertEqual(roster.sessions.first?.rowDescription, "coder • model-a high")
+
+        let explicitZero = SSHRoster.CommandResult(exitCode: 0, stdout: Self.rosterJSON, stderr: Self.shellWarning)
+        XCTAssertEqual(try SSHRoster.rosterData(from: explicitZero), Self.rosterJSON)
+        let quiet = SSHRoster.CommandResult(exitCode: nil, stdout: Self.rosterJSON, stderr: Data())
+        XCTAssertEqual(try SSHRoster.rosterData(from: quiet), Self.rosterJSON)
+    }
+
+    func testRosterCommandNonZeroExitIsAnErrorCarryingStderr() {
+        let result = SSHRoster.CommandResult(exitCode: 2, stdout: Self.rosterJSON,
+                                             stderr: Self.shellWarning + Data("unknown user\n".utf8))
+        XCTAssertThrowsError(try SSHRoster.rosterData(from: result)) { error in
+            guard case .failed(2, let stderr) = error as? RosterCommandError else {
+                return XCTFail("unexpected error \(error)")
+            }
+            XCTAssertTrue(stderr.hasSuffix("unknown user\n"))
+            let shown = error.localizedDescription
+            XCTAssertTrue(shown.hasPrefix("The roster command exited with status 2."))
+            XCTAssertTrue(shown.contains("unknown user"))
+        }
+    }
+
+    func testRosterCommandUnparseableStdoutIsAnErrorCarryingStderr() {
+        for stdout in [Data(), Data("not json".utf8), Data(#"{"other":[]}"#.utf8)] {
+            let result = SSHRoster.CommandResult(exitCode: 0, stdout: stdout, stderr: Self.shellWarning)
+            XCTAssertThrowsError(try SSHRoster.rosterData(from: result)) { error in
+                XCTAssertEqual(error as? RosterCommandError,
+                               .unreadableOutput(stderr: String(decoding: Self.shellWarning, as: UTF8.self)))
+                XCTAssertTrue(error.localizedDescription.contains("~/.cargo/env"))
+            }
+        }
+        let silent = SSHRoster.CommandResult(exitCode: nil, stdout: Data("oops".utf8), stderr: Data())
+        XCTAssertThrowsError(try SSHRoster.rosterData(from: silent)) { error in
+            XCTAssertEqual(error.localizedDescription, "The roster command did not return an agent list.")
+        }
+    }
+
     func testChatURLPreservesOpaqueSessionKey() throws {
         let agent = try JSONDecoder().decode(Agent.self, from: Data(#"{"sessionKey":"agent:one s_1 2","displayName":"One","state":"active"}"#.utf8))
         var connection = Connection()

@@ -1,12 +1,12 @@
 {
   "version": "1.0",
-  "build": 80,
-  "date": "November 19, 2026",
+  "build": 81,
+  "date": "November 21, 2026",
   "items": [
     {
-      "symbol": "arrow.uturn.backward",
-      "title": "Edit and resend a failed prompt",
-      "detail": "When an agent can't answer a prompt, tap Edit and resend under it in Chat. The prompt's words come back to the message field, with its photos when Chat still has them; Tuner says so when it can't restore the photos. Edit and tap Send to send it as a new message. Nothing is sent until you tap Send. Needs a Chat version that offers Edit and resend to Tuner; with earlier Chat versions, the failed prompt shows as before."
+      "symbol": "person.2",
+      "title": "Agent list loads when the server's shell prints warnings",
+      "detail": "Tuner now loads the agent list whenever the server's roster command succeeds, even if the SSH login prints warnings along the way. If the command fails or doesn't return an agent list, Tuner says so and shows what the server printed."
     },
     {
       "symbol": "info.circle",

@@ -351,19 +351,39 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_shipped_build_80_note_is_preserved_in_history(self):
+        note = release_notes.note_for_build(self.current_source, self.history_source, 80)
+        self.assertEqual(
+            [(item.title, item.detail) for item in note.items],
+            [
+                (
+                    "Edit and resend a failed prompt",
+                    "When an agent can't answer a prompt, tap Edit and resend under it in Chat. The prompt's words come back to the message field, with its photos when Chat still has them; Tuner says so when it can't restore the photos. Edit and tap Send to send it as a new message. Nothing is sent until you tap Send. Needs a Chat version that offers Edit and resend to Tuner; with earlier Chat versions, the failed prompt shows as before.",
+                ),
+                (
+                    "Compatibility",
+                    "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
+                ),
+                (
+                    "Breaking changes",
+                    "None.",
+                ),
+            ],
+        )
+
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
-        self.assertEqual(current.build, 80)
+        self.assertEqual(current.build, 81)
         self.assertEqual(
             [item.title for item in current.items],
-            ["Edit and resend a failed prompt", "Compatibility", "Breaking changes"],
+            ["Agent list loads when the server's shell prints warnings", "Compatibility", "Breaking changes"],
         )
-        restore_detail = next(
+        roster_detail = next(
             item.detail
             for item in current.items
-            if item.title == "Edit and resend a failed prompt"
+            if item.title == "Agent list loads when the server's shell prints warnings"
         )
-        self.assertIn("Nothing is sent until you tap Send.", restore_detail)
+        self.assertIn("shows what the server printed", roster_detail)
         compatibility = next(
             item.detail for item in current.items if item.title == "Compatibility"
         )
@@ -382,7 +402,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 "current draft is not assigned to a numbered build",
             ):
                 release_notes.note_for_build(
-                    self.current_source, self.history_source, 80
+                    self.current_source, self.history_source, 81
                 )
             return
 
@@ -520,7 +540,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 79"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 80"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )
