@@ -23,15 +23,66 @@ enum SSHRoster {
         let client = try await SSHClient.connect(to: settings)
         let command = [connection.tightbeamPath, "list", "--as-user", connection.tightbeamUser]
             .map(shellQuote).joined(separator: " ")
+        let result: CommandResult
         do {
-            let output = try await client.executeCommand(command, maxResponseSize: 8 * 1024 * 1024)
-            let data = Data(output.readableBytesView)
+            result = try await run(command, on: client)
             try await client.close()
-            return data
         } catch {
             try? await client.close()
             throw error
         }
+        return try rosterData(from: result)
+    }
+
+    /// What one SSH command produced. A nil exit code means the server closed the channel
+    /// without reporting a non-zero status.
+    struct CommandResult: Equatable, Sendable {
+        var exitCode: Int?
+        var stdout: Data
+        var stderr: Data
+    }
+
+    static let maxStdoutBytes = 8 * 1024 * 1024
+    static let maxStderrBytes = 64 * 1024
+
+    /// Decides from the command's own result, not from whether it wrote to stderr. A login
+    /// shell can print warnings on every command; when the command exits 0 and stdout is an
+    /// agent list, those warnings are not a failure.
+    static func rosterData(from result: CommandResult) throws -> Data {
+        let stderr = String(decoding: result.stderr, as: UTF8.self)
+        if let exitCode = result.exitCode, exitCode != 0 {
+            throw RosterCommandError.failed(exitCode: exitCode, stderr: stderr)
+        }
+        guard (try? JSONDecoder().decode(Roster.self, from: result.stdout)) != nil else {
+            throw RosterCommandError.unreadableOutput(stderr: stderr)
+        }
+        return result.stdout
+    }
+
+    /// Collects stdout and stderr separately. Citadel's `executeCommand(_:maxResponseSize:)`
+    /// fails the whole command on any stderr byte, so it is not used here.
+    private static func run(_ command: String, on client: SSHClient) async throws -> CommandResult {
+        var result = CommandResult(exitCode: nil, stdout: Data(), stderr: Data())
+        do {
+            for try await chunk in try await client.executeCommandStream(command) {
+                switch chunk {
+                case .stdout(let buffer):
+                    guard result.stdout.count + buffer.readableBytes <= maxStdoutBytes else {
+                        throw CitadelError.commandOutputTooLarge
+                    }
+                    result.stdout.append(contentsOf: buffer.readableBytesView)
+                case .stderr(let buffer):
+                    // Keep the end: a command's own error usually follows any shell warnings.
+                    result.stderr.append(contentsOf: buffer.readableBytesView)
+                    if result.stderr.count > maxStderrBytes {
+                        result.stderr = Data(result.stderr.suffix(maxStderrBytes))
+                    }
+                }
+            }
+        } catch let failure as SSHClient.CommandFailed {
+            result.exitCode = failure.exitCode
+        }
+        return result
     }
 
     private static func shellQuote(_ value: String) -> String {
@@ -42,6 +93,32 @@ enum SSHRoster {
         let parts = line.split(whereSeparator: \.isWhitespace)
         guard parts.count >= 2, parts[0] == "ssh-ed25519" else { throw SSHSetupError.invalidHostKey }
         return try NIOSSHPublicKey(openSSHPublicKey: line)
+    }
+}
+
+enum RosterCommandError: LocalizedError, Equatable {
+    case failed(exitCode: Int, stderr: String)
+    case unreadableOutput(stderr: String)
+
+    /// Bounded so a long shell trace stays readable in the agent list.
+    static let maxShownStderrCharacters = 2000
+
+    var stderr: String {
+        switch self {
+        case .failed(_, let stderr), .unreadableOutput(let stderr): stderr
+        }
+    }
+
+    var errorDescription: String? {
+        let summary = switch self {
+        case .failed(let exitCode, _): "The roster command exited with status \(exitCode)."
+        case .unreadableOutput: "The roster command did not return an agent list."
+        }
+        let shown = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !shown.isEmpty else { return summary }
+        let bounded = shown.count > Self.maxShownStderrCharacters
+            ? "…" + shown.suffix(Self.maxShownStderrCharacters) : shown
+        return summary + "\n" + bounded
     }
 }
 
