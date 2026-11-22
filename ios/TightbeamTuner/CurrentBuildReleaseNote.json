@@ -1,12 +1,12 @@
 {
   "version": "1.0",
-  "build": 81,
-  "date": "November 21, 2026",
+  "build": 82,
+  "date": "November 22, 2026",
   "items": [
     {
-      "symbol": "person.2",
-      "title": "Agent list loads when the server's shell prints warnings",
-      "detail": "Tuner now loads the agent list whenever the server's roster command succeeds, even if the SSH login prints warnings along the way. If the command fails or doesn't return an agent list, Tuner says so and shows what the server printed."
+      "symbol": "doc.on.clipboard",
+      "title": "Paste photos from the clipboard",
+      "detail": "Choose Paste in the + menu to add a copied photo to the message field. It sends with its words through Chat's existing attachment flow. Text paste and Photo Library selection remain available."
     },
     {
       "symbol": "info.circle",

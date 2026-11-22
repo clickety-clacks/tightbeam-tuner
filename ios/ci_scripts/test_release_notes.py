@@ -371,19 +371,39 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_shipped_build_81_note_is_preserved_in_history(self):
+        note = release_notes.note_for_build(self.current_source, self.history_source, 81)
+        self.assertEqual(
+            [(item.title, item.detail) for item in note.items],
+            [
+                (
+                    "Agent list loads when the server's shell prints warnings",
+                    "Tuner now loads the agent list whenever the server's roster command succeeds, even if the SSH login prints warnings along the way. If the command fails or doesn't return an agent list, Tuner says so and shows what the server printed.",
+                ),
+                (
+                    "Compatibility",
+                    "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
+                ),
+                (
+                    "Breaking changes",
+                    "None.",
+                ),
+            ],
+        )
+
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
-        self.assertEqual(current.build, 81)
+        self.assertEqual(current.build, 82)
         self.assertEqual(
             [item.title for item in current.items],
-            ["Agent list loads when the server's shell prints warnings", "Compatibility", "Breaking changes"],
+            ["Paste photos from the clipboard", "Compatibility", "Breaking changes"],
         )
-        roster_detail = next(
+        paste_detail = next(
             item.detail
             for item in current.items
-            if item.title == "Agent list loads when the server's shell prints warnings"
+            if item.title == "Paste photos from the clipboard"
         )
-        self.assertIn("shows what the server printed", roster_detail)
+        self.assertIn("existing attachment flow", paste_detail)
         compatibility = next(
             item.detail for item in current.items if item.title == "Compatibility"
         )
@@ -540,7 +560,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 80"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 81"):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )
