@@ -60,6 +60,8 @@ To build the compatible binary without replacing your desktop's Quickshell insta
 
 ## iPhone and iPad
 
+When Chat accepts images, choose **+**, then **Paste** to add a photo from the system clipboard to the message field. Text paste continues to work in the field, and Photo Library remains available from the same menu.
+
 Open `ios/TightbeamTuner.xcodeproj` in Xcode 27.1 or later. The bundle identifier is `co.clicketyclacks.tightbeam-tuner`. The project can also be regenerated from `ios/project.yml` with XcodeGen. It targets iOS 26 or later, for the system Liquid Glass controls, and uses the iOS 27.1 SDK's adaptive navigation on iPhone Duo. The layout responds to available space as the device folds or resizes, with no device-specific dimensions or orientation checks. It also runs on iPad. Appearance follows the system by default; Settings can choose light or dark explicitly.
 
 On first launch, enter:

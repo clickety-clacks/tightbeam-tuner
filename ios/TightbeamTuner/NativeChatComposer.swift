@@ -227,7 +227,7 @@ struct NativeChatComposer: View {
 
     private var addAttachmentMenu: some View {
         Menu {
-            Button("Paste", systemImage: "doc.on.clipboard", action: pastePhoto)
+            PasteButton(supportedContentTypes: [.image], payloadAction: addPastedPhotos)
             Button("Photo Library", systemImage: "photo.on.rectangle") { showingLibrary = true }
             Button("Camera", systemImage: "camera") { showingCamera = true }
                 .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
@@ -249,10 +249,39 @@ struct NativeChatComposer: View {
         return true
     }
 
-    private func pastePhoto() {
-        let pasteboard = UIPasteboard.general
-        if !add(pasteboard.hasImages ? PhotoAttachment.fromPasteboard(pasteboard) : nil) {
-            attachmentProblem = "No photo to paste"
+    private func addPastedPhotos(_ providers: [NSItemProvider]) {
+        let providers = remainingAttachments.map { Array(providers.prefix($0)) } ?? providers
+        guard !providers.isEmpty else { return }
+
+        loadingPhotos += providers.count
+        Task { @MainActor in
+            var failed = 0
+            for provider in providers {
+                let imageType = provider.registeredTypeIdentifiers.first {
+                    UTType($0)?.conforms(to: .image) == true
+                }
+                let data: Data?
+                if let imageType {
+                    data = await Self.loadImageData(from: provider, typeIdentifier: imageType)
+                } else {
+                    data = nil
+                }
+                if !add(data.flatMap { PhotoAttachment.encoded($0, name: "pasted-image") }) {
+                    failed += 1
+                }
+                loadingPhotos -= 1
+            }
+            if failed > 0 {
+                attachmentProblem = failed == 1 ? "Could not add a photo" : "Could not add \(failed) photos"
+            }
+        }
+    }
+
+    private static func loadImageData(from provider: NSItemProvider, typeIdentifier: String) async -> Data? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
+            provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
+                continuation.resume(returning: data)
+            }
         }
     }
 
@@ -462,8 +491,8 @@ private struct DraftAttachmentThumbnail: View {
     }
 }
 
-/// Turns a photo from the library, camera or pasteboard into the JPEG or PNG bytes Tuner hands to
-/// Chat. Chat then prepares them exactly as it does a photo picked in its own composer.
+/// Turns a photo from the library, camera or system paste action into the JPEG or PNG bytes Tuner
+/// hands to Chat. Chat then prepares them exactly as it does a photo picked in its own composer.
 enum PhotoAttachment {
     static func fromLibrary(_ data: Data) -> ChatHostBridge.Attachment? {
         encoded(data, name: "photo")
@@ -472,16 +501,6 @@ enum PhotoAttachment {
     static func fromCamera(_ image: UIImage) -> ChatHostBridge.Attachment? {
         guard let data = image.jpegData(compressionQuality: 0.9) else { return nil }
         return ChatHostBridge.Attachment(filename: filename("camera", "jpg"), mimeType: "image/jpeg", data: data)
-    }
-
-    static func fromPasteboard(_ pasteboard: UIPasteboard) -> ChatHostBridge.Attachment? {
-        for type in [UTType.png, UTType.jpeg, UTType.heic, UTType.image] {
-            if let data = pasteboard.data(forPasteboardType: type.identifier), let attachment = encoded(data, name: "pasted-image") {
-                return attachment
-            }
-        }
-        guard let image = pasteboard.image, let data = image.pngData() else { return nil }
-        return ChatHostBridge.Attachment(filename: filename("pasted-image", "png"), mimeType: "image/png", data: data)
     }
 
     /// JPEG and PNG pass through unchanged; any other image format is re-encoded as JPEG,
