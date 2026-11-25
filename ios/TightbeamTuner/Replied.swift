@@ -445,7 +445,11 @@ struct RepliedState: Codable, Sendable {
     }
 
     func agents(from roster: [Agent]) -> [Agent] {
-        roster.filter { rowIndicator(for: $0.id) == .reply }
+        var includedSessionKeys = Set<String>()
+        return roster.filter { agent in
+            guard includedSessionKeys.insert(agent.id).inserted else { return false }
+            return rowIndicator(for: agent.id) != nil
+        }
         .sorted {
             let leftOrder = latestReplyBySession[$0.id] ?? Int.min
             let rightOrder = latestReplyBySession[$1.id] ?? Int.min
