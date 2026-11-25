@@ -238,11 +238,12 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(afterReply, ["agent:alpha"])
     }
 
-    @MainActor func testAcceptedPromptKeepsRowsAndMovesToRepliesOnlyAfterAssistantReply() throws {
+    @MainActor func testAcceptedPromptShowsSpinnerInRepliesUntilShownChatGetsAssistantReply() throws {
         let (defaults, suiteName) = try testDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let feed = RepliedFeed(defaults: defaults)
         let roster = try makeAgents(["agent:alpha"])
+        feed.updateShownSessionKey("agent:alpha")
         let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
 
         XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
@@ -256,7 +257,7 @@ final class RepliedTests: XCTestCase {
             "correlationId": outgoing.correlationId
         ])
 
-        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
         let mainSectionAgents = feed.state.agentsInMainSection(from: roster)
         XCTAssertEqual(mainSectionAgents.map(\.id), ["agent:alpha"])
@@ -266,7 +267,34 @@ final class RepliedTests: XCTestCase {
             agents: mainSectionAgents,
             filter: AgentListFilter(words: [], archetypes: [])
         )
+        XCTAssertEqual(counts.replied, 1)
         XCTAssertEqual(counts.agents, 1)
+
+        feed.apply(.message(try message(#"{"seq":3,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}"#)), userID: "reader")
+        feed.apply(.message(try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
+
+        XCTAssertFalse(feed.state.isWaitingForReply("agent:alpha"))
+        XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
+    }
+
+    @MainActor func testWaitingReplyOnOtherChatBecomesUnreadWhenAssistantResponds() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha", "agent:beta"])
+        feed.updateShownSessionKey("agent:beta")
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
 
         feed.apply(.message(try message(#"{"seq":3,"sessionKey":"agent:alpha","role":"user","clientMessageId":"\#(outgoing.correlationId)"}"#)), userID: "reader")
         feed.apply(.message(try message(#"{"seq":4,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
@@ -274,7 +302,16 @@ final class RepliedTests: XCTestCase {
         XCTAssertFalse(feed.state.isWaitingForReply("agent:alpha"))
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
         XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
-        XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
+        XCTAssertNil(feed.state.localReadMarkerBySession["agent:alpha"])
+    }
+
+    func testRepliesIncludesEachWaitingSessionOnlyOnce() throws {
+        var state = RepliedState()
+        state.acceptPrompt(sessionKey: "agent:alpha", correlationID: "prompt")
+        let duplicatedRoster = try makeAgents(["agent:alpha", "agent:alpha"])
+
+        XCTAssertEqual(state.agents(from: duplicatedRoster).map(\.id), ["agent:alpha"])
+        XCTAssertEqual(state.rowIndicator(for: "agent:alpha"), .waiting)
     }
 
     func testPendingRecentRowStaysVisiblePastTenUntilAssistantReply() throws {
@@ -286,7 +323,7 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(whileWaiting.map(\.id), (1...10).map { "agent:\($0)" } + ["agent:12"])
         XCTAssertEqual(state.rowIndicator(for: "agent:12"), .waiting)
         XCTAssertEqual(state.agentsInMainSection(from: roster).map(\.id), roster.map(\.id))
-        XCTAssertTrue(state.agents(from: roster).isEmpty)
+        XCTAssertEqual(state.agents(from: roster).map(\.id), ["agent:12"])
         XCTAssertTrue(state.visibleRecentAgents(from: roster, limit: 0).isEmpty)
 
         state.apply(try message(#"{"seq":20,"sessionKey":"agent:12","role":"user","clientMessageId":"prompt-12"}"#))
@@ -631,7 +668,7 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(bridge.outgoing?.status, .delivered)
         XCTAssertEqual(feed.state.pendingPromptIDs(for: "agent:alpha"), [outgoing.correlationId])
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
-        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
         XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
     }
 
@@ -653,7 +690,7 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(bridge.outgoing?.status, .delivered)
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
         XCTAssertEqual(feed.state.pendingPromptIDs(for: "agent:alpha"), [outgoing.correlationId])
-        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
         XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
     }
 
@@ -698,7 +735,7 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(feed.state.pendingPromptIDs(for: "agent:beta"), [second.correlationId])
         XCTAssertEqual(feed.state.pendingOrderBySession["agent:alpha"], firstOrder)
         XCTAssertEqual(feed.state.pendingOrderBySession["agent:beta"], secondOrder)
-        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha", "agent:beta"])
         XCTAssertEqual(feed.state.pendingOrderBySession, pendingOrderBeforeDuplicateEvents)
         XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha", "agent:beta"])
     }
@@ -846,12 +883,13 @@ final class RepliedTests: XCTestCase {
         let recordedRequests = await requestedPromptIDs.values
         XCTAssertEqual(recordedRequests, [Set([outgoing.correlationId])])
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
-        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
         XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
 
         feed.apply(try change(#"{"type":"change","class":"message.created","payload":{"seq":12,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#), userID: "reader")
 
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
     }
 
     @MainActor func testCatchUpBeforePromptEchoKeepsOlderReplyWaitingAndDoesNotAdvanceReadMarker() async throws {
@@ -892,12 +930,13 @@ final class RepliedTests: XCTestCase {
         XCTAssertTrue(feed.state.isWaitingForReply("agent:alpha"))
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
         XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 5)
-        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
         XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
 
         feed.apply(try change(#"{"type":"change","class":"message.created","payload":{"seq":12,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}}"#), userID: "reader")
         XCTAssertFalse(feed.state.isWaitingForReply("agent:alpha"))
         XCTAssertEqual(feed.state.localReadMarkerBySession["agent:alpha"], 12)
+        XCTAssertTrue(feed.state.agents(from: roster).isEmpty, "The open chat reads its reply when waiting ends")
     }
 
     @MainActor func testCatchUpReplyEndsPromptWhenNoEarlierFeedPositionWasKnown() async throws {
@@ -977,6 +1016,7 @@ final class RepliedTests: XCTestCase {
             "correlationId": outgoing.correlationId
         ])
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
 
         bridge.handle(type: "failed", event: [
             "lifetimeId": outgoing.lifetimeId,
@@ -987,6 +1027,39 @@ final class RepliedTests: XCTestCase {
         XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
         XCTAssertNil(feed.state.rowIndicator(for: "agent:alpha"))
         XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
+    }
+
+    @MainActor func testFailedPromptRestoresExistingUnreadReplyWithoutAddingOne() throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let feed = RepliedFeed(defaults: defaults)
+        let roster = try makeAgents(["agent:alpha", "agent:beta"])
+        feed.apply(.message(try message(#"{"seq":10,"sessionKey":"agent:alpha","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
+        feed.apply(.message(try message(#"{"seq":5,"sessionKey":"agent:beta","role":"assistant","turnIncludesHuman":true}"#)), userID: "reader")
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha", "agent:beta"])
+
+        let bridge = makeReplyBridge(sessionKey: "agent:alpha", feed: feed)
+        bridge.send("synthetic prompt")
+        let outgoing = try XCTUnwrap(bridge.outgoing)
+        bridge.handle(type: "accepted", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId
+        ])
+
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha", "agent:beta"])
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:beta"), .reply)
+
+        bridge.handle(type: "failed", event: [
+            "lifetimeId": outgoing.lifetimeId,
+            "correlationId": outgoing.correlationId,
+            "reason": "synthetic failure"
+        ])
+
+        XCTAssertFalse(feed.state.isWaitingForReply("agent:alpha"))
+        XCTAssertEqual(feed.state.latestReplyBySession["agent:alpha"], 10)
+        XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .reply)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha", "agent:beta"])
     }
 
     @MainActor func testLifetimeEndDoesNotClearWaitingIndicator() throws {
@@ -1011,7 +1084,7 @@ final class RepliedTests: XCTestCase {
 
         bridge.handle(type: "lifetime-ended", event: ["lifetimeId": outgoing.lifetimeId])
 
-        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
         XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
     }
@@ -1034,7 +1107,7 @@ final class RepliedTests: XCTestCase {
 
         feed.apply(try change(#"{"type":"change","class":"session.spawned","payload":{"sessionKey":"agent:alpha","displayName":"agent:alpha","state":"active"}}"#), userID: "reader")
 
-        XCTAssertTrue(feed.state.agents(from: roster).isEmpty)
+        XCTAssertEqual(feed.state.agents(from: roster).map(\.id), ["agent:alpha"])
         XCTAssertEqual(feed.state.rowIndicator(for: "agent:alpha"), .waiting)
         XCTAssertEqual(feed.state.agentsInMainSection(from: roster).map(\.id), ["agent:alpha"])
     }
@@ -1270,7 +1343,7 @@ final class RepliedTests: XCTestCase {
         restored.activateConnection(connection)
         XCTAssertEqual(restored.state.rowIndicator(for: "agent:pending"), .waiting)
         XCTAssertEqual(restored.state.rowIndicator(for: "agent:replied"), .reply)
-        XCTAssertEqual(restored.state.agents(from: roster).map(\.id), ["agent:replied"])
+        XCTAssertEqual(restored.state.agents(from: roster).map(\.id), ["agent:replied", "agent:pending"])
         XCTAssertEqual(restored.state.agentsInMainSection(from: roster).map(\.id), ["agent:pending", "agent:replied"])
 
         let mismatched = RepliedFeed(defaults: defaults)

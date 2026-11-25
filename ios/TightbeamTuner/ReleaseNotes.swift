@@ -4,6 +4,14 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 82, date: "November 22, 2026", items: [
+            .init(symbol: "doc.on.clipboard", title: "Paste photos from the clipboard",
+                  detail: "Choose Paste in the + menu to add a copied photo to the message field. It sends with its words through Chat's existing attachment flow. Text paste and Photo Library selection remain available."),
+            .init(symbol: "info.circle", title: "Compatibility",
+                  detail: "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner."),
+            .init(symbol: "exclamationmark.triangle", title: "Breaking changes",
+                  detail: "None."),
+        ]),
         ReleaseNote(version: "1.0", build: 81, date: "November 21, 2026", items: [
             .init(symbol: "person.2", title: "Agent list loads when the server's shell prints warnings",
                   detail: "Tuner now loads the agent list whenever the server's roster command succeeds, even if the SSH login prints warnings along the way. If the command fails or doesn't return an agent list, Tuner says so and shows what the server printed."),
