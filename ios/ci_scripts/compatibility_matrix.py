@@ -1482,6 +1482,7 @@ def _run_test_phase(
         "-jobs", "2",
         "-only-testing:TightbeamTunerTests/ReleaseCompatibilityTests/testProductionRosterAndRepliesPathsAgainstPublishedRuntime",
         "test", f"CURRENT_PROJECT_VERSION={build_number}", "CODE_SIGNING_ALLOWED=NO",
+        "ENABLE_TESTABILITY=YES",
     ]
     log_path = result_bundle.with_suffix(".log")
     try:
