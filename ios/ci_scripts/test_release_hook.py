@@ -338,15 +338,23 @@ class ReleaseTagIdentityTests(unittest.TestCase):
             commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
             subprocess.run(["git", "-C", str(repo), "tag", "tuner-ios-build-84", commit], check=True)
             release_hook.validate_release_tag_identity(
-                repo, commit, "refs/tags/tuner-ios-build-84", "tuner-ios-build-84"
+                repo, commit, "refs/tags/tuner-ios-build-84", "tuner-ios-build-84", 84
             )
-            with self.assertRaisesRegex(release_hook.ReleaseHookError, "exact release tag"):
+            with self.assertRaisesRegex(release_hook.ReleaseHookError, "dedicated tag"):
                 release_hook.validate_release_tag_identity(
-                    repo, commit, "refs/heads/main", "tuner-ios-build-84"
+                    repo, commit, "refs/heads/main", "tuner-ios-build-84", 84
+                )
+            with self.assertRaisesRegex(release_hook.ReleaseHookError, "dedicated tag"):
+                release_hook.validate_release_tag_identity(
+                    repo, commit, "refs/tags/anything", "anything", 84
+                )
+            with self.assertRaisesRegex(release_hook.ReleaseHookError, "dedicated tag"):
+                release_hook.validate_release_tag_identity(
+                    repo, commit, "refs/tags/tuner-ios-build-84", "tuner-ios-build-84", 85
                 )
             with self.assertRaisesRegex(release_hook.ReleaseHookError, "does not identify"):
                 release_hook.validate_release_tag_identity(
-                    repo, "0" * 40, "refs/tags/tuner-ios-build-84", "tuner-ios-build-84"
+                    repo, "0" * 40, "refs/tags/tuner-ios-build-84", "tuner-ios-build-84", 84
                 )
 
 
@@ -489,6 +497,9 @@ class CompatibilityReportTests(unittest.TestCase):
         for unsupported in (
             "Also tested with Tightbeam release 0.1.14",
             "Also supports Tightbeam build 4283",
+            "Also works with Tightbeam: 0.1.14.",
+            "Also supports Tightbeam versions 0.1.14.",
+            "Works with older Tightbeam releases.",
         ):
             with self.subTest(unsupported=unsupported), self.assertRaisesRegex(
                 release_hook.ReleaseHookError, "unsupported"
@@ -571,6 +582,12 @@ class CompatibilityInstrumentationTests(unittest.TestCase):
                 "    private(set) var state = RepliedState()\n"
                 "    private(set) var shownSessionKey: String?\n"
                 "    func run() {\n"
+                "                            ready = true\n"
+                "                            snapshotTask = Task {\n"
+                "                                await self.loadSnapshot(\n"
+                "                                    mode: mode\n"
+                "                                )\n"
+                "                            }\n"
                 "                        default:\n"
                 "                            apply(frame, userID: user)\n"
                 "                            if frame.changesRoster { onRosterEvent(frame) }\n"
@@ -588,9 +605,48 @@ class CompatibilityInstrumentationTests(unittest.TestCase):
             self.assertIn("messageCreatedSequenceBySession", second)
             self.assertIn("readMarkerEventBySession", second)
             self.assertIn('case .message(let message) where message.role == "assistant"', second)
+            self.assertEqual(second.count("subscriptionReadyCount += 1"), 1)
+            self.assertEqual(second.count("self.snapshotCompletedCount += 1"), 1)
+
+    def test_baseline_observer_rejects_partial_counter_instrumentation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source_path = Path(temporary) / "ios" / "TightbeamTuner" / "Replied.swift"
+            source_path.parent.mkdir(parents=True)
+            source_path.write_text(
+                "    private(set) var state = RepliedState()\n"
+                "    private(set) var shownSessionKey: String?\n"
+                "    private(set) var subscriptionReadyCount = 0\n"
+                "                        ready = true\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                compatibility_matrix.MatrixError, "partial compatibility observer"
+            ):
+                compatibility_matrix._inject_replied_observation(Path(temporary))
 
 
 class CompatibilityMatrixWiringTests(unittest.TestCase):
+    def test_fixture_child_environment_uses_scratch_home_and_drops_host_credentials(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch_home = Path(temporary) / "home"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "HOME": "/Users/private",
+                    "PATH": "/usr/bin:/bin",
+                    "OPENAI_API_KEY": "must-not-be-inherited",
+                    "TIGHTBEAM_TOKEN": "must-not-be-inherited",
+                    "TIGHTBEAM_BASE_DIR": "/live/tightbeam",
+                },
+                clear=True,
+            ):
+                child = compatibility_matrix._isolated_environment(scratch_home)
+            self.assertEqual(child["HOME"], str(scratch_home))
+            self.assertEqual(child["TMPDIR"], str(scratch_home / "tmp"))
+            self.assertNotIn("OPENAI_API_KEY", child)
+            self.assertNotIn("TIGHTBEAM_TOKEN", child)
+            self.assertNotIn("TIGHTBEAM_BASE_DIR", child)
+
     def test_diagnostic_matrix_is_non_archive_and_needs_no_cloud_workflow(self):
         with mock.patch.dict(os.environ, {"CI_XCODEBUILD_ACTION": "test"}, clear=True):
             compatibility_matrix._validate_execution_mode(diagnostic=True)
@@ -601,9 +657,16 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
 
         with mock.patch.dict(
             os.environ,
-            {"CI_WORKFLOW": "Internal Testflight", "CI_XCODEBUILD_ACTION": "archive"},
+            {"CI_WORKFLOW": "Internal TestFlight", "CI_XCODEBUILD_ACTION": "archive"},
             clear=True,
         ):
+            compatibility_matrix._validate_execution_mode(diagnostic=False)
+
+        with mock.patch.dict(
+            os.environ,
+            {"CI_WORKFLOW": "Unrecognized Upload Workflow", "CI_XCODEBUILD_ACTION": "archive"},
+            clear=True,
+        ), self.assertRaisesRegex(compatibility_matrix.MatrixError, "Internal Testflight"):
             compatibility_matrix._validate_execution_mode(diagnostic=False)
 
     def test_diagnostic_matrix_never_reads_or_projects_release_confirmation(self):
@@ -665,6 +728,12 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
             replied.write_text(
                 "    private(set) var state = RepliedState()\n"
                 "    private(set) var shownSessionKey: String?\n"
+                "                            ready = true\n"
+                "                            snapshotTask = Task {\n"
+                "                                await self.loadSnapshot(\n"
+                "                                    mode: mode\n"
+                "                                )\n"
+                "                            }\n"
                 "                        default:\n"
                 "                            apply(frame, userID: user)\n"
                 "                            if frame.changesRoster { onRosterEvent(frame) }\n",
@@ -802,6 +871,65 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
         phases[0]["phaseSource"] = {**baseline_target, "runId": "baseline-distribution"}
         with self.assertRaisesRegex(compatibility_matrix.MatrixError, "exact source inputs"):
             compatibility_matrix._combine_results(phases, target, baseline_target, pair)
+
+
+class XcodeCloudArchiveScriptTests(unittest.TestCase):
+    def run_script(self, name, workflow, *, signed_export=None):
+        script_directory = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            call_log = root / "python-calls.txt"
+            python = fake_bin / "python3"
+            python.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CALL_LOG\"\nexit 0\n",
+                encoding="utf-8",
+            )
+            python.chmod(0o700)
+            environment = {
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "CALL_LOG": str(call_log),
+                "CI_XCODE_CLOUD": "TRUE",
+                "CI_XCODEBUILD_ACTION": "archive",
+                "CI_BUILD_NUMBER": "84",
+                "CI_WORKFLOW": workflow,
+            }
+            if name == "ci_post_xcodebuild.sh":
+                export_path = signed_export or root / "signed-export"
+                Path(export_path).mkdir()
+                environment["CI_XCODEBUILD_EXIT_CODE"] = "0"
+                environment["CI_APP_STORE_SIGNED_APP_PATH"] = str(export_path)
+            result = subprocess.run(
+                ["sh", str(script_directory / name)],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            calls = call_log.read_text(encoding="utf-8").splitlines() if call_log.exists() else []
+            return result, calls
+
+    def test_pre_archive_gates_case_variant_and_rejects_other_archive_workflows(self):
+        result, calls = self.run_script("ci_pre_xcodebuild.sh", "Internal TestFlight")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("compatibility_matrix.py", calls[0])
+        self.assertIn("release_notes.py validate", calls[1])
+
+        result, calls = self.run_script("ci_pre_xcodebuild.sh", "Unrecognized Upload Workflow")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+
+    def test_post_archive_fails_closed_for_other_archive_workflows(self):
+        result, calls = self.run_script("ci_post_xcodebuild.sh", "Internal TestFlight")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("release_notes.py render", calls[0])
+
+        result, calls = self.run_script("ci_post_xcodebuild.sh", "Renamed Upload Workflow")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
 
 
 class DetectorAndNotesTests(unittest.TestCase):

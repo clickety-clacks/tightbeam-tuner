@@ -663,16 +663,8 @@ def author_compatibility_line(detail: str, expected: str) -> str:
     remainder = re.sub(
         r"(?i)Tightbeam compatibility is generated from release checks\.?\s*", "", remainder
     ).strip()
-    if re.search(
-        r"\bTightbeam\b(?:\s+(?:CLI|Gateway))?\s+"
-        r"(?:(?:release|version)\s+)?v?\d+\.\d+\.\d+(?:\+[A-Za-z0-9.-]+)?\b"
-        r"|\bTightbeam\s+build\s+\d+\b",
-        remainder,
-        re.IGNORECASE,
-    ):
-        _fail("Compatibility section contains an unsupported Tightbeam version claim")
-    if re.search(r"\bCompatible\s+with\s+Tightbeam\b", remainder, re.IGNORECASE):
-        _fail("Compatibility section contains an unsupported Tightbeam compatibility declaration")
+    if re.search(r"\bTightbeam\b", remainder, re.IGNORECASE):
+        _fail("Compatibility section contains an unsupported Tightbeam claim")
     return expected + ("\n" + remainder if remainder else "")
 
 
@@ -811,13 +803,16 @@ def candidate_object_digest(value: dict[str, Any]) -> str:
     return canonical_digest(value)
 
 
-def validate_release_tag_identity(repo: Path, commit: str, git_ref: str, tag: str) -> None:
+def validate_release_tag_identity(
+    repo: Path, commit: str, git_ref: str, tag: str, build_number: int
+) -> None:
     if (
         not re.fullmatch(r"[0-9a-f]{40}", commit)
-        or not isinstance(tag, str) or not tag
+        or not isinstance(build_number, int) or isinstance(build_number, bool) or build_number <= 0
+        or not isinstance(tag, str) or tag != f"tuner-ios-build-{build_number}"
         or git_ref != f"refs/tags/{tag}"
     ):
-        _fail("upload-capable archive must be started from its exact release tag")
+        _fail("upload-capable archive must use the dedicated tag for its planned build number")
     try:
         result = subprocess.run(
             ["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"], cwd=repo, text=True,
@@ -1120,7 +1115,10 @@ def validate_signed_archive(
         history_data=history_data,
         expected_ci_run_id=expected_ci_run_id,
     )
-    validate_release_tag_identity(repo, report_candidate["commit"], expected_git_ref, expected_tag)
+    validate_release_tag_identity(
+        repo, report_candidate["commit"], expected_git_ref, expected_tag,
+        report_candidate["buildNumber"],
+    )
     current_pair = resolve_published_pair("darwin-aarch64")
     same_release_pair(pair, current_pair)
     digest = report["candidateObjectSha256"]

@@ -9,9 +9,11 @@ esac
 [ "${CI_XCODEBUILD_ACTION:-}" = "archive" ] || exit 0
 [ "${CI_XCODEBUILD_EXIT_CODE:-0}" = "0" ] || exit 0
 
-# This workflow stages Internal TestFlight candidates. Other build, test, and
-# analyze workflows do not produce a publishable signed export.
-[ "${CI_WORKFLOW:-}" = "Internal Testflight" ] || exit 0
+WORKFLOW_NORMALIZED=$(printf '%s' "${CI_WORKFLOW:-}" | tr '[:upper:]' '[:lower:]')
+[ "$WORKFLOW_NORMALIZED" = "internal testflight" ] || {
+    echo "release-note gate: upload-capable archives are restricted to the Internal TestFlight workflow" >&2
+    exit 1
+}
 
 SIGNED_APP_PATH=${CI_APP_STORE_SIGNED_APP_PATH:-}
 [ -n "$SIGNED_APP_PATH" ] || {

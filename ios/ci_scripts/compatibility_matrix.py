@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-import getpass
 import argparse
 import base64
+import getpass
 import hashlib
 import http.server
 import json
@@ -164,6 +164,23 @@ def _json_bytes(value: Any) -> bytes:
 
 def _write_json(path: Path, value: Any) -> None:
     path.write_bytes(_json_bytes(value))
+
+
+def _isolated_environment(home: Path) -> dict[str, str]:
+    """Use only toolchain variables plus task-owned user state for fixture children."""
+    environment = {
+        key: os.environ[key]
+        for key in ("PATH", "DEVELOPER_DIR", "LANG", "LC_ALL", "TZ")
+        if os.environ.get(key)
+    }
+    environment.setdefault("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    environment["HOME"] = str(home)
+    environment["TMPDIR"] = str(home / "tmp")
+    environment["NPM_CONFIG_USERCONFIG"] = str(home / "npmrc")
+    environment["npm_config_cache"] = str(home / "npm-cache")
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    return environment
 
 
 def _run(
@@ -373,14 +390,36 @@ def _inject_replied_observation(worktree: Path) -> None:
         "    private(set) var messageCreatedSequenceBySession: [String: Int] = [:]\n"
         "    private(set) var readMarkerEventBySession: [String: Int] = [:]\n"
     )
-    if all(value in source for value in properties.splitlines()):
+    ready_increment = "                            subscriptionReadyCount += 1\n"
+    snapshot_increment = "                                self.snapshotCompletedCount += 1\n"
+    instrumentation = (*properties.splitlines(), ready_increment.rstrip(), snapshot_increment.rstrip())
+    if all(value in source for value in instrumentation):
         return
-    if any(value in source for value in properties.splitlines()):
+    if any(value in source for value in instrumentation):
         _safe_fail("baseline Replies client has partial compatibility observer instrumentation")
     state_marker = "    private(set) var state = RepliedState()\n    private(set) var shownSessionKey: String?\n"
     if source.count(state_marker) != 1:
         _safe_fail("baseline Replies client cannot accept compatibility observer instrumentation")
     source = source.replace(state_marker, state_marker + properties, 1)
+    ready_marker = "                            ready = true\n"
+    if source.count(ready_marker) != 1:
+        _safe_fail("baseline Replies subscription cannot accept compatibility observer instrumentation")
+    source = source.replace(ready_marker, ready_marker + ready_increment, 1)
+    snapshot_marker = (
+        "                                    mode: mode\n"
+        "                                )\n"
+        "                            }\n"
+    )
+    if source.count(snapshot_marker) != 1:
+        _safe_fail("baseline Replies snapshot cannot accept compatibility observer instrumentation")
+    source = source.replace(
+        snapshot_marker,
+        "                                    mode: mode\n"
+        "                                )\n"
+        + snapshot_increment
+        + "                            }\n",
+        1,
+    )
     event_marker = (
         "                        default:\n"
         "                            apply(frame, userID: user)\n"
@@ -549,6 +588,11 @@ class LocalRuntimeFixture:
             self.ssh_port = _available_port()
         self.fixture_token = secrets.token_hex(24)
         self.local_user = getpass.getuser()
+        self.home_root = root / "home"
+        self.home_root.mkdir(parents=True, exist_ok=True)
+        (self.home_root / "tmp").mkdir(parents=True, exist_ok=True)
+        (self.home_root / "npm-cache").mkdir(parents=True, exist_ok=True)
+        self.base_environment = _isolated_environment(self.home_root)
         self.cli_link_dir = root / "runner-bin"
         self.cli_link = self.cli_link_dir / "tightbeam"
         self.shim_dir = root / "harness-shim"
@@ -604,7 +648,7 @@ class LocalRuntimeFixture:
         _checked([
             npm, "ci", "--prefix", str(self.pi_package),
             "--ignore-scripts", "--no-audit", "--no-fund",
-        ], cwd=self.root, timeout=600)
+        ], env=self.base_environment, cwd=self.root, timeout=600)
         pi_cli = self.pi_bin / "pi"
         if not pi_cli.is_file():
             _safe_fail("pinned Pi harness package did not install its executable")
@@ -613,7 +657,7 @@ class LocalRuntimeFixture:
         self.ssh_host_key_line = _checked([
             _require_command("ssh-keygen"), "-q", "-t", "ed25519", "-N", "",
             "-C", "tuner-compat-host", "-f", str(self.host_key),
-        ]).strip()
+        ], env=self.base_environment).strip()
         self.ssh_host_key_line = self.host_key.with_suffix(".pub").read_text(encoding="utf-8").strip()
         if not self.ssh_host_key_line.startswith("ssh-ed25519 "):
             _safe_fail("isolated SSH fixture did not create an Ed25519 host key")
@@ -628,9 +672,7 @@ class LocalRuntimeFixture:
             "set -eu",
             f". {_shell_quote(str(self.current_runtime_env))}",
             'if [ "${SSH_ORIGINAL_COMMAND:-}" != "$EXPECTED_COMMAND" ]; then exit 126; fi',
-            'unset TIGHTBEAM_HOME TIGHTBEAM_URL TIGHTBEAM_TOKEN TIGHTBEAM_SESSION TIGHTBEAM_LIVE_BASE_TRANSITION',
-            'export TIGHTBEAM_BASE_DIR TIGHTBEAM_PORT TIGHTBEAM_ADVERTISED_URL',
-            'exec "$TIGHTBEAM_CLI" list --as-user "$TIGHTBEAM_TEST_USER"',
+            f'exec {_shell_quote(_require_command("env"))} -i HOME={_shell_quote(str(self.home_root))} PATH={_shell_quote(self.base_environment["PATH"])} TIGHTBEAM_BASE_DIR="$TIGHTBEAM_BASE_DIR" TIGHTBEAM_PORT="$TIGHTBEAM_PORT" TIGHTBEAM_ADVERTISED_URL="$TIGHTBEAM_ADVERTISED_URL" "$TIGHTBEAM_CLI" list --as-user "$TIGHTBEAM_TEST_USER"',
             "",
         ])
         self.force_command.write_text(wrapper, encoding="utf-8")
@@ -658,7 +700,7 @@ class LocalRuntimeFixture:
         ])
         self.sshd_config.write_text(config, encoding="utf-8")
         self.sshd_config.chmod(0o600)
-        _checked([sshd, "-t", "-f", str(self.sshd_config)], timeout=20)
+        _checked([sshd, "-t", "-f", str(self.sshd_config)], env=self.base_environment, timeout=20)
         self._sshd_binary = sshd
 
     def _start_model_server(self) -> None:
@@ -780,19 +822,14 @@ class LocalRuntimeFixture:
         package = self.package_paths[release_id]
         cli = release_hook.find_runtime_executable(package, "tightbeam")
         release_hook.find_runtime_executable(package, "tightbeam-gateway")
-        env = os.environ.copy()
-        for key in (
-            "TIGHTBEAM_HOME", "TIGHTBEAM_URL", "TIGHTBEAM_TOKEN", "TIGHTBEAM_SESSION",
-            "TIGHTBEAM_LIVE_BASE_TRANSITION",
-        ):
-            env.pop(key, None)
+        env = self.base_environment.copy()
         env["TIGHTBEAM_BASE_DIR"] = str(self.runtime_base.setdefault(
             release_id, self.state_root / str(release_id) / "base"
         ))
         actual_port = self.gateway_port if port is None else port
         env["TIGHTBEAM_PORT"] = str(actual_port)
         env["TIGHTBEAM_ADVERTISED_URL"] = f"http://127.0.0.1:{actual_port}"
-        env["PATH"] = os.pathsep.join([str(self.shim_dir), str(self.pi_bin), str(cli.parent), env.get("PATH", "")])
+        env["PATH"] = os.pathsep.join([str(self.shim_dir), str(self.pi_bin), str(cli.parent), env["PATH"]])
         return env
 
     def _write_current_runtime_env(self, release_id: int | None, user_id: str = "") -> None:
@@ -824,6 +861,7 @@ class LocalRuntimeFixture:
         self.sshd_log = (self.root / "sshd.log").open("ab")
         self.sshd_process = subprocess.Popen(
             [self._sshd_binary, "-D", "-e", "-f", str(self.sshd_config)],
+            env=self.base_environment,
             stdin=subprocess.DEVNULL, stdout=self.sshd_log, stderr=self.sshd_log,
         )
         deadline = time.monotonic() + 15
@@ -1411,7 +1449,7 @@ def _run_test_phase(
     result_bundle.parent.mkdir(parents=True, exist_ok=True)
     if result_bundle.exists():
         _safe_fail("compatibility matrix result bundle path is already occupied")
-    env = os.environ.copy()
+    env = fixture.base_environment.copy()
     test_values = {
         "TUNER_COMPAT_PHASE": phase,
         "TUNER_COMPAT_FIXTURE_URL": fixture.fixture_url,
@@ -1620,6 +1658,7 @@ def run_matrix(*, diagnostic: bool = False) -> None:
                 candidate["commit"],
                 os.environ.get("CI_GIT_REF", ""),
                 os.environ.get("CI_TAG", ""),
+                candidate["buildNumber"],
             )
         matrix_report["candidate"] = candidate
         matrix_report["baseline"] = {
@@ -1837,7 +1876,7 @@ def run_matrix(*, diagnostic: bool = False) -> None:
             matrix_report["candidateObject"] = candidate_object
             matrix_report["candidateObjectSha256"] = candidate_object_digest
             matrix_report["currentNoteSha256"] = release_hook.note_digest(updated_note_data)
-            matrix_report["status"] = "diagnostic-passed"
+            matrix_report["status"] = "completed"
             _write_json(report_path, matrix_report)
             print("Diagnostic compatibility matrix complete; no archive status or release note was installed")
             print(f"Observed compatibility line: {generated_line}")

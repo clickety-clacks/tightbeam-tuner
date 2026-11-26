@@ -18,7 +18,10 @@ case "${CI_BUILD_NUMBER:-}" in
 esac
 
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
-if [ "${CI_WORKFLOW:-}" = "Internal Testflight" ]; then
-    python3 "$SCRIPT_DIR/compatibility_matrix.py"
+WORKFLOW_NORMALIZED=$(printf '%s' "${CI_WORKFLOW:-}" | tr '[:upper:]' '[:lower:]')
+if [ "$WORKFLOW_NORMALIZED" != "internal testflight" ]; then
+    echo "release-note gate: upload-capable archives are restricted to the Internal TestFlight workflow" >&2
+    exit 1
 fi
+python3 "$SCRIPT_DIR/compatibility_matrix.py"
 python3 "$SCRIPT_DIR/release_notes.py" validate --build-number "$CI_BUILD_NUMBER"
