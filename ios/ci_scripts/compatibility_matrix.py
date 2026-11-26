@@ -8,6 +8,7 @@ import base64
 import getpass
 import hashlib
 import http.server
+import ipaddress
 import json
 import os
 import re
@@ -327,21 +328,35 @@ def _sha_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _require_loopback_listener(port: int, label: str, process_id: int) -> None:
+def _require_loopback_listener(port: int, label: str) -> None:
     lsof = shutil.which("lsof")
     if lsof is None:
         _safe_fail("compatibility matrix cannot verify that its local service is loopback-only")
-    # Scope lsof to the process that owns the fixture. Scanning every process
-    # for each temporary listener can exceed the short CI timeout on macOS.
+    # Query only the allocated port. Some published gateway launchers spawn a
+    # child process that owns the socket, so filtering by the launcher's PID
+    # can hide a real listener and falsely report that it is not loopback-only.
     result = _run(
-        [lsof, "-nP", "-a", "-p", str(process_id), f"-iTCP:{port}", "-sTCP:LISTEN"],
+        [lsof, "-nP", "-a", f"-iTCP:{port}", "-sTCP:LISTEN"],
         timeout=30,
     )
     if result.returncode != 0:
         _safe_fail(f"compatibility matrix could not verify the {label} listener")
-    listeners = [line.split()[-2] for line in result.stdout.splitlines() if "(LISTEN)" in line and len(line.split()) >= 2]
-    local = [address for address in listeners if address.endswith(f":{port}")]
-    if not local or any(not address.startswith("127.0.0.1:") for address in local):
+    listeners = [
+        line.split()[-2]
+        for line in result.stdout.splitlines()
+        if "(LISTEN)" in line and len(line.split()) >= 2
+    ]
+
+    def is_loopback(address: str) -> bool:
+        if not address.endswith(f":{port}"):
+            return False
+        host = address.rsplit(":", 1)[0].strip("[]")
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    if not listeners or any(not is_loopback(address) for address in listeners):
         _safe_fail(f"compatibility matrix {label} is not bound exclusively to loopback")
 
 
@@ -796,7 +811,7 @@ class LocalRuntimeFixture:
         self.model_server.daemon_threads = True
         self.model_thread = threading.Thread(target=self.model_server.serve_forever, daemon=True)
         self.model_thread.start()
-        _require_loopback_listener(self.model_port, "deterministic model fixture", os.getpid())
+        _require_loopback_listener(self.model_port, "deterministic model fixture")
 
     def _start_fixture_server(self) -> None:
         fixture = self
@@ -855,7 +870,7 @@ class LocalRuntimeFixture:
         self.server.daemon_threads = True
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
-        _require_loopback_listener(self.server.server_port, "test fixture", os.getpid())
+        _require_loopback_listener(self.server.server_port, "test fixture")
 
     def _runtime_env(self, release_id: int, *, port: int | None = None) -> dict[str, str]:
         package = self.package_paths[release_id]
@@ -909,7 +924,7 @@ class LocalRuntimeFixture:
                 _safe_fail("isolated SSH fixture did not start")
             try:
                 with socket.create_connection(("127.0.0.1", self.ssh_port), timeout=0.2):
-                    _require_loopback_listener(self.ssh_port, "SSH fixture", self.sshd_process.pid)
+                    _require_loopback_listener(self.ssh_port, "SSH fixture")
                     return
             except OSError:
                 time.sleep(0.1)
@@ -955,9 +970,7 @@ class LocalRuntimeFixture:
         build_part = release.tag.split("+", 1)[1] if "+" in release.tag else None
         if version_core is None or version_core.group(0) not in version_text or (build_part and build_part not in version_text):
             _safe_fail(f"published Tightbeam gateway version endpoint does not identify {release.tag}")
-        _require_loopback_listener(
-            self.gateway_port, "published Tightbeam gateway", self.gateway_process.pid
-        )
+        _require_loopback_listener(self.gateway_port, "published Tightbeam gateway")
 
     def _stop_gateway(self) -> None:
         process = self.gateway_process
@@ -1306,9 +1319,7 @@ class LocalRuntimeFixture:
             build_part = release.tag.split("+", 1)[1] if "+" in release.tag else None
             if version_core is None or version_core.group(0) not in version_text or (build_part and build_part not in version_text):
                 raise MatrixError("published Tightbeam catch-up gateway did not match its pinned release")
-            _require_loopback_listener(
-                temporary_port, "published catch-up gateway", temporary_process.pid
-            )
+            _require_loopback_listener(temporary_port, "published catch-up gateway")
             sequence, marker = self._post_and_mark(temporary_gateway, context, "catch-up")
         finally:
             if temporary_process is not None and temporary_process.poll() is None:

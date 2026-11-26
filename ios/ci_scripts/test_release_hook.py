@@ -726,7 +726,7 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
     def test_loopback_probe_uses_lsof_tcp_port_filter(self):
         output = (
             "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
-            "Python 231 runner 4u IPv4 0x0 0t0 TCP 127.0.0.1:19450 (LISTEN)\n"
+            "beam.smp 991 runner 4u IPv4 0x0 0t0 TCP 127.0.0.1:19450 (LISTEN)\n"
         )
         with mock.patch.object(compatibility_matrix.shutil, "which", return_value="/usr/bin/lsof"):
             with mock.patch.object(
@@ -734,11 +734,28 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
                 "_run",
                 return_value=subprocess.CompletedProcess([], 0, output),
             ) as run:
-                compatibility_matrix._require_loopback_listener(19450, "test fixture", 231)
+                compatibility_matrix._require_loopback_listener(19450, "test fixture")
         self.assertEqual(
             run.call_args.args[0],
-            ["/usr/bin/lsof", "-nP", "-a", "-p", "231", "-iTCP:19450", "-sTCP:LISTEN"],
+            ["/usr/bin/lsof", "-nP", "-a", "-iTCP:19450", "-sTCP:LISTEN"],
         )
+
+    def test_loopback_probe_rejects_wildcard_listener(self):
+        output = (
+            "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
+            "beam.smp 991 runner 4u IPv4 0x0 0t0 TCP *:19450 (LISTEN)\n"
+        )
+        with mock.patch.object(compatibility_matrix.shutil, "which", return_value="/usr/bin/lsof"):
+            with mock.patch.object(
+                compatibility_matrix,
+                "_run",
+                return_value=subprocess.CompletedProcess([], 0, output),
+            ):
+                with self.assertRaisesRegex(
+                    compatibility_matrix.MatrixError,
+                    "not bound exclusively to loopback",
+                ):
+                    compatibility_matrix._require_loopback_listener(19450, "test fixture")
 
     def test_existing_compatibility_test_source_is_replaced_without_reediting_project(self):
         with tempfile.TemporaryDirectory() as temporary:
