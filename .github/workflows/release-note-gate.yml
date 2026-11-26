@@ -52,3 +52,54 @@ jobs:
             python3 ios/ci_scripts/release_notes.py premerge \
               --base-note "$base_note"
           fi
+
+  compatibility-diagnostic:
+    name: compatibility-diagnostic
+    runs-on: xcode-27
+    timeout-minutes: 120
+    env:
+      CI_BUILD_ID: ${{ github.run_id }}
+      CI_COMMIT: ${{ github.sha }}
+      CI_XCODE_SCHEME: TightbeamTuner
+      CI_XCODEBUILD_ACTION: test
+      CI_PRIMARY_REPOSITORY_PATH: ${{ github.workspace }}
+      CI_DERIVED_DATA_PATH: ${{ runner.temp }}/TunerCompatibilityDerivedData
+      REPORT_PATH: ${{ runner.temp }}/ReleaseCompatibilityReport.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record toolchain and simulator runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+          mkdir -p "$CI_DERIVED_DATA_PATH"
+
+      - name: Read the planned release build number
+        run: |
+          build_number="$(python3 -c 'import json; print(json.load(open("ios/TightbeamTuner/CurrentBuildReleaseNote.json", encoding="utf-8"))["build"])')"
+          case "$build_number" in
+            ''|*[!0-9]*) echo "current release note has no positive numeric build number" >&2; exit 1 ;;
+          esac
+          if [ "$build_number" -le 0 ]; then
+            echo "current release note has no positive numeric build number" >&2
+            exit 1
+          fi
+          echo "PLANNED_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
+
+      - name: Run non-distributing compatibility and detector matrix
+        run: |
+          python3 ios/ci_scripts/compatibility_matrix.py \
+            --diagnostic \
+            --build-number "$PLANNED_BUILD_NUMBER" \
+            --output "$REPORT_PATH"
+
+      - name: Retain diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuner-compatibility-${{ github.sha }}
+          path: ${{ runner.temp }}/ReleaseCompatibilityReport.json
+          if-no-files-found: warn
+          retention-days: 30

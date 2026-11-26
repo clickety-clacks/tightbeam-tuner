@@ -553,22 +553,25 @@ def _device_and_runtime(minimum_os: str) -> tuple[str, str, str, str]:
     ios_runtimes = [
         item for item in runtimes.get("runtimes", [])
         if isinstance(item, dict) and item.get("isAvailable") is True
-        and item.get("platform") == "iOS Simulator"
+        # Current simctl JSON reports the platform as "iOS". Older Xcode
+        # versions used "iOS Simulator"; accept both documented forms.
+        and item.get("platform") in {"iOS", "iOS Simulator"}
         and isinstance(item.get("identifier"), str)
         and isinstance(item.get("version"), str)
     ]
     minimum = release_hook._os_version(minimum_os)
     eligible = [item for item in ios_runtimes if release_hook._os_version(item["version"]) >= minimum]
     if not eligible or not types:
-        _safe_fail("Xcode Cloud has no available iPhone simulator runtime at the Tuner deployment target")
+        _safe_fail("Xcode has no available iPhone simulator runtime at the Tuner deployment target")
     selected_runtime = max(eligible, key=lambda item: release_hook._os_version(item["version"]))
     compatible_types = [
         item for item in types
-        if release_hook._os_version(item.get("minRuntimeVersion", "0"))
+        if isinstance(item.get("minRuntimeVersionString"), str)
+        and release_hook._os_version(item["minRuntimeVersionString"])
         <= release_hook._os_version(selected_runtime["version"])
     ]
     if not compatible_types:
-        _safe_fail("Xcode Cloud has no iPhone simulator type compatible with the selected runtime")
+        _safe_fail("Xcode has no iPhone simulator type compatible with the selected runtime")
     selected_type = sorted(compatible_types, key=lambda item: item["name"])[0]
     return (
         str(selected_type["identifier"]), str(selected_type["name"]),
@@ -1609,12 +1612,26 @@ def _review_confirmation(diagnostic: bool, commit: str, candidate_digest: str) -
     return release_hook.latest_public_review_status(commit, candidate_digest)
 
 
-def run_matrix(*, diagnostic: bool = False) -> None:
+def run_matrix(
+    *, diagnostic: bool = False,
+    planned_build_number: int | None = None,
+    diagnostic_output: Path | None = None,
+) -> None:
     _validate_execution_mode(diagnostic)
-    build_number_value = os.environ.get("CI_BUILD_NUMBER", "")
-    if not build_number_value.isdigit() or int(build_number_value) <= 0:
-        _safe_fail("compatibility matrix has no positive numbered build")
-    build_number = int(build_number_value)
+    if diagnostic:
+        if (
+            not isinstance(planned_build_number, int) or isinstance(planned_build_number, bool)
+            or planned_build_number <= 0 or diagnostic_output is None
+        ):
+            _safe_fail("diagnostic matrix requires an explicit planned build number and report output path")
+        build_number = planned_build_number
+    else:
+        if planned_build_number is not None or diagnostic_output is not None:
+            _safe_fail("archive matrix cannot accept diagnostic-only inputs")
+        build_number_value = os.environ.get("CI_BUILD_NUMBER", "")
+        if not build_number_value.isdigit() or int(build_number_value) <= 0:
+            _safe_fail("compatibility matrix has no positive numbered build")
+        build_number = int(build_number_value)
     run_id = os.environ.get("CI_BUILD_ID", "")
     if not run_id:
         _safe_fail("compatibility matrix has no unique run ID")
@@ -1634,7 +1651,11 @@ def run_matrix(*, diagnostic: bool = False) -> None:
     if os.path.commonpath([str(derived), str(repo_root)]) != str(derived):
         _safe_fail("compatibility scratch escaped Xcode Cloud DerivedData")
 
-    report_path = repo / "ios" / "TightbeamTuner" / "ReleaseCompatibilityReport.json"
+    report_path = (
+        diagnostic_output.expanduser().resolve()
+        if diagnostic and diagnostic_output is not None
+        else repo / "ios" / "TightbeamTuner" / "ReleaseCompatibilityReport.json"
+    )
     current_note_path = repo / "ios" / "TightbeamTuner" / "CurrentBuildReleaseNote.json"
     history_path = repo / "ios" / "TightbeamTuner" / "ReleaseNotesHistory.json"
     baseline_path = SCRIPT_DIR / "ReleaseBaseline.json"
@@ -1981,16 +2002,34 @@ def run_matrix(*, diagnostic: bool = False) -> None:
                 raise MatrixError("compatibility matrix could not clean up all task-owned resources")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--diagnostic",
         action="store_true",
         help="run the isolated matrix without archive tag or reviewer-status gates; archive actions are refused",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--build-number",
+        type=int,
+        help="planned release build number for a non-distributing diagnostic run",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="path to the captured diagnostic report; required with --diagnostic",
+    )
+    args = parser.parse_args(argv)
+    if args.diagnostic and (args.build_number is None or args.output is None):
+        parser.error("--diagnostic requires --build-number and --output")
+    if not args.diagnostic and (args.build_number is not None or args.output is not None):
+        parser.error("--build-number and --output are diagnostic-only")
     try:
-        run_matrix(diagnostic=args.diagnostic)
+        run_matrix(
+            diagnostic=args.diagnostic,
+            planned_build_number=args.build_number,
+            diagnostic_output=args.output,
+        )
     except (MatrixError, release_hook.ReleaseHookError, release_notes.ReleaseNoteError) as error:
         print(f"release compatibility matrix: {error}", file=sys.stderr)
         return 1
