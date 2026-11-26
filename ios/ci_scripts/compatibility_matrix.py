@@ -332,9 +332,9 @@ def _require_loopback_listener(port: int, label: str) -> None:
     lsof = shutil.which("lsof")
     if lsof is None:
         _safe_fail("compatibility matrix cannot verify that its local service is loopback-only")
-    # Query only the allocated port. Some published gateway launchers spawn a
-    # child process that owns the socket, so filtering by the launcher's PID
-    # can hide a real listener and falsely report that it is not loopback-only.
+    # Query only the allocated port because a service may bind from a child
+    # process. This checks every listener on the fixture port without scanning
+    # unrelated sockets, and still rejects wildcard or external binds.
     result = _run(
         [lsof, "-nP", "-a", f"-iTCP:{port}", "-sTCP:LISTEN"],
         timeout=30,
@@ -347,17 +347,49 @@ def _require_loopback_listener(port: int, label: str) -> None:
         if "(LISTEN)" in line and len(line.split()) >= 2
     ]
 
-    def is_loopback(address: str) -> bool:
+    def listener_kind(address: str) -> str:
         if not address.endswith(f":{port}"):
-            return False
+            return "unexpected listener entry"
         host = address.rsplit(":", 1)[0].strip("[]")
+        if host in {"*", "0.0.0.0", "::"}:
+            return "wildcard"
         try:
-            return ipaddress.ip_address(host).is_loopback
+            parsed = ipaddress.ip_address(host)
         except ValueError:
-            return False
+            return "unrecognized address"
+        if parsed.is_loopback:
+            return "IPv4 loopback" if parsed.version == 4 else "IPv6 loopback"
+        return "non-loopback IPv4" if parsed.version == 4 else "non-loopback IPv6"
 
-    if not listeners or any(not is_loopback(address) for address in listeners):
-        _safe_fail(f"compatibility matrix {label} is not bound exclusively to loopback")
+    if not listeners:
+        _safe_fail(
+            f"compatibility matrix {label} is not bound exclusively to loopback "
+            "(lsof returned no TCP listener row for the assigned port)"
+        )
+    kinds = {listener_kind(address) for address in listeners}
+    non_loopback = kinds - {"IPv4 loopback", "IPv6 loopback"}
+    if non_loopback:
+        _safe_fail(
+            f"compatibility matrix {label} is not bound exclusively to loopback "
+            f"(observed {', '.join(sorted(non_loopback))} listener)"
+        )
+
+
+def _remove_task_scratch(path: Path) -> None:
+    """Retry scoped scratch removal when a transient writer races teardown."""
+    last_error: OSError | None = None
+    for attempt in range(5):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            last_error = error
+            if attempt < 4:
+                time.sleep(0.25)
+    assert last_error is not None
+    raise last_error
 
 
 def _require_port_clear(port: int, label: str) -> None:
@@ -2302,9 +2334,7 @@ def run_matrix(
             if removed.returncode != 0 or worktree.exists():
                 cleanup_failures.append("baseline worktree")
         try:
-            shutil.rmtree(repo_root)
-        except FileNotFoundError:
-            pass
+            _remove_task_scratch(repo_root)
         except OSError:
             cleanup_failures.append("task scratch")
         if cleanup_failures:

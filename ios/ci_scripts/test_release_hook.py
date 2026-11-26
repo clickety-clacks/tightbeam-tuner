@@ -753,9 +753,48 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     compatibility_matrix.MatrixError,
-                    "not bound exclusively to loopback",
+                    "not bound exclusively to loopback \\(observed wildcard listener\\)",
                 ):
                     compatibility_matrix._require_loopback_listener(19450, "test fixture")
+
+    def test_loopback_probe_reports_a_missing_listener_row(self):
+        with mock.patch.object(compatibility_matrix.shutil, "which", return_value="/usr/bin/lsof"):
+            with mock.patch.object(
+                compatibility_matrix,
+                "_run",
+                return_value=subprocess.CompletedProcess([], 0, "COMMAND PID USER FD TYPE NAME\n"),
+            ):
+                with self.assertRaisesRegex(
+                    compatibility_matrix.MatrixError,
+                    "no TCP listener row for the assigned port",
+                ):
+                    compatibility_matrix._require_loopback_listener(19450, "test fixture")
+
+    def test_task_scratch_removal_retries_transient_directory_races(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "owned-scratch"
+            path.mkdir()
+            (path / "file").write_text("task-owned")
+            real_rmtree = compatibility_matrix.shutil.rmtree
+            calls = 0
+
+            def transient_then_remove(target):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise OSError("Directory not empty")
+                return real_rmtree(target)
+
+            with mock.patch.object(
+                compatibility_matrix.shutil,
+                "rmtree",
+                side_effect=transient_then_remove,
+            ) as remove:
+                with mock.patch.object(compatibility_matrix.time, "sleep") as sleep:
+                    compatibility_matrix._remove_task_scratch(path)
+            self.assertFalse(path.exists())
+            self.assertEqual(remove.call_count, 2)
+            sleep.assert_called_once_with(0.25)
 
     def test_existing_compatibility_test_source_is_replaced_without_reediting_project(self):
         with tempfile.TemporaryDirectory() as temporary:
