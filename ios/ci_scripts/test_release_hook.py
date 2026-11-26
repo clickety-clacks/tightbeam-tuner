@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -72,7 +73,7 @@ def compatibility_report(pair, target=None):
     baseline_value = baseline()
     producer = {
         "runId": "cloud-run-84",
-        "attempt": 2,
+        "attempt": 1,
         "sourceCommit": target["commit"],
         "sourceTree": target["tree"],
         "buildNumber": target["buildNumber"],
@@ -227,6 +228,22 @@ class CompatibilityReportTests(unittest.TestCase):
         )
         self.assertEqual(len(runs), 2)
 
+    def test_attempt_is_fixed_to_one_for_each_unique_cloud_run(self):
+        self.assertEqual(self.report["producer"]["attempt"], 1)
+        for mutate in (
+            lambda value: value["producer"].update(attempt=2),
+            lambda value: value["producer"].update(attempt=True),
+            lambda value: value["runs"][0].update(attempt=2),
+            lambda value: value["runs"][0].update(attempt=True),
+        ):
+            changed = copy.deepcopy(self.report)
+            mutate(changed)
+            with self.assertRaisesRegex(release_hook.ReleaseHookError, "attempt"):
+                release_hook.validate_compatibility_runs(
+                    changed, candidate(), self.pair, baseline=baseline(),
+                    expected_ci_run_id="cloud-run-84",
+                )
+
     def test_missing_or_failed_client_checks_block(self):
         for mutation in (
             lambda report: report["runs"][0]["checks"].pop("catch_up"),
@@ -316,7 +333,7 @@ class CompatibilityReportTests(unittest.TestCase):
             "candidate": candidate(),
             "baseline": baseline(),
             "producer": {
-                "runId": "cloud-run-84", "attempt": 2,
+                "runId": "cloud-run-84", "attempt": 1,
                 "sourceCommit": candidate()["commit"], "sourceTree": candidate()["tree"],
                 "buildNumber": candidate()["buildNumber"], "scheme": candidate()["scheme"],
                 "configuration": candidate()["configuration"],
@@ -337,6 +354,7 @@ class CompatibilityReportTests(unittest.TestCase):
             expected_ci_run_id="cloud-run-84",
         )), 2)
         for mutate in (
+            lambda value: value["producer"].update(attempt=2),
             lambda value: value["detectors"].update(status="skipped"),
             lambda value: value["detectors"].update(findingsSha256="0" * 64),
             lambda value: value.update(currentNoteSha256="0" * 64),
@@ -351,6 +369,23 @@ class CompatibilityReportTests(unittest.TestCase):
 
 
 class CompatibilityMatrixWiringTests(unittest.TestCase):
+    def test_candidate_attempt_is_fixed_even_if_an_attempt_environment_value_exists(self):
+        environment = {
+            "CI_COMMIT": "a" * 40,
+            "CI_XCODE_SCHEME": "TightbeamTuner",
+            "CI_BUILD_ID": "cloud-run-84",
+            "CI_BUILD_ATTEMPT": "9",
+            "TUNER_RELEASE_CONFIGURATION": "Release",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            with mock.patch.object(
+                compatibility_matrix, "_current_source", return_value=("a" * 40, "b" * 40)
+            ):
+                result = compatibility_matrix._prepare_candidate(
+                    Path("."), {"scheme": "TightbeamTuner", "configuration": "Release"}, 84
+                )
+        self.assertEqual(result["attempt"], 1)
+
     def test_baseline_phase_identity_is_the_measured_release_identity(self):
         source = {
             "sourceCommit": baseline()["commit"],
@@ -387,7 +422,7 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
             "minimumOS": "26.0",
             "deviceFamilies": ["1", "2"],
             "runId": "cloud-run-84",
-            "attempt": 2,
+            "attempt": 1,
         }
         baseline_target = {
             **baseline(), "minimumOS": "26.0", "deviceFamilies": ["1", "2"]
@@ -432,7 +467,7 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
                     "phaseSource": source,
                     "candidate": target,
                     "runId": "cloud-run-84",
-                    "attempt": 2,
+                    "attempt": 1,
                     "simulator": {"deviceType": "iPhone", "runtime": "iOS 27.0"},
                     "checks": copy.deepcopy(observed_checks),
                 }

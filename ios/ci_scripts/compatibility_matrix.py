@@ -842,9 +842,6 @@ def _prepare_candidate(repo: Path, baseline_file: dict[str, Any], build_number: 
     configuration = os.environ.get("TUNER_RELEASE_CONFIGURATION", "Release")
     if baseline_file["scheme"] != scheme or baseline_file["configuration"] != configuration:
         _safe_fail("candidate and pinned baseline use different release schemes or configurations")
-    attempt_value = os.environ.get("CI_BUILD_ATTEMPT", "1")
-    if not attempt_value.isdigit() or int(attempt_value) < 1:
-        _safe_fail("Xcode Cloud attempt number is invalid")
     return {
         "commit": commit,
         "tree": tree,
@@ -852,7 +849,7 @@ def _prepare_candidate(repo: Path, baseline_file: dict[str, Any], build_number: 
         "configuration": configuration,
         "buildNumber": build_number,
         "runId": run_id,
-        "attempt": int(attempt_value),
+        "attempt": release_notes.XCODE_CLOUD_ATTEMPT_NUMBER,
     }
 
 
@@ -962,7 +959,7 @@ def run_matrix() -> None:
 
         fixture = LocalRuntimeFixture(repo_root, pair, packages)
         candidate["runId"] = os.environ["CI_BUILD_ID"]
-        candidate["attempt"] = int(os.environ.get("CI_BUILD_ATTEMPT", "1"))
+        candidate["attempt"] = release_notes.XCODE_CLOUD_ATTEMPT_NUMBER
         matrix_candidate = dict(candidate)
         baseline_phase_source = dict(baseline_identity)
         producer = {

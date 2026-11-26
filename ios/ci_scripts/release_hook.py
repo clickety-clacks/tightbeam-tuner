@@ -296,8 +296,11 @@ def validate_compatibility_runs(
         _fail("compatibility report has no CI producer identity")
     if not isinstance(producer.get("runId"), str) or not producer["runId"]:
         _fail("compatibility report has no CI run ID")
-    if not isinstance(producer.get("attempt"), int) or producer["attempt"] < 1:
-        _fail("compatibility report has no valid CI run attempt")
+    if (
+        type(producer.get("attempt")) is not int
+        or producer["attempt"] != release_notes.XCODE_CLOUD_ATTEMPT_NUMBER
+    ):
+        _fail("compatibility report does not use the fixed attempt number for its unique CI run")
     if producer.get("sourceCommit") != candidate["commit"] or producer.get("sourceTree") != candidate["tree"]:
         _fail("compatibility CI producer ran a different source commit or tree")
     if expected_ci_run_id is not None and producer.get("runId") != expected_ci_run_id:
@@ -338,9 +341,7 @@ def validate_compatibility_runs(
             _fail("per-release compatibility result has no CI run ID")
         if run["runId"] != producer["runId"]:
             _fail("per-release compatibility result belongs to a different CI run")
-        if not isinstance(run.get("attempt"), int) or run["attempt"] < 1:
-            _fail("per-release compatibility result has no CI attempt")
-        if run["attempt"] != producer["attempt"]:
+        if type(run.get("attempt")) is not int or run["attempt"] != producer["attempt"]:
             _fail("per-release compatibility result belongs to a different CI attempt")
         simulator = run.get("simulator")
         if not isinstance(simulator, dict) or not all(
@@ -696,8 +697,8 @@ def validate_archive_report(
         producer.get("buildNumber") != candidate["buildNumber"]
         or producer.get("scheme") != candidate["scheme"]
         or producer.get("configuration") != candidate["configuration"]
-        or not isinstance(producer.get("attempt"), int)
-        or producer["attempt"] < 1
+        or type(producer.get("attempt")) is not int
+        or producer["attempt"] != release_notes.XCODE_CLOUD_ATTEMPT_NUMBER
     ):
         _fail("archive report has a mismatched build, scheme, configuration, or attempt")
     expected_releases = [
@@ -840,7 +841,13 @@ def validate_signed_archive(
     producer = report.get("producer")
     if not isinstance(producer, dict):
         _fail("signed archive report has no Xcode Cloud producer identity")
-    if producer.get("runId") != expected_ci_run_id or producer.get("attempt") != expected_attempt:
+    if (
+        type(expected_attempt) is not int
+        or expected_attempt != release_notes.XCODE_CLOUD_ATTEMPT_NUMBER
+        or producer.get("runId") != expected_ci_run_id
+        or type(producer.get("attempt")) is not int
+        or producer.get("attempt") != release_notes.XCODE_CLOUD_ATTEMPT_NUMBER
+    ):
         _fail("signed archive report belongs to another Xcode Cloud run or attempt")
     if not isinstance(history_data, list):
         _fail("signed app has no bundled release-note history")

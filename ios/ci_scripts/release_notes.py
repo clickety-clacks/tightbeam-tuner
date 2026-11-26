@@ -19,6 +19,11 @@ class ReleaseNoteError(ValueError):
     pass
 
 
+# Xcode Cloud's CI_BUILD_ID uniquely identifies each run. It does not expose
+# an attempt counter; this release hook executes one matrix invocation per run.
+XCODE_CLOUD_ATTEMPT_NUMBER = 1
+
+
 @dataclass(frozen=True)
 class NoteItem:
     title: str
@@ -549,11 +554,8 @@ def _validate_signed_candidate(signed_app_path: Path, build_number: int) -> tupl
     run_id = os.environ.get("CI_BUILD_ID", "")
     scheme = os.environ.get("CI_XCODE_SCHEME", "")
     configuration = os.environ.get("TUNER_RELEASE_CONFIGURATION", "Release")
-    attempt_value = os.environ.get("CI_BUILD_ATTEMPT", "1")
     if not re.fullmatch(r"[0-9a-f]{40}", commit) or not run_id or not scheme:
         raise ReleaseNoteError("Xcode Cloud candidate identity is incomplete during signed-export verification")
-    if not attempt_value.isdigit() or int(attempt_value) < 1:
-        raise ReleaseNoteError("Xcode Cloud attempt number is invalid during signed-export verification")
     repo = Path(os.environ.get("CI_PRIMARY_REPOSITORY_PATH", Path(__file__).resolve().parents[2])).resolve()
     try:
         tree_result = subprocess.run(
@@ -598,7 +600,7 @@ def _validate_signed_candidate(signed_app_path: Path, build_number: int) -> tupl
             expected_candidate=expected_candidate,
             baseline_reference_data=expected_baseline,
             expected_ci_run_id=run_id,
-            expected_attempt=int(attempt_value),
+            expected_attempt=XCODE_CLOUD_ATTEMPT_NUMBER,
             expected_build_number=build_number,
         )
         note = _note_from_data(note_data, expected_build=build_number)
