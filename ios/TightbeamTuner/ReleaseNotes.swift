@@ -4,6 +4,14 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 83, date: "November 25, 2026", items: [
+            .init(symbol: "hourglass", title: "Show waiting agents in Replies",
+                  detail: "After you send a prompt, the agent appears in Replies with a spinner until it responds, including while its chat is open. A failed send clears the spinner; when a reply arrives, Tuner follows the existing read and unread behavior."),
+            .init(symbol: "info.circle", title: "Compatibility",
+                  detail: "Tightbeam and Chat compatibility were not verified for this build."),
+            .init(symbol: "exclamationmark.triangle", title: "Breaking changes",
+                  detail: "None."),
+        ]),
         ReleaseNote(version: "1.0", build: 82, date: "November 22, 2026", items: [
             .init(symbol: "doc.on.clipboard", title: "Paste photos from the clipboard",
                   detail: "Choose Paste in the + menu to add a copied photo to the message field. It sends with its words through Chat's existing attachment flow. Text paste and Photo Library selection remain available."),
