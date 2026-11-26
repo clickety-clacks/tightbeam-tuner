@@ -13,6 +13,23 @@ final class ReleaseCompatibilityTests: XCTestCase {
         let diagnostic: String?
     }
 
+    private struct FixtureFailure: Decodable {
+        let error: String?
+        let diagnostic: String?
+    }
+
+    private struct FixtureRequestFailure: LocalizedError {
+        let statusCode: Int
+        let diagnostic: String?
+
+        var errorDescription: String? {
+            if let diagnostic, !diagnostic.isEmpty {
+                return "Compatibility fixture returned HTTP \(statusCode): \(diagnostic)"
+            }
+            return "Compatibility fixture returned HTTP \(statusCode)"
+        }
+    }
+
     private struct UpgradeReply: Decodable {
         let ok: Bool
         let savedConnectionLoaded: Bool
@@ -423,7 +440,13 @@ final class ReleaseCompatibilityTests: XCTestCase {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: request)
         let http = try XCTUnwrap(response as? HTTPURLResponse)
-        XCTAssertTrue((200..<300).contains(http.statusCode))
+        guard (200..<300).contains(http.statusCode) else {
+            let failure = try? JSONDecoder().decode(FixtureFailure.self, from: data)
+            throw FixtureRequestFailure(
+                statusCode: http.statusCode,
+                diagnostic: failure?.diagnostic ?? failure?.error
+            )
+        }
         return try JSONDecoder().decode(type, from: data)
     }
 

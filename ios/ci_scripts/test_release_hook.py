@@ -1140,11 +1140,36 @@ class DetectorAndNotesTests(unittest.TestCase):
             ),))
 
     def test_history_accepts_explicit_none_verified_and_generated_pair_lines(self):
-        history_path = Path(__file__).resolve().parents[1] / "TightbeamTuner" / "ReleaseNotesHistory.json"
-        history_data = json.loads(history_path.read_text(encoding="utf-8"))
-        history = release_notes.notes_from_history_data(history_data)
+        # Use fixed test history rather than the checked-in rolling history. New
+        # releases prepend entries, so this test must not encode which builds
+        # happen to be newest in the repository today.
+        history = (
+            release_notes.Note(
+                85,
+                (
+                    release_notes.NoteItem(
+                        "Compatibility",
+                        "Compatible with Tightbeam: none verified. This build was not verified against "
+                        "Tightbeam 0.1.16 (build 4304), Tightbeam 0.1.15 (build 4082), or Chat v0.1.104. "
+                        "No version-specific test evidence is tied to this build.",
+                    ),
+                    release_notes.NoteItem("Breaking changes", "None."),
+                ),
+            ),
+            release_notes.Note(
+                84,
+                (
+                    release_notes.NoteItem(
+                        "Compatibility",
+                        "Compatible with Tightbeam: none verified. This build was not verified against "
+                        "Tightbeam 0.1.16 (build 4304), Tightbeam 0.1.15 (build 4082), or Chat v0.1.104. "
+                        "No version-specific test evidence is tied to this build.",
+                    ),
+                    release_notes.NoteItem("Breaking changes", "None."),
+                ),
+            ),
+        )
         release_hook.validate_history_claims(history)
-        self.assertEqual([note.build for note in history[:2]], [85, 84])
 
         release_hook.validate_history_claims((release_notes.Note(
             86,
@@ -1172,29 +1197,57 @@ class DetectorAndNotesTests(unittest.TestCase):
 class SignedArchiveTests(unittest.TestCase):
     def setUp(self):
         _, _, self.pair = pinned_pair()
-        self.repo = Path(__file__).resolve().parents[2]
+        # Signed-export checks use an isolated repository and a fixed baseline
+        # fixture. They must exercise the pinned-baseline read without depending
+        # on the rolling ReleaseBaseline.json in the source checkout.
+        self.repo_temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.repo_temporary.cleanup)
+        self.repo = Path(self.repo_temporary.name)
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Release hook test"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "release-hook-test@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixed test baseline"], check=True)
+        baseline_source_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, text=True
+        ).strip()
+        baseline_source_tree = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=self.repo, text=True
+        ).strip()
+        baseline_data = {
+            "buildNumber": 85,
+            "sourceCommit": baseline_source_commit,
+            "sourceTree": baseline_source_tree,
+            "scheme": "TightbeamTuner",
+            "configuration": "Release",
+        }
+        baseline_path = self.repo / "ios" / "ci_scripts" / "ReleaseBaseline.json"
+        baseline_path.parent.mkdir(parents=True)
+        baseline_path.write_text(json.dumps(baseline_data), encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repo), "add", "ios/ci_scripts/ReleaseBaseline.json"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "fixed test candidate"], check=True)
         self.commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip()
         self.tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=self.repo, text=True).strip()
+        self.build_number = 86
         self.target = {
             "commit": self.commit,
             "tree": self.tree,
             "scheme": "TightbeamTuner",
             "configuration": "Release",
-            "buildNumber": 86,
+            "buildNumber": self.build_number,
             "minimumOS": "26.0",
             "deviceFamilies": ["1", "2"],
         }
         self.baseline = {
-            "commit": "a06bf7a13c63b08de023619ef83b7cd1eb4b1cec",
-            "tree": "a5e546ba4181503764acd8e8d0f989d0f95b06e3",
+            "commit": baseline_source_commit,
+            "tree": baseline_source_tree,
             "scheme": "TightbeamTuner",
             "configuration": "Release",
-            "buildNumber": 84,
+            "buildNumber": 85,
             "minimumOS": "26.0",
             "deviceFamilies": ["1", "2"],
         }
         self.note_data = {
-            "version": "1.0", "build": 86, "date": "November 26, 2026",
+            "version": "1.0", "build": self.build_number, "date": "November 26, 2026",
             "items": [
                 {
                     "symbol": "checkmark.seal", "title": "Compatibility",
@@ -1210,18 +1263,22 @@ class SignedArchiveTests(unittest.TestCase):
             run["baselinePhaseSource"] = copy.deepcopy(self.baseline)
         findings = release_hook.detect_breaking_changes(self.baseline, self.target, matrix["runs"])
         # Keep this archive fixture independent from the app's moving release
-        # history. Build 83 represents a pre-hook historical note; the signed
+        # history. Build 84 represents a pre-hook historical note; the signed
         # export test should remain valid after later releases add entries.
         self.history_data = [
             {
                 "version": "1.0",
-                "build": 83,
+                "build": 84,
                 "date": "November 25, 2026",
                 "items": [
                     {
                         "symbol": "checkmark.seal",
                         "title": "Compatibility",
-                        "detail": "Tightbeam compatibility was not verified for this build.",
+                        "detail": (
+                            "Compatible with Tightbeam: none verified. This build was not verified against "
+                            "Tightbeam 0.1.16 (build 4304), Tightbeam 0.1.15 (build 4082), or Chat v0.1.104. "
+                            "No version-specific test evidence is tied to this build."
+                        ),
                     },
                     {
                         "symbol": "exclamationmark.triangle",
@@ -1291,10 +1348,10 @@ class SignedArchiveTests(unittest.TestCase):
             env = os.environ.copy()
             env.update({
                 "CI_COMMIT": self.commit,
-                "CI_BUILD_ID": "cloud-run-86",
-                "CI_BUILD_NUMBER": "86",
-                "CI_TAG": "tuner-ios-build-86",
-                "CI_GIT_REF": "refs/tags/tuner-ios-build-86",
+                "CI_BUILD_ID": f"cloud-run-{self.build_number}",
+                "CI_BUILD_NUMBER": str(self.build_number),
+                "CI_TAG": f"tuner-ios-build-{self.build_number}",
+                "CI_GIT_REF": f"refs/tags/tuner-ios-build-{self.build_number}",
                 "CI_XCODE_SCHEME": "TightbeamTuner",
                 "CI_PRIMARY_REPOSITORY_PATH": str(self.repo),
             })
@@ -1309,7 +1366,7 @@ class SignedArchiveTests(unittest.TestCase):
                 }),
             ):
                 result = release_notes.main([
-                    "render", "--build-number", "86", "--signed-app-path", str(signed),
+                    "render", "--build-number", str(self.build_number), "--signed-app-path", str(signed),
                     "--require-archive-evidence", "--output", str(output),
                 ])
             self.assertEqual(result, 0)
@@ -1330,10 +1387,10 @@ class SignedArchiveTests(unittest.TestCase):
             env = os.environ.copy()
             env.update({
                 "CI_COMMIT": self.commit,
-                "CI_BUILD_ID": "cloud-run-86",
-                "CI_BUILD_NUMBER": "86",
-                "CI_TAG": "tuner-ios-build-86",
-                "CI_GIT_REF": "refs/tags/tuner-ios-build-86",
+                "CI_BUILD_ID": f"cloud-run-{self.build_number}",
+                "CI_BUILD_NUMBER": str(self.build_number),
+                "CI_TAG": f"tuner-ios-build-{self.build_number}",
+                "CI_GIT_REF": f"refs/tags/tuner-ios-build-{self.build_number}",
                 "CI_XCODE_SCHEME": "TightbeamTuner",
                 "CI_PRIMARY_REPOSITORY_PATH": str(self.repo),
             })
@@ -1343,7 +1400,7 @@ class SignedArchiveTests(unittest.TestCase):
                 mock.patch("sys.stderr", error_output),
             ):
                 result = release_notes.main([
-                    "render", "--build-number", "86", "--signed-app-path", str(signed),
+                    "render", "--build-number", str(self.build_number), "--signed-app-path", str(signed),
                     "--require-archive-evidence", "--output", str(output),
                 ])
             self.assertNotEqual(result, 0)

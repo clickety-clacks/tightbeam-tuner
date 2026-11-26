@@ -114,6 +114,49 @@ class LoopbackListenerTests(unittest.TestCase):
             compatibility_matrix._run(["/usr/sbin/lsof", "-nP"], timeout=30)
 
 
+class PiHarnessPreflightTests(unittest.TestCase):
+    def test_preflights_the_locked_pi_executable_before_simulator_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / "package-lock.json"
+            lock.write_text(json.dumps({
+                "packages": {
+                    "node_modules/@mariozechner/pi-coding-agent": {"version": "0.73.1"}
+                }
+            }), encoding="utf-8")
+            pi_cli = root / "node_modules" / ".bin" / "pi"
+            environment = {"HOME": str(root / "home")}
+
+            with mock.patch.object(
+                compatibility_matrix, "_checked", return_value="pi v0.73.1\n"
+            ) as checked:
+                version = compatibility_matrix._preflight_pi_harness(
+                    pi_cli, lock, env=environment, cwd=root
+                )
+
+        self.assertEqual(version, "0.73.1")
+        self.assertEqual(checked.call_args.args[0], [str(pi_cli), "--version"])
+        self.assertEqual(checked.call_args.kwargs["env"], environment)
+        self.assertEqual(checked.call_args.kwargs["timeout"], 30)
+
+    def test_rejects_a_pi_executable_that_disagrees_with_the_lock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / "package-lock.json"
+            lock.write_text(json.dumps({
+                "packages": {
+                    "node_modules/@mariozechner/pi-coding-agent": {"version": "0.73.1"}
+                }
+            }), encoding="utf-8")
+            with (
+                mock.patch.object(compatibility_matrix, "_checked", return_value="pi v0.72.0"),
+                self.assertRaisesRegex(compatibility_matrix.MatrixError, "locked version"),
+            ):
+                compatibility_matrix._preflight_pi_harness(
+                    root / "pi", lock, env={}, cwd=root
+                )
+
+
 class SimulatorCleanupTests(unittest.TestCase):
     def test_delete_verifies_owned_device_absence_even_if_shutdown_result_is_stale(self):
         responses = [
@@ -224,10 +267,12 @@ class DiagnosticArgumentsTests(unittest.TestCase):
         self.assertNotIn("ssh-ed25519", json.dumps(summary))
 
     def test_readable_ci_diagnostics_redact_fixture_values_and_private_identifiers(self):
+        runtime_session = "aaa00-bb0000-11111111-2222-3333-4444-555555555555-aaaaaaaaaaaa"
         raw = (
             "Authorization: Bearer secret-bearer-value\n"
             "X-Test-Fixture-Token: fixture-token-value\n"
             "agent:main:clawline:temporary-user:main user_private_12345678\n"
+            f"adapter session {runtime_session}\n"
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIprivate host\n"
             "/private/task-root/fixture.log\n"
             "ReleaseCompatibilityTests.swift:426: error: XCTAssertTrue failed\n"
@@ -240,7 +285,7 @@ class DiagnosticArgumentsTests(unittest.TestCase):
         for secret in (
             "secret-bearer-value", "fixture-token-value", "agent:main:clawline",
             "user_private_12345678", "AAAAC3NzaC1lZDI1NTE5AAAAIprivate",
-            "/private/task-root",
+            "/private/task-root", runtime_session,
         ):
             self.assertNotIn(secret, safe)
         self.assertIn("ReleaseCompatibilityTests.swift:426: error: XCTAssertTrue failed", safe)
@@ -263,10 +308,15 @@ class DiagnosticArgumentsTests(unittest.TestCase):
     def test_runtime_log_export_includes_nested_logs_and_redacts_fixture_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            runtime_log = root / "runtime-state" / "4304" / "base" / "gateway.log"
+            runtime_session = "aaa00-bb0000-11111111-2222-3333-4444-555555555555-aaaaaaaaaaaa"
+            runtime_log = (
+                root / "runtime-state" / "4304" / "base"
+                / f"adapter-pi_shared_{runtime_session}.stderr.log"
+            )
             runtime_log.parent.mkdir(parents=True)
             runtime_log.write_text(
-                "fixture-token-value user_private_12345678 roster loaded\n", encoding="utf-8"
+                f"{runtime_session} fixture-token-value roster loaded\n",
+                encoding="utf-8",
             )
             host_key = root / "ssh-host-key"
             host_key.write_text("private-key-bytes", encoding="utf-8")
@@ -291,8 +341,10 @@ class DiagnosticArgumentsTests(unittest.TestCase):
             safe = exported.read_text(encoding="utf-8")
             self.assertIn("roster loaded", safe)
             self.assertNotIn("fixture-token-value", safe)
-            self.assertNotIn("user_private_12345678", safe)
-            self.assertIn("runtime-state__4304__base__gateway.log", exported.name)
+            self.assertNotIn(runtime_session, exported.name)
+            self.assertNotIn("aaa00-bb0000", exported.name)
+            self.assertNotIn(runtime_session, safe)
+            self.assertIn("runtime-state__4304__base__", exported.name)
 
     def test_failure_artifact_workflow_uploads_report_and_diagnostics(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/release-note-gate.yml").read_text(

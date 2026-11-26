@@ -230,6 +230,23 @@ def _checked(args: list[str], *, env: dict[str, str] | None = None, cwd: Path | 
     return result.stdout
 
 
+def _preflight_pi_harness(
+    pi_cli: Path, package_lock: Path, *, env: dict[str, str], cwd: Path
+) -> str:
+    try:
+        lock = json.loads(package_lock.read_text(encoding="utf-8"))
+        package = lock.get("packages", {}).get("node_modules/@mariozechner/pi-coding-agent", {})
+        version = package.get("version") if isinstance(package, dict) else None
+    except (OSError, json.JSONDecodeError, AttributeError) as error:
+        raise MatrixError("pinned Pi harness package lock is unavailable") from error
+    if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
+        _safe_fail("pinned Pi harness package version is invalid")
+    version_output = _checked([str(pi_cli), "--version"], env=env, cwd=cwd, timeout=30)
+    if not re.search(rf"(?<![0-9]){re.escape(version)}(?![0-9])", version_output):
+        _safe_fail("pinned Pi harness executable did not report its locked version")
+    return version
+
+
 def _http_json(
     url: str,
     *,
@@ -664,6 +681,7 @@ class LocalRuntimeFixture:
         self.shim_dir = root / "harness-shim"
         self.pi_package = root / "pi-fixture"
         self.pi_bin = self.pi_package / "node_modules" / ".bin"
+        self.pi_harness_version: str | None = None
         self.model_port = _available_port()
         while self.model_port in {self.gateway_port, self.ssh_port}:
             self.model_port = _available_port()
@@ -741,6 +759,15 @@ class LocalRuntimeFixture:
         pi_cli = self.pi_bin / "pi"
         if not pi_cli.is_file():
             _safe_fail("pinned Pi harness package did not install its executable")
+        # Exercise the real executable before booting the simulator so a slow
+        # first launch cannot fail the runtime's readiness probe only under
+        # Xcode test load.
+        self.pi_harness_version = _preflight_pi_harness(
+            pi_cli,
+            self.pi_package / "package-lock.json",
+            env=self.base_environment,
+            cwd=self.root,
+        )
         self.authorized_keys.write_text("", encoding="utf-8")
         self.authorized_keys.chmod(0o600)
         self.ssh_host_key_line = _checked([
@@ -1546,7 +1573,8 @@ class LocalRuntimeFixture:
                 contents = source.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            relative_name = source.relative_to(self.root).as_posix().replace("/", "__")
+            relative_name = source.relative_to(self.root).as_posix()
+            relative_name = _safe_diagnostic_text(relative_name, redactions).replace("/", "__")
             safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", relative_name)
             (destination / safe_name).write_text(
                 _safe_diagnostic_text(contents, redactions), encoding="utf-8"
@@ -1756,6 +1784,12 @@ def _safe_diagnostic_text(text: str, redaction_values: set[str]) -> str:
     safe = re.sub(r"ssh-ed25519\s+[A-Za-z0-9+/=]+(?:\s+[A-Za-z0-9_.-]+)?", "ssh-ed25519 [redacted]", safe)
     safe = re.sub(r"\bagent:[A-Za-z0-9:_-]{12,}", "[session-key]", safe)
     safe = re.sub(r"\b(?:user|device|wi|asg|art|dr)_[A-Za-z0-9_-]{8,}\b", "[private-id]", safe)
+    safe = re.sub(
+        r"(?<![A-Za-z0-9])[a-z]{2,4}\d{2}-[a-z]{2,5}\d{3,4}-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-[0-9a-f]{12}(?![A-Za-z0-9])",
+        "[runtime-session]",
+        safe,
+        flags=re.IGNORECASE,
+    )
     safe = re.sub(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
         "[private key redacted]",
@@ -2096,10 +2130,11 @@ def run_matrix(
         device_type_id, device_type_name, runtime_id, runtime_name = _device_and_runtime(
             candidate["minimumOS"]
         )
+        # Install and launch the pinned Pi CLI before simulator boot adds CPU
+        # pressure. The fixture starts only task-owned local services here.
+        fixture = LocalRuntimeFixture(repo_root, pair, packages)
         simulator_id, simulator_name = _create_simulator(device_type_id, runtime_id, build_number)
         print(f"Created isolated simulator {simulator_name} ({device_type_name}, {runtime_name})")
-
-        fixture = LocalRuntimeFixture(repo_root, pair, packages)
         candidate["runId"] = run_id
         candidate["attempt"] = release_notes.XCODE_CLOUD_ATTEMPT_NUMBER
         matrix_candidate = dict(candidate)
@@ -2114,6 +2149,7 @@ def run_matrix(
             "configuration": candidate["configuration"],
             "execution": "ios-simulator",
             "runtimeSource": "published-release-asset",
+            "piHarnessVersion": fixture.pi_harness_version,
             "networkScope": "disposable-per-release-base-and-state",
             "modelEndpointNetworkScope": "loopback-only",
             "runtimeClientAddress": "loopback-advertised-url",
