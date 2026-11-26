@@ -605,31 +605,6 @@ private struct AgentSidebar: View {
         return roots.compactMap(project)
     }
 
-    private func rosterTitle(font: Font) -> some View {
-        HStack(spacing: 8) {
-            Text("Agents")
-                .font(font)
-                .foregroundStyle(Color.nordicText)
-                .accessibilityAddTraits(.isHeader)
-            if store.isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityLabel("Loading agents")
-            } else {
-                Button {
-                    showingRosterError = true
-                } label: {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(Color.nordicCaution)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Show agent list error")
-            }
-        }
-    }
-
     var body: some View {
         List(selection: $store.selectedID) {
             let filter = listFilter
@@ -740,12 +715,21 @@ private struct AgentSidebar: View {
         // Keep the archetype menu in the toolbar while searching.
         .searchPresentationToolbarBehavior(.avoidHidingContent)
         .toolbar {
-            if store.isLoading || store.error != nil {
-                ToolbarItem(placement: .largeTitle) {
-                    rosterTitle(font: .largeTitle.bold())
+            if store.isLoading {
+                ToolbarItem(placement: .topBarTrailing) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Loading agents")
                 }
-                ToolbarItem(placement: .title) {
-                    rosterTitle(font: .headline)
+            } else if store.error != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingRosterError = true
+                    } label: {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(Color.nordicCaution)
+                    }
+                    .accessibilityLabel("Show agent list error")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
