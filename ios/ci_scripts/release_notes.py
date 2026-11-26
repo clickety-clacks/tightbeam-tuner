@@ -42,156 +42,6 @@ class Note:
         return "\n\n".join(f"{item.title}\n{item.detail}" for item in self.items) + "\n"
 
 
-STRING = r'"(?:\\.|[^"\\])*"'
-ENTRY_HEADER = re.compile(
-    rf"\s*version:\s*({STRING})\s*,\s*build:\s*(\d+)\s*,\s*"
-    rf"date:\s*({STRING})\s*,\s*items:\s*\[",
-    re.DOTALL,
-)
-ITEM_FIELDS = re.compile(
-    rf"\s*symbol:\s*({STRING})\s*,\s*title:\s*({STRING})\s*,\s*"
-    rf"detail:\s*({STRING})\s*",
-    re.DOTALL,
-)
-
-
-def _balanced_end(source: str, open_index: int, opening: str, closing: str) -> int:
-    if open_index >= len(source) or source[open_index] != opening:
-        raise ReleaseNoteError(f"expected {opening!r} at source offset {open_index}")
-
-    depth = 0
-    in_string = False
-    escaped = False
-    in_line_comment = False
-    index = open_index
-    while index < len(source):
-        char = source[index]
-        next_char = source[index + 1] if index + 1 < len(source) else ""
-
-        if in_line_comment:
-            if char == "\n":
-                in_line_comment = False
-        elif in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-        elif char == "/" and next_char == "/":
-            in_line_comment = True
-            index += 1
-        elif char == '"':
-            in_string = True
-        elif char == opening:
-            depth += 1
-        elif char == closing:
-            depth -= 1
-            if depth == 0:
-                return index
-        index += 1
-
-    raise ReleaseNoteError(f"unterminated {opening}{closing} group")
-
-
-def _code_occurrences(source: str, token: str):
-    """Yield token offsets outside Swift strings and line comments."""
-    in_string = False
-    escaped = False
-    in_line_comment = False
-    index = 0
-    while index < len(source):
-        char = source[index]
-        next_char = source[index + 1] if index + 1 < len(source) else ""
-        if in_line_comment:
-            if char == "\n":
-                in_line_comment = False
-        elif in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-        elif char == "/" and next_char == "/":
-            in_line_comment = True
-            index += 1
-        elif char == '"':
-            in_string = True
-        elif source.startswith(token, index):
-            before_ok = index == 0 or not (source[index - 1].isalnum() or source[index - 1] == "_")
-            end = index + len(token)
-            after_ok = end == len(source) or not (source[end].isalnum() or source[end] == "_")
-            if before_ok and after_ok:
-                yield index
-            index = end - 1
-        index += 1
-
-
-def _decode_string(literal: str) -> str:
-    try:
-        value = json.loads(literal)
-    except json.JSONDecodeError as error:
-        raise ReleaseNoteError(f"unsupported Swift string literal {literal!r}: {error}") from error
-    if not isinstance(value, str):
-        raise ReleaseNoteError("release-note field is not a string")
-    return value
-
-
-def _parse_item(item_source: str) -> NoteItem:
-    match = ITEM_FIELDS.fullmatch(item_source)
-    if match is None:
-        raise ReleaseNoteError("unrecognized release-note item; expected symbol, title, and detail")
-    symbol = _decode_string(match.group(1)).strip()
-    title = _decode_string(match.group(2)).strip()
-    detail = _decode_string(match.group(3)).strip()
-    if not symbol or not title or not detail:
-        raise ReleaseNoteError("release-note symbols, titles, and details must not be empty")
-    return NoteItem(title=title, detail=detail, symbol=symbol)
-
-
-def _parse_entry(entry_source: str) -> Note:
-    opening = entry_source.find("(")
-    end = _balanced_end(entry_source, opening, "(", ")")
-    if entry_source[end + 1 :].strip():
-        raise ReleaseNoteError("unexpected text after a ReleaseNote entry")
-    body = entry_source[opening + 1 : end]
-    header = ENTRY_HEADER.match(body)
-    if header is None:
-        raise ReleaseNoteError("unrecognized ReleaseNote entry header")
-
-    items_open = body.find("[", header.end() - 1)
-    items_close = _balanced_end(body, items_open, "[", "]")
-    if body[items_close + 1 :].strip():
-        raise ReleaseNoteError("unexpected fields after ReleaseNote items")
-    items_source = body[items_open + 1 : items_close]
-
-    items: list[NoteItem] = []
-    spans: list[tuple[int, int]] = []
-    for offset in _code_occurrences(items_source, ".init"):
-        open_index = items_source.find("(", offset + len(".init"))
-        if open_index < 0:
-            raise ReleaseNoteError("release-note item is missing its argument list")
-        close_index = _balanced_end(items_source, open_index, "(", ")")
-        items.append(_parse_item(items_source[open_index + 1 : close_index]))
-        spans.append((offset, close_index + 1))
-
-    residue = items_source
-    for start, end in reversed(spans):
-        residue = residue[:start] + residue[end:]
-    if re.sub(r"[\s,]+", "", residue):
-        raise ReleaseNoteError("unrecognized content in ReleaseNote items")
-    if not items:
-        raise ReleaseNoteError("each numbered build must have at least one release-note item")
-
-    return Note(
-        build=int(header.group(2)),
-        items=tuple(items),
-        version=_decode_string(header.group(1)),
-        date=_decode_string(header.group(3)),
-    )
-
-
 def _note_from_history_data(value: object) -> Note:
     if not isinstance(value, dict):
         raise ReleaseNoteError("each bundled history entry must be a JSON object")
@@ -231,37 +81,11 @@ def notes_from_history_data(value: object) -> tuple[Note, ...]:
 
 def load_notes(source_path: Path) -> tuple[Note, ...]:
     source = source_path.read_text(encoding="utf-8")
-    if source.lstrip().startswith("["):
-        try:
-            values = json.loads(source)
-        except json.JSONDecodeError as error:
-            raise ReleaseNoteError(f"could not parse bundled release-note history: {error}") from error
-        return notes_from_history_data(values)
-
-    # Retain the Swift reader for migration fixtures and one-time conversion only.
-    marker = re.search(r"static\s+let\s+history\s*:\s*\[ReleaseNote\]\s*=\s*\[", source)
-    if marker is None:
-        raise ReleaseNoteError("could not find ReleaseNotes.history in the Swift source")
-    array_open = marker.end() - 1
-    array_close = _balanced_end(source, array_open, "[", "]")
-    array_source = source[array_open + 1 : array_close]
-
-    notes: list[Note] = []
-    for offset in _code_occurrences(array_source, "ReleaseNote"):
-        call_open = array_source.find("(", offset + len("ReleaseNote"))
-        if call_open < 0 or array_source[offset + len("ReleaseNote") : call_open].strip():
-            raise ReleaseNoteError("unrecognized ReleaseNote constructor")
-        call_close = _balanced_end(array_source, call_open, "(", ")")
-        notes.append(_parse_entry(array_source[offset : call_close + 1]))
-
-    if not notes:
-        raise ReleaseNoteError("ReleaseNotes.history contains no numbered notes")
-    builds = [note.build for note in notes]
-    if len(set(builds)) != len(builds):
-        raise ReleaseNoteError("ReleaseNotes.history contains duplicate build numbers")
-    if builds != sorted(builds, reverse=True):
-        raise ReleaseNoteError("ReleaseNotes.history must remain sorted newest build first")
-    return tuple(notes)
+    try:
+        values = json.loads(source)
+    except json.JSONDecodeError as error:
+        raise ReleaseNoteError(f"could not parse bundled release-note history as JSON: {error}") from error
+    return notes_from_history_data(values)
 
 
 def exact_note(notes: tuple[Note, ...], build_number: int) -> Note:
@@ -501,9 +325,9 @@ def _signed_export_app_contents(signed_app_path: Path, resource_names: tuple[str
             for resource_name in resource_names:
                 archive_name = f"{bundle_root}/{resource_name}"
                 matches = [entry for entry in ipa.infolist() if entry.filename == archive_name]
-                if len(matches) != 1 or matches[0].file_size > 2 * 1024 * 1024:
+                if len(matches) != 1:
                     raise ReleaseNoteError(
-                        f"the signed app is missing one bounded {resource_name} resource"
+                        f"the signed app is missing one {resource_name} resource"
                     )
                 resources[resource_name] = ipa.read(matches[0])
     except zipfile.BadZipFile as error:
@@ -553,7 +377,7 @@ def _validate_signed_candidate(signed_app_path: Path, build_number: int) -> tupl
     commit = os.environ.get("CI_COMMIT", "")
     run_id = os.environ.get("CI_BUILD_ID", "")
     scheme = os.environ.get("CI_XCODE_SCHEME", "")
-    configuration = os.environ.get("TUNER_RELEASE_CONFIGURATION", "Release")
+    configuration = "Release"
     if not re.fullmatch(r"[0-9a-f]{40}", commit) or not run_id or not scheme:
         raise ReleaseNoteError("Xcode Cloud candidate identity is incomplete during signed-export verification")
     repo = Path(os.environ.get("CI_PRIMARY_REPOSITORY_PATH", Path(__file__).resolve().parents[2])).resolve()
@@ -592,6 +416,8 @@ def _validate_signed_candidate(signed_app_path: Path, build_number: int) -> tupl
     try:
         import release_hook
 
+        git_ref = os.environ.get("CI_GIT_REF", "")
+        tag = os.environ.get("CI_TAG", "")
         release_hook.validate_signed_archive(
             report,
             note_data,
@@ -602,6 +428,9 @@ def _validate_signed_candidate(signed_app_path: Path, build_number: int) -> tupl
             expected_ci_run_id=run_id,
             expected_attempt=XCODE_CLOUD_ATTEMPT_NUMBER,
             expected_build_number=build_number,
+            expected_git_ref=git_ref,
+            expected_tag=tag,
+            repo=repo,
         )
         note = _note_from_data(note_data, expected_build=build_number)
     except release_hook.ReleaseHookError as error:
@@ -654,7 +483,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.signed_app_path is not None and args.require_archive_evidence:
             if args.action != "render":
                 parser.error("--signed-app-path is only valid for render")
-            note, _, _, _ = _validate_signed_candidate(args.signed_app_path, args.build_number)
+            note, _, _, gate_report = _validate_signed_candidate(args.signed_app_path, args.build_number)
         else:
             note = note_for_build(args.source, args.history, args.build_number)
             if args.signed_app_path is not None:
@@ -671,6 +500,25 @@ def main(argv: list[str] | None = None) -> int:
             raise ReleaseNoteError(f"release notes for build {args.build_number} are empty")
         if args.action == "render":
             args.output.parent.mkdir(parents=True, exist_ok=True)
+            if args.require_archive_evidence:
+                gate_outcome = {
+                    "schemaVersion": 1,
+                    "candidate": gate_report.get("candidateObject"),
+                    "candidateObjectSha256": gate_report.get("candidateObjectSha256"),
+                    "preArchiveGate": gate_report.get("preArchiveGate"),
+                    "finalArchiveGate": gate_report.get("finalArchiveGate"),
+                }
+                if not all(isinstance(gate_outcome[key], dict) for key in (
+                    "candidate", "preArchiveGate", "finalArchiveGate"
+                )) or not isinstance(gate_outcome["candidateObjectSha256"], str):
+                    raise ReleaseNoteError("signed archive has incomplete captured release-gate outcomes")
+                outcome_path = args.output.parent / "ReleaseGateOutcome.json"
+                outcome_temporary = outcome_path.with_name(outcome_path.name + ".tmp")
+                outcome_temporary.write_text(
+                    json.dumps(gate_outcome, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                os.replace(outcome_temporary, outcome_path)
             temporary = args.output.with_name(args.output.name + ".tmp")
             temporary.write_text(text, encoding="utf-8")
             os.replace(temporary, args.output)

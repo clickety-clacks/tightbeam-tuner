@@ -22,6 +22,35 @@ final class ReleaseCompatibilityTests: XCTestCase {
         let releaseId: Int
     }
 
+    private struct ReplySeed: Decodable {
+        let userId: String
+        let mainSessionKey: String
+        let replySessionKey: String
+        let parentSessionKey: String
+        let assistantSequence: Int
+        let initialReadMarker: Int
+    }
+
+    private struct ReplyChange: Decodable {
+        let ok: Bool
+        let correlatedReply: Bool
+        let previousSequence: Int
+        let assistantSequence: Int
+        let previousMarker: Int
+        let marker: Int
+    }
+
+    private struct CatchUpChange: Decodable {
+        let ok: Bool
+        let correlatedReply: Bool
+        let previousSequence: Int
+        let assistantSequence: Int
+        let previousMarker: Int
+        let marker: Int
+        let changedSessionMatched: Bool
+        let gatewayRestarted: Bool
+    }
+
     func testProductionRosterAndRepliesPathsAgainstPublishedRuntime() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let phase = environment["TUNER_COMPAT_PHASE"],
@@ -31,7 +60,6 @@ final class ReleaseCompatibilityTests: XCTestCase {
               let sshPort = Int(environment["TUNER_COMPAT_SSH_PORT"] ?? ""),
               let sshHostKey = environment["TUNER_COMPAT_SSH_HOST_KEY"],
               let sshUser = environment["TUNER_COMPAT_SSH_USER"],
-              let user = environment["TUNER_COMPAT_USER"],
               let cli = environment["TUNER_COMPAT_CLI"],
               let releaseData = environment["TUNER_COMPAT_RELEASES_JSON"]?.data(using: .utf8),
               let sourceData = environment["TUNER_COMPAT_PHASE_SOURCE_JSON"]?.data(using: .utf8),
@@ -64,6 +92,18 @@ final class ReleaseCompatibilityTests: XCTestCase {
             )
             XCTAssertEqual(runtime.releaseId, release.id)
 
+            let seed = try await fixturePost(
+                fixtureBase + "/seed-replies",
+                token: token,
+                body: ["releaseId": release.id],
+                as: ReplySeed.self
+            )
+            let user = seed.userId
+            XCTAssertFalse(user.isEmpty)
+            XCTAssertFalse(seed.replySessionKey.isEmpty)
+            XCTAssertFalse(seed.parentSessionKey.isEmpty)
+            XCTAssertGreaterThan(seed.assistantSequence, 0)
+
             let connection = Connection(
                 chatServer: "https://chat.invalid",
                 gateway: gateway,
@@ -82,14 +122,18 @@ final class ReleaseCompatibilityTests: XCTestCase {
             )
             XCTAssertTrue(authorized.ok)
 
-            let defaults = UserDefaults.standard
-            if phase == "baseline" {
-                // Isolate each published-runtime comparison while preserving
-                // the baseline state for the candidate's upgrade check.
-                defaults.removeObject(forKey: "repliedStateSnapshot.v1")
-                defaults.removeObject(forKey: "repliedLocalReadMarkers")
+            let storeSuite = "TunerCompatibilityStore-\(release.id)"
+            let repliesSuite = "TunerCompatibilityReplies-\(release.id)-\(phase)"
+            guard let storeDefaults = UserDefaults(suiteName: storeSuite),
+                  let repliesDefaults = UserDefaults(suiteName: repliesSuite) else {
+                XCTFail("The isolated compatibility defaults suite is unavailable.")
+                return
             }
-            let store = TunerStore(defaults: defaults)
+            if phase == "baseline" {
+                storeDefaults.removePersistentDomain(forName: storeSuite)
+            }
+            repliesDefaults.removePersistentDomain(forName: repliesSuite)
+            let store = TunerStore(defaults: storeDefaults)
             var savedConnectionLoaded = true
             var rosterIdentityPreserved = true
             if phase == "baseline" {
@@ -124,17 +168,39 @@ final class ReleaseCompatibilityTests: XCTestCase {
             }
 
             await store.refresh()
-            let mainID = "agent:\(user):main"
-            let main = store.agents.first { $0.id == mainID }
-            let rosterPassed = store.error == nil && main != nil && main?.parent == nil
-            if let main { store.select(main) }
+            let replySessionKey = seed.replySessionKey
+            let replyAgent = store.agents.first { $0.id == replySessionKey }
+            let rosterPassed = store.error == nil
+                && replyAgent?.parent == seed.parentSessionKey
+                && seed.parentSessionKey == seed.mainSessionKey
+                && store.agents.contains { $0.id == seed.parentSessionKey }
+            if let replyAgent { store.select(replyAgent) }
 
             let sequences = await RepliedAPI.fetchSequences(gateway: gateway, user: user)
-            let markersData = try? await fixtureGetData(RepliedAPI.markersURL(gateway: gateway, user: user, after: nil))
+            let sequenceEndpointAbsent: Bool
+            if sequences == nil {
+                sequenceEndpointAbsent = await self.sequenceEndpointReturnsNotFound(gateway: gateway, user: user)
+            } else {
+                sequenceEndpointAbsent = false
+            }
+            let markersData = try? await self.fixtureGetData(
+                RepliedAPI.markersURL(gateway: gateway, user: user, after: nil)
+            )
             let markers = markersData.flatMap { try? JSONDecoder().decode(RepliedMarkersPage.self, from: $0) }
-            let messages = await RepliedAPI.fetchMessages(gateway: gateway, sessionKey: mainID, limit: 500)
+            let messages = await RepliedAPI.fetchMessages(gateway: gateway, sessionKey: replySessionKey, limit: 500)
+            let expectedLatestReply = messages?
+                .filter { $0.sessionKey == replySessionKey && $0.role == "assistant" && $0.turnIncludesHuman }
+                .map(\.seq).max()
+            let sequenceSummaryValid: Bool
+            if sequenceEndpointAbsent {
+                sequenceSummaryValid = true
+            } else {
+                sequenceSummaryValid = self.sequenceSummaryMatches(
+                    sequences, messages: messages, sessionKey: replySessionKey
+                )
+            }
 
-            let feed = RepliedFeed(defaults: defaults)
+            let feed = RepliedFeed(defaults: repliesDefaults)
             feed.activateConnection(connection)
             await feed.loadSnapshot(
                 gateway: gateway,
@@ -144,20 +210,21 @@ final class ReleaseCompatibilityTests: XCTestCase {
                 recentSessionKeys: store.recentAgents.map(\.id),
                 mode: .initial
             )
-            let expectedLatestReply = messages?
-                .filter { $0.sessionKey == mainID && $0.role == "assistant" && $0.turnIncludesHuman }
-                .map(\.seq).max()
-            let initialClientStateMatched = feed.state.latestReplyBySession[mainID] == expectedLatestReply
-                && sequenceSummaryMatches(sequences, messages: messages, sessionKey: mainID)
-            let readMarkerClientStateMatched = readMarkersApplied(markers, state: feed.state, user: user)
-            let initialSyncPassed = sequences != nil && messages != nil && initialClientStateMatched
+            let initialClientStateMatched = expectedLatestReply != nil
+                && feed.state.latestReplyBySession[replySessionKey] == expectedLatestReply
+                && sequenceSummaryValid
+            let initialReadMarker = markers?.items.first {
+                $0.userId == user && $0.scopeKey == replySessionKey + ":session-read-position"
+            }
+            let readMarkerClientStateMatched = initialReadMarker != nil
+                && feed.state.readMarkerBySession[replySessionKey] == initialReadMarker
+                && initialReadMarker?.marker == seed.initialReadMarker
+            let initialSyncPassed = messages?.isEmpty == false
+                && expectedLatestReply != nil
+                && initialClientStateMatched
             let readMarkerSyncPassed = markers != nil && readMarkerClientStateMatched
 
-            var liveEventObserved = false
-            var liveSessionIdentityMatched = false
-            var liveParentRelationMatched = false
-            var reconnectCompleted = false
-            let newUser = "test" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            var reconnectRefreshCompleted = false
             let task = Task {
                 await feed.run(
                     connection: connection,
@@ -165,62 +232,74 @@ final class ReleaseCompatibilityTests: XCTestCase {
                     recentSessionKeys: { store.recentAgents.map(\.id) },
                     onRosterEvent: { frame in
                         store.applyRosterEvent(frame)
-                        if case .sessionSpawned(let agent) = frame,
-                           agent.id == "agent:\(newUser):main" {
-                            liveEventObserved = true
-                            liveSessionIdentityMatched = store.agents.contains { $0.id == agent.id }
-                            liveParentRelationMatched = agent.parent == nil
-                        }
                     },
                     onReconnect: {
-                        let reconnectSequences = await RepliedAPI.fetchSequences(gateway: gateway, user: user)
-                        let reconnectMarkersData = try? await fixtureGetData(
-                            RepliedAPI.markersURL(gateway: gateway, user: user, after: nil)
-                        )
-                        let reconnectMarkers = reconnectMarkersData.flatMap {
-                            try? JSONDecoder().decode(RepliedMarkersPage.self, from: $0)
-                        }
-                        let reconnectMessages = await RepliedAPI.fetchMessages(
-                            gateway: gateway, sessionKey: mainID, limit: 100
-                        )
-                        await feed.loadSnapshot(
-                            gateway: gateway,
-                            user: user,
-                            sessionKeys: store.agents.map(\.id),
-                            limit: 100,
-                            recentSessionKeys: store.recentAgents.map(\.id),
-                            mode: .reconnect
-                        )
-                        let reconnectExpectedLatestReply = reconnectMessages?
-                            .filter { $0.sessionKey == mainID && $0.role == "assistant" && $0.turnIncludesHuman }
-                            .map(\.seq).max()
-                        let reconnectClientStateMatched =
-                            feed.state.latestReplyBySession[mainID] == reconnectExpectedLatestReply
-                            && sequenceSummaryMatches(
-                                reconnectSequences, messages: reconnectMessages, sessionKey: mainID
-                            )
-                            && readMarkersApplied(reconnectMarkers, state: feed.state, user: user)
-                        reconnectCompleted = reconnectSequences != nil
-                            && reconnectMarkers != nil
-                            && reconnectMessages != nil
-                            && reconnectClientStateMatched
+                        await store.refresh()
+                        reconnectRefreshCompleted = true
                     }
                 )
             }
 
-            try await Task.sleep(for: .milliseconds(750))
-            let seeded = try await fixturePost(
-                fixtureBase + "/add-user",
+            let initialSubscriptionReady = await self.waitUntil(timeout: 30) {
+                feed.subscriptionReadyCount >= 1 && feed.snapshotCompletedCount >= 1
+            }
+            XCTAssertTrue(initialSubscriptionReady)
+            let initialSnapshotCount = feed.snapshotCompletedCount
+            let liveChange = try await fixturePost(
+                fixtureBase + "/post-reply",
                 token: token,
-                body: ["user": newUser]
+                body: [
+                    "releaseId": release.id,
+                    "sessionKey": replySessionKey,
+                    "stage": "live",
+                ],
+                as: ReplyChange.self
             )
-            let liveObserved = await waitUntil(timeout: 20) { liveEventObserved }
-            let restart = try await fixturePost(
-                fixtureBase + "/restart-gateway",
+            XCTAssertTrue(liveChange.ok)
+            XCTAssertTrue(liveChange.correlatedReply)
+            XCTAssertEqual(liveChange.previousSequence, seed.assistantSequence)
+            XCTAssertEqual(liveChange.previousMarker, seed.initialReadMarker)
+            XCTAssertGreaterThan(liveChange.assistantSequence, liveChange.previousSequence)
+            XCTAssertGreaterThan(liveChange.marker, liveChange.previousMarker)
+            let liveEventObserved = await self.waitUntil(timeout: 90) {
+                feed.state.latestReplyBySession[replySessionKey] == liveChange.assistantSequence
+                    && feed.state.readMarkerBySession[replySessionKey]?.marker == liveChange.marker
+                    && feed.messageCreatedSequenceBySession[replySessionKey] == liveChange.assistantSequence
+                    && feed.readMarkerEventBySession[replySessionKey] == liveChange.marker
+            }
+            let liveStateMatched = liveEventObserved
+                && feed.state.latestReplyBySession[replySessionKey] == liveChange.assistantSequence
+                && feed.state.readMarkerBySession[replySessionKey]?.marker == liveChange.marker
+                && feed.snapshotCompletedCount == initialSnapshotCount
+            let priorReadyCount = feed.subscriptionReadyCount
+            let priorSnapshotCount = feed.snapshotCompletedCount
+            let catchup = try await self.fixturePost(
+                fixtureBase + "/catch-up",
                 token: token,
-                body: [:]
+                body: [
+                    "releaseId": release.id,
+                    "sessionKey": replySessionKey,
+                ],
+                as: CatchUpChange.self
             )
-            let reconnected = await waitUntil(timeout: 30) { reconnectCompleted }
+            XCTAssertTrue(catchup.ok)
+            XCTAssertTrue(catchup.correlatedReply)
+            XCTAssertTrue(catchup.changedSessionMatched)
+            XCTAssertTrue(catchup.gatewayRestarted)
+            XCTAssertEqual(catchup.previousSequence, liveChange.assistantSequence)
+            XCTAssertEqual(catchup.previousMarker, liveChange.marker)
+            XCTAssertGreaterThan(catchup.assistantSequence, catchup.previousSequence)
+            XCTAssertGreaterThan(catchup.marker, catchup.previousMarker)
+            let reconnectCompleted = await self.waitUntil(timeout: 90) {
+                feed.subscriptionReadyCount > priorReadyCount
+                    && feed.snapshotCompletedCount > priorSnapshotCount
+                    && reconnectRefreshCompleted
+                    && feed.state.latestReplyBySession[replySessionKey] == catchup.assistantSequence
+                    && feed.state.readMarkerBySession[replySessionKey]?.marker == catchup.marker
+            }
+            let catchupStateMatched = reconnectCompleted
+                && feed.state.latestReplyBySession[replySessionKey] == catchup.assistantSequence
+                && feed.state.readMarkerBySession[replySessionKey]?.marker == catchup.marker
             task.cancel()
             try? await Task.sleep(for: .milliseconds(150))
 
@@ -229,8 +308,9 @@ final class ReleaseCompatibilityTests: XCTestCase {
                     "status": rosterPassed ? "passed" : "failed",
                     "implementation": "production-client",
                     "observed": [
-                        "sessionIdentity": main == nil ? "missing" : "matched",
-                        "parentRelation": main?.parent == nil && main != nil ? "matched" : "mismatched",
+                        "sessionIdentity": replyAgent == nil ? "missing" : "matched",
+                        "parentRelation": replyAgent?.parent == seed.parentSessionKey && store.agents.contains { $0.id == seed.parentSessionKey }
+                            ? "matched" : "mismatched",
                         "sessionCount": store.agents.count,
                     ],
                 ],
@@ -238,11 +318,15 @@ final class ReleaseCompatibilityTests: XCTestCase {
                     "status": initialSyncPassed ? "passed" : "failed",
                     "implementation": "production-client",
                     "observed": [
+                        "sequenceSummaryRoute": sequenceEndpointAbsent ? "not-supported" : "available",
                         "sequenceSummaryDecoded": sequences != nil,
+                        "sequenceSummaryValid": sequenceSummaryValid,
                         "messagePageDecoded": messages != nil,
                         "clientStateMatched": initialClientStateMatched,
+                        "turnIncludesHuman": expectedLatestReply != nil,
                         "sessionCount": store.agents.count,
                         "messageCount": messages?.count ?? 0,
+                        "latestReplySequence": expectedLatestReply as Any? ?? NSNull(),
                     ],
                 ],
                 "read_marker_sync": [
@@ -252,27 +336,42 @@ final class ReleaseCompatibilityTests: XCTestCase {
                         "pageDecoded": markers != nil,
                         "clientStateMatched": readMarkerClientStateMatched,
                         "markerCount": markers?.items.count ?? 0,
+                        "replySessionMarkerPresent": initialReadMarker != nil,
                     ],
                 ],
                 "catch_up": [
-                    "status": reconnected && restart.ok ? "passed" : "failed",
+                    "status": catchupStateMatched ? "passed" : "failed",
                     "implementation": "production-client",
                     "observed": [
-                        "gatewayRestarted": restart.ok,
-                        "reconnected": reconnected,
+                        "gatewayRestarted": catchup.gatewayRestarted,
+                        "reconnected": reconnectRefreshCompleted,
+                        "subscriptionReadyCount": feed.subscriptionReadyCount,
+                        "snapshotCompletedCount": feed.snapshotCompletedCount,
                         "snapshotReadCompleted": reconnectCompleted,
-                        "clientStateMatched": reconnectCompleted,
+                        "clientStateMatched": catchupStateMatched,
+                        "changeEventClass": "message.created",
+                        "correlatedReply": catchup.correlatedReply,
+                        "changedSessionMatched": catchup.changedSessionMatched,
+                        "previousSequence": catchup.previousSequence,
+                        "changedSequence": catchup.assistantSequence,
+                        "previousMarker": catchup.previousMarker,
+                        "changedMarker": catchup.marker,
                     ],
                 ],
                 "live_subscription": [
-                    "status": seeded.ok && liveObserved && liveSessionIdentityMatched && liveParentRelationMatched
+                    "status": liveChange.ok && liveChange.correlatedReply && liveStateMatched
                         ? "passed" : "failed",
                     "implementation": "production-client",
                     "observed": [
-                        "eventClass": liveObserved ? "session.spawned" : "not-observed",
-                        "observedByClient": liveObserved,
-                        "sessionIdentity": liveSessionIdentityMatched ? "matched" : "missing",
-                        "parentRelation": liveParentRelationMatched ? "matched" : "mismatched",
+                        "eventClass": liveEventObserved ? "message.created" : "not-observed",
+                        "observedByClient": liveEventObserved,
+                        "sessionIdentity": liveStateMatched ? "matched" : "missing",
+                        "stateMatched": liveStateMatched,
+                        "correlatedReply": liveChange.correlatedReply,
+                        "previousReplySequence": liveChange.previousSequence,
+                        "replySequence": liveChange.assistantSequence,
+                        "previousMarker": liveChange.previousMarker,
+                        "marker": liveChange.marker,
                     ],
                 ],
             ]
@@ -377,20 +476,14 @@ final class ReleaseCompatibilityTests: XCTestCase {
         guard let sequences, let messages else { return false }
         let latestMessage = messages.filter { $0.sessionKey == sessionKey }.map(\.seq).max() ?? 0
         let latestSummary = sequences.first(where: { $0.sessionKey == sessionKey })?.latestMessageSeq ?? 0
-        return latestSummary >= latestMessage
+        return latestMessage > 0 && latestSummary >= latestMessage
     }
 
-    private func readMarkersApplied(
-        _ page: RepliedMarkersPage?,
-        state: RepliedState,
-        user: String
-    ) -> Bool {
-        guard let page else { return false }
-        let suffix = ":session-read-position"
-        for marker in page.items where marker.userId == user && marker.scopeKey.hasSuffix(suffix) {
-            let sessionKey = String(marker.scopeKey.dropLast(suffix.count))
-            guard state.readMarkerBySession[sessionKey] == marker else { return false }
-        }
-        return true
+    private func sequenceEndpointReturnsNotFound(gateway: String, user: String) async -> Bool {
+        guard let url = RepliedAPI.sequencesURL(gateway: gateway, user: user),
+              let (_, response) = try? await URLSession.shared.data(from: url),
+              let http = response as? HTTPURLResponse else { return false }
+        return http.statusCode == 404
     }
+
 }

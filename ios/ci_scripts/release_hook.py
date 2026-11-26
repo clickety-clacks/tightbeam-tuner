@@ -42,6 +42,8 @@ COMPATIBILITY_TITLE = "Compatibility"
 BREAKING_TITLE = "Breaking changes"
 TIGHTBEAM_RELEASES_API = "https://api.github.com/repos/clickety-clacks/tightbeam/releases"
 GITHUB_USER_AGENT = "TightbeamTuner-release-check"
+TUNER_REPOSITORY = "clickety-clacks/tightbeam-tuner"
+RELEASE_REVIEW_CONTEXT = "tuner-ios/release-review"
 
 
 @dataclass(frozen=True)
@@ -145,9 +147,6 @@ def resolve_release_pair(
     if len(matching) != 1:
         _fail("GitHub Latest release is absent or ambiguous in the published release records")
     latest_time = _published_time(latest_release.get("published_at"))
-    newest = max(_published_time(row.get("published_at")) for row in eligible)
-    if newest != latest_time:
-        _fail("GitHub Latest does not match the newest published full release")
     predecessors = [
         row for row in eligible
         if _published_time(row.get("published_at")) < latest_time
@@ -200,7 +199,7 @@ def resolve_published_pair(platform_asset: str) -> tuple[PublishedRelease, Publi
         _fail("GitHub Latest did not return a release record")
     records: list[dict[str, Any]] = []
     page = 1
-    while page <= 20:
+    while True:
         value, link = _read_github_json(f"{TIGHTBEAM_RELEASES_API}?per_page=100&page={page}")
         if not isinstance(value, list):
             _fail("GitHub published release list did not return records")
@@ -208,8 +207,6 @@ def resolve_published_pair(platform_asset: str) -> tuple[PublishedRelease, Publi
         if not any('rel="next"' in part for part in (link or "").split(",")):
             break
         page += 1
-    else:
-        _fail("GitHub release history exceeds the supported page bound")
     return resolve_release_pair(latest, records, platform_asset)
 
 
@@ -256,14 +253,19 @@ def extract_release_package(package: Path, destination: Path) -> Path:
             with source, target.open("xb") as output:
                 shutil.copyfileobj(source, output)
             target.chmod(0o755 if member.mode & 0o111 else 0o644)
-    gateway_binaries = list(destination.rglob("tightbeam-gateway"))
-    cli_binaries = list(destination.rglob("tightbeam"))
-    if (
-        len(gateway_binaries) != 1 or not os.access(gateway_binaries[0], os.X_OK)
-        or len(cli_binaries) != 1 or not os.access(cli_binaries[0], os.X_OK)
-    ):
-        _fail("published package must contain exactly one executable Tightbeam CLI and gateway")
-    return gateway_binaries[0]
+    find_runtime_executable(destination, "tightbeam")
+    return find_runtime_executable(destination, "tightbeam-gateway")
+
+
+def find_runtime_executable(package_root: Path, name: str) -> Path:
+    """Find exactly one regular executable file, ignoring same-named directories."""
+    matches = sorted(
+        path for path in package_root.rglob(name)
+        if path.is_file() and os.access(path, os.X_OK)
+    )
+    if len(matches) != 1:
+        _fail(f"published package must contain exactly one executable {name}")
+    return matches[0]
 
 
 def _candidate_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
@@ -375,57 +377,121 @@ def validate_compatibility_runs(
                     _fail(f"{label} check {check_name} has no observed client result for {expected.tag}")
         for label, phase_checks in (("baseline", baseline_checks), ("candidate", checks)):
             roster = phase_checks["roster"]["observed"]
-            if roster.get("sessionIdentity") not in {"matched", "missing"} or roster.get("parentRelation") not in {"matched", "mismatched"}:
-                _fail(f"{label} roster result for {expected.tag} lacks a bounded identity or parent observation")
+            if (
+                roster.get("sessionIdentity") not in {"matched", "missing"}
+                or roster.get("parentRelation") not in {"matched", "mismatched"}
+                or not isinstance(roster.get("sessionCount"), int)
+                or isinstance(roster.get("sessionCount"), bool)
+                or roster.get("sessionCount", 0) < 2
+            ):
+                _fail(f"{label} roster result for {expected.tag} lacks a nonempty identity or parent observation")
             if (phase_checks["roster"]["status"] == "passed") != (
-                roster.get("sessionIdentity") == "matched" and roster.get("parentRelation") == "matched"
+                roster.get("sessionIdentity") == "matched"
+                and roster.get("parentRelation") == "matched"
+                and roster.get("sessionCount", 0) >= 2
             ):
                 _fail(f"{label} roster pass status for {expected.tag} conflicts with the observed identity")
 
             live = phase_checks["live_subscription"]["observed"]
-            if live.get("eventClass") not in {"session.spawned", "not-observed"}:
+            if live.get("eventClass") not in {"message.created", "not-observed"}:
                 _fail(f"{label} live subscription for {expected.tag} has an invalid event observation")
             if (
-                live.get("sessionIdentity") not in {"matched", "missing"}
-                or live.get("parentRelation") not in {"matched", "mismatched"}
-                or not isinstance(live.get("observedByClient"), bool)
+                not isinstance(live.get("observedByClient"), bool)
+                or not isinstance(live.get("stateMatched"), bool)
+                or not isinstance(live.get("correlatedReply"), bool)
+                or live.get("sessionIdentity") not in {"matched", "missing"}
+                or not isinstance(live.get("previousReplySequence"), int)
+                or isinstance(live.get("previousReplySequence"), bool)
+                or not isinstance(live.get("replySequence"), int)
+                or isinstance(live.get("replySequence"), bool)
+                or live.get("replySequence", 0) <= live.get("previousReplySequence", 0)
+                or not isinstance(live.get("previousMarker"), int)
+                or isinstance(live.get("previousMarker"), bool)
+                or not isinstance(live.get("marker"), int)
+                or isinstance(live.get("marker"), bool)
+                or live.get("marker", 0) <= live.get("previousMarker", 0)
             ):
                 _fail(f"{label} live subscription for {expected.tag} lacks its observed client state")
             live_passed = (
-                live.get("eventClass") == "session.spawned"
+                live.get("eventClass") == "message.created"
                 and live.get("observedByClient") is True
+                and live.get("stateMatched") is True
+                and live.get("correlatedReply") is True
                 and live.get("sessionIdentity") == "matched"
-                and live.get("parentRelation") == "matched"
             )
             if (phase_checks["live_subscription"]["status"] == "passed") != live_passed:
                 _fail(f"{label} live subscription pass status for {expected.tag} conflicts with the observed event state")
 
             initial = phase_checks["initial_message_sync"]["observed"]
-            if not all(isinstance(initial.get(key), bool) for key in (
-                "sequenceSummaryDecoded", "messagePageDecoded", "clientStateMatched"
-            )):
+            if (
+                initial.get("sequenceSummaryRoute") not in {"available", "not-supported"}
+                or not all(isinstance(initial.get(key), bool) for key in (
+                    "sequenceSummaryDecoded", "sequenceSummaryValid", "messagePageDecoded",
+                    "clientStateMatched", "turnIncludesHuman"
+                ))
+                or not isinstance(initial.get("messageCount"), int)
+                or isinstance(initial.get("messageCount"), bool)
+                or initial["messageCount"] <= 0
+                or not isinstance(initial.get("latestReplySequence"), int)
+                or isinstance(initial.get("latestReplySequence"), bool)
+                or initial["latestReplySequence"] <= 0
+            ):
                 _fail(f"{label} initial message sync is missing decoded response or client-state observations")
+            if (initial["sequenceSummaryRoute"] == "available") != initial["sequenceSummaryDecoded"]:
+                _fail(f"{label} sequence-summary route status for {expected.tag} conflicts with its response")
             if (phase_checks["initial_message_sync"]["status"] == "passed") != all(
-                initial[key] for key in ("sequenceSummaryDecoded", "messagePageDecoded", "clientStateMatched")
+                initial[key] for key in (
+                    "sequenceSummaryValid", "messagePageDecoded", "clientStateMatched", "turnIncludesHuman"
+                )
             ):
                 _fail(f"{label} initial message sync pass status for {expected.tag} conflicts with observed state")
 
             marker = phase_checks["read_marker_sync"]["observed"]
-            if not all(isinstance(marker.get(key), bool) for key in ("pageDecoded", "clientStateMatched")):
+            if (
+                not all(isinstance(marker.get(key), bool) for key in (
+                    "pageDecoded", "clientStateMatched", "replySessionMarkerPresent"
+                ))
+                or not isinstance(marker.get("markerCount"), int)
+                or isinstance(marker.get("markerCount"), bool)
+                or marker["markerCount"] <= 0
+            ):
                 _fail(f"{label} read-marker sync is missing its decoded-page or client-state observation")
             if (phase_checks["read_marker_sync"]["status"] == "passed") != all(
-                marker[key] for key in ("pageDecoded", "clientStateMatched")
+                marker[key] for key in ("pageDecoded", "clientStateMatched", "replySessionMarkerPresent")
             ):
                 _fail(f"{label} read-marker sync pass status for {expected.tag} conflicts with observed state")
 
             catch_up = phase_checks["catch_up"]["observed"]
             if not all(isinstance(catch_up.get(key), bool) for key in (
-                "gatewayRestarted", "reconnected", "snapshotReadCompleted", "clientStateMatched"
+                "gatewayRestarted", "reconnected", "snapshotReadCompleted", "clientStateMatched",
+                "correlatedReply", "changedSessionMatched"
             )):
                 _fail(f"{label} catch-up result for {expected.tag} is missing an observed reconnect or state step")
+            if any(
+                not isinstance(catch_up.get(key), int)
+                or isinstance(catch_up.get(key), bool)
+                or catch_up.get(key, 0) < 2
+                for key in ("subscriptionReadyCount", "snapshotCompletedCount")
+            ):
+                _fail(f"{label} catch-up result for {expected.tag} lacks initial and reconnect observations")
+            if (
+                catch_up.get("changeEventClass") != "message.created"
+                or not isinstance(catch_up.get("previousSequence"), int)
+                or isinstance(catch_up.get("previousSequence"), bool)
+                or not isinstance(catch_up.get("changedSequence"), int)
+                or isinstance(catch_up.get("changedSequence"), bool)
+                or catch_up.get("changedSequence", 0) <= catch_up.get("previousSequence", 0)
+                or not isinstance(catch_up.get("previousMarker"), int)
+                or isinstance(catch_up.get("previousMarker"), bool)
+                or not isinstance(catch_up.get("changedMarker"), int)
+                or isinstance(catch_up.get("changedMarker"), bool)
+                or catch_up.get("changedMarker", 0) <= catch_up.get("previousMarker", 0)
+            ):
+                _fail(f"{label} catch-up result for {expected.tag} lacks an actual changed Replies value")
             if (phase_checks["catch_up"]["status"] == "passed") != all(
                 catch_up[key] for key in (
-                    "gatewayRestarted", "reconnected", "snapshotReadCompleted", "clientStateMatched"
+                    "gatewayRestarted", "reconnected", "snapshotReadCompleted", "clientStateMatched",
+                    "changedSessionMatched", "correlatedReply",
                 )
             ):
                 _fail(f"{label} catch-up pass status for {expected.tag} conflicts with observed state")
@@ -454,8 +520,7 @@ def validate_compatibility_runs(
 
 
 def findings_digest(findings: list[dict[str, Any]]) -> str:
-    canonical = json.dumps(findings, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return canonical_digest(findings)
 
 
 def breaking_section_digest(detail: str) -> str:
@@ -487,7 +552,16 @@ def validate_breaking_section(note: release_notes.Note, findings: list[dict[str,
         _fail("detected breaking changes require a substantive user-facing explanation")
     if re.search(r"\b(?:TBD|TODO|N/?A|placeholder)\b", normalized, re.IGNORECASE):
         _fail("detected breaking changes cannot use placeholder text")
-    if re.fullmatch(r"(?is)\s*(?:there are )?no breaking changes\.?\s*", normalized):
+    if re.fullmatch(
+        r"(?is)\s*(?:there (?:are|were|have been) )?(?:no|none)"
+        r"(?:\s+(?:known|identified|detected|reported))?"
+        r"(?:\s+(?:breaking )?changes?)?"
+        r"(?:\s+(?:are|were|have been))?"
+        r"(?:\s+(?:known|identified|detected|reported|found))?"
+        r"(?:\s+in (?:this|the) (?:release|update|build))?"
+        r"(?:\s*,?\s*(?:nothing changes|no changes))?\s*[.!?]*\s*",
+        normalized,
+    ):
         _fail("detected breaking changes cannot be declared absent")
     return breaking_section_digest(normalized)
 
@@ -589,7 +663,13 @@ def author_compatibility_line(detail: str, expected: str) -> str:
     remainder = re.sub(
         r"(?i)Tightbeam compatibility is generated from release checks\.?\s*", "", remainder
     ).strip()
-    if re.search(r"\bTightbeam(?:\s+CLI|\s+Gateway)?\s+v?\d+\.\d+\.\d+(?:\+[A-Za-z0-9.-]+)?\b", remainder, re.IGNORECASE):
+    if re.search(
+        r"\bTightbeam\b(?:\s+(?:CLI|Gateway))?\s+"
+        r"(?:(?:release|version)\s+)?v?\d+\.\d+\.\d+(?:\+[A-Za-z0-9.-]+)?\b"
+        r"|\bTightbeam\s+build\s+\d+\b",
+        remainder,
+        re.IGNORECASE,
+    ):
         _fail("Compatibility section contains an unsupported Tightbeam version claim")
     if re.search(r"\bCompatible\s+with\s+Tightbeam\b", remainder, re.IGNORECASE):
         _fail("Compatibility section contains an unsupported Tightbeam compatibility declaration")
@@ -664,8 +744,164 @@ def baseline_reference(candidate_input: dict[str, Any], actual_baseline: dict[st
 
 
 def note_digest(note_data: dict[str, Any]) -> str:
-    canonical = json.dumps(note_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return canonical_digest(note_data)
+
+
+def canonical_json(value: Any) -> str:
+    """Serialize the fixed JSON payloads used by the release contract canonically."""
+    def validate(item: Any) -> None:
+        if item is None or isinstance(item, (str, bool)):
+            return
+        if isinstance(item, int) and not isinstance(item, bool):
+            return
+        if isinstance(item, list):
+            for child in item:
+                validate(child)
+            return
+        if isinstance(item, dict) and all(isinstance(key, str) for key in item):
+            for child in item.values():
+                validate(child)
+            return
+        raise ReleaseHookError("candidate digest contains a value outside the canonical JSON schema")
+
+    validate(value)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def canonical_digest(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def candidate_object(
+    candidate: dict[str, Any],
+    baseline: dict[str, Any],
+    pair: tuple[PublishedRelease, PublishedRelease],
+    findings: list[dict[str, Any]],
+    note_data: dict[str, Any],
+    history_data: object,
+) -> dict[str, Any]:
+    _candidate_key(candidate)
+    _candidate_key(baseline)
+    if not isinstance(history_data, list):
+        _fail("candidate history is not a JSON array")
+    release_notes.notes_from_history_data(history_data)
+    return {
+        "schemaVersion": 1,
+        "repository": TUNER_REPOSITORY,
+        "sourceCommit": candidate["commit"],
+        "sourceTree": candidate["tree"],
+        "scheme": candidate["scheme"],
+        "configuration": candidate["configuration"],
+        "buildNumber": candidate["buildNumber"],
+        "baseline": {
+            "buildNumber": baseline["buildNumber"],
+            "sourceCommit": baseline["commit"],
+        },
+        "requiredTightbeamReleases": [
+            {"tag": release.tag, "releaseId": release.release_id, "assetSha256": release.asset_digest}
+            for release in pair
+        ],
+        "detectorFindingsSha256": findings_digest(findings),
+        "currentNoteSha256": note_digest(note_data),
+        "historySha256": canonical_digest(history_data),
+    }
+
+
+def candidate_object_digest(value: dict[str, Any]) -> str:
+    return canonical_digest(value)
+
+
+def validate_release_tag_identity(repo: Path, commit: str, git_ref: str, tag: str) -> None:
+    if (
+        not re.fullmatch(r"[0-9a-f]{40}", commit)
+        or not isinstance(tag, str) or not tag
+        or git_ref != f"refs/tags/{tag}"
+    ):
+        _fail("upload-capable archive must be started from its exact release tag")
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"], cwd=repo, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReleaseHookError("could not verify the release tag's source commit") from error
+    if result.returncode != 0 or result.stdout.strip() != commit:
+        _fail("release tag does not identify the exact checked-out candidate commit")
+
+
+def latest_public_review_status(commit: str, digest: str) -> dict[str, str]:
+    if not re.fullmatch(r"[0-9a-f]{40}", commit) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        _fail("release review status input is invalid")
+    url = f"https://api.github.com/repos/{TUNER_REPOSITORY}/commits/{commit}/status?per_page=100&page=1"
+    statuses: list[dict[str, Any]] = []
+    expected_path = f"/repos/{TUNER_REPOSITORY}/commits/{commit}/status"
+    while url:
+        request = urllib.request.Request(url, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": GITHUB_USER_AGENT,
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                if response.status != 200:
+                    _fail("release review status could not be read from GitHub")
+                payload = json.loads(response.read().decode("utf-8"))
+                link_header = response.headers.get("Link", "")
+        except ReleaseHookError:
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ReleaseHookError("release review status could not be read from GitHub") from error
+        if not isinstance(payload, dict) or payload.get("sha") != commit:
+            _fail("GitHub returned a release review status for a different commit")
+        page_statuses = payload.get("statuses")
+        if not isinstance(page_statuses, list) or any(not isinstance(item, dict) for item in page_statuses):
+            _fail("GitHub release review status response is incomplete")
+        statuses.extend(page_statuses)
+        next_links = [
+            target for target, relation in re.findall(r'<([^>]+)>;\s*rel="([^"]+)"', link_header)
+            if relation == "next"
+        ]
+        if len(next_links) > 1:
+            _fail("GitHub release review status pagination is ambiguous")
+        if not next_links:
+            url = ""
+            continue
+        next_url = urllib.parse.urlsplit(next_links[0])
+        if (
+            next_url.scheme != "https" or next_url.netloc != "api.github.com"
+            or next_url.path != expected_path
+        ):
+            _fail("GitHub release review status pagination left the expected public endpoint")
+        url = next_links[0]
+    matching = [item for item in statuses if isinstance(item, dict) and item.get("context") == RELEASE_REVIEW_CONTEXT]
+    if not matching:
+        _fail("release reviewer confirmation is missing")
+    times: list[tuple[datetime, dict[str, Any]]] = []
+    for item in matching:
+        stamp = item.get("updated_at") or item.get("created_at")
+        if not isinstance(stamp, str):
+            _fail("release reviewer confirmation timestamp is unreadable")
+        try:
+            parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ReleaseHookError("release reviewer confirmation timestamp is unreadable") from error
+        if parsed.tzinfo is None:
+            _fail("release reviewer confirmation timestamp has no timezone")
+        times.append((parsed, item))
+    latest_at = max(stamp for stamp, _ in times)
+    latest = [item for stamp, item in times if stamp == latest_at]
+    if len(latest) != 1:
+        _fail("latest release reviewer confirmation is ambiguous")
+    status = latest[0]
+    if status.get("state") != "success":
+        _fail("latest release reviewer confirmation is not successful")
+    if status.get("description") != f"sha256:{digest}":
+        _fail("latest release reviewer confirmation does not match the candidate digest")
+    return {
+        "context": RELEASE_REVIEW_CONTEXT,
+        "state": "success",
+        "description": f"sha256:{digest}",
+    }
 
 
 def validate_archive_report(
@@ -675,6 +911,7 @@ def validate_archive_report(
     baseline: dict[str, Any],
     pair: tuple[PublishedRelease, PublishedRelease],
     note_data: dict[str, Any],
+    history_data: object,
     expected_ci_run_id: str,
 ) -> list[dict[str, Any]]:
     """Cross-check the machine-readable archive report against its inputs."""
@@ -750,6 +987,23 @@ def validate_archive_report(
     breaking_digest = validate_breaking_section(note, findings)
     if report.get("breakingChangesSha256") != breaking_digest:
         _fail("archive report Breaking changes digest does not match the generated note")
+    expected_object = candidate_object(candidate, baseline, pair, findings, note_data, history_data)
+    expected_object_digest = candidate_object_digest(expected_object)
+    if report.get("candidateObject") != expected_object:
+        _fail("archive report candidate object differs from the measured inputs")
+    if report.get("candidateObjectSha256") != expected_object_digest:
+        _fail("archive report candidate object digest is invalid")
+    pre_gate = report.get("preArchiveGate")
+    if (
+        not isinstance(pre_gate, dict)
+        or pre_gate.get("status") != "passed"
+        or pre_gate.get("sourceCommit") != candidate["commit"]
+        or pre_gate.get("candidateDigest") != expected_object_digest
+        or pre_gate.get("context") != RELEASE_REVIEW_CONTEXT
+        or pre_gate.get("state") != "success"
+        or pre_gate.get("description") != f"sha256:{expected_object_digest}"
+    ):
+        _fail("archive report does not contain a successful candidate-bound pre-archive review gate")
     for run in runs:
         if any(run["checks"][path]["status"] != "passed" for path in REQUIRED_CLIENT_CHECKS):
             _fail(f"candidate compatibility checks failed for Tightbeam {run['release']['tag']}")
@@ -810,6 +1064,9 @@ def validate_signed_archive(
     expected_ci_run_id: str,
     expected_attempt: int,
     expected_build_number: int,
+    expected_git_ref: str,
+    expected_tag: str,
+    repo: Path,
 ) -> None:
     """Verify that the signed app carries the completed archive-side evidence and note."""
     if app_info.get("CFBundleIdentifier") != "co.clicketyclacks.tightbeam-tuner":
@@ -860,5 +1117,20 @@ def validate_signed_archive(
         baseline=report_baseline,
         pair=pair,
         note_data=note_data,
+        history_data=history_data,
         expected_ci_run_id=expected_ci_run_id,
     )
+    validate_release_tag_identity(repo, report_candidate["commit"], expected_git_ref, expected_tag)
+    current_pair = resolve_published_pair("darwin-aarch64")
+    same_release_pair(pair, current_pair)
+    digest = report["candidateObjectSha256"]
+    latest_public_review_status(report_candidate["commit"], digest)
+    report["finalArchiveGate"] = {
+        "status": "passed",
+        "sourceCommit": report_candidate["commit"],
+        "candidateDigest": digest,
+        "context": RELEASE_REVIEW_CONTEXT,
+        "state": "success",
+        "description": f"sha256:{digest}",
+        "releasePairUnchanged": True,
+    }

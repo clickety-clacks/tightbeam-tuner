@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import getpass
+import base64
 import hashlib
 import http.server
 import json
@@ -13,12 +14,14 @@ import secrets
 import shlex
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -32,6 +35,122 @@ import release_notes
 
 class MatrixError(RuntimeError):
     pass
+
+
+class _WebSocket:
+    """Small RFC 6455 text client for the published runtime's supported /ws API."""
+
+    def __init__(self, gateway_url: str, path: str = "/ws") -> None:
+        endpoint = urllib.parse.urlsplit(gateway_url)
+        if endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or endpoint.port is None:
+            raise MatrixError("compatibility fixture WebSocket must use the loopback gateway")
+        self.socket = socket.create_connection((endpoint.hostname, endpoint.port), timeout=15)
+        self.socket.settimeout(15)
+        self.buffer = bytearray()
+        nonce = base64.b64encode(os.urandom(16)).decode("ascii")
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {endpoint.hostname}:{endpoint.port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {nonce}\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        self.socket.sendall(request.encode("ascii"))
+        header = bytearray()
+        while not header.endswith(b"\r\n\r\n"):
+            byte = self.socket.recv(1)
+            if not byte:
+                self.close()
+                raise MatrixError("published Tightbeam WebSocket closed during handshake")
+            header.extend(byte)
+            if len(header) > 16384:
+                self.close()
+                raise MatrixError("published Tightbeam WebSocket handshake was oversized")
+        lines = header.decode("latin-1").split("\r\n")
+        if not lines or " 101 " not in lines[0]:
+            self.close()
+            raise MatrixError("published Tightbeam WebSocket rejected the supported client handshake")
+        values = {}
+        for line in lines[1:]:
+            if ":" in line:
+                key, value = line.split(":", 1)
+                values[key.strip().casefold()] = value.strip()
+        expected = base64.b64encode(
+            hashlib.sha1((nonce + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+        ).decode("ascii")
+        if values.get("sec-websocket-accept") != expected:
+            self.close()
+            raise MatrixError("published Tightbeam WebSocket returned an invalid handshake")
+
+    def _read_exact(self, length: int) -> bytes:
+        while len(self.buffer) < length:
+            block = self.socket.recv(max(4096, length - len(self.buffer)))
+            if not block:
+                raise MatrixError("published Tightbeam WebSocket closed before its expected frame")
+            self.buffer.extend(block)
+        result = bytes(self.buffer[:length])
+        del self.buffer[:length]
+        return result
+
+    def send_json(self, value: dict[str, Any]) -> None:
+        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        mask = os.urandom(4)
+        length = len(payload)
+        if length < 126:
+            header = bytes([0x81, 0x80 | length])
+        elif length < 65536:
+            header = bytes([0x81, 0x80 | 126]) + struct.pack("!H", length)
+        else:
+            header = bytes([0x81, 0x80 | 127]) + struct.pack("!Q", length)
+        masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        self.socket.sendall(header + mask + masked)
+
+    def receive_json(self, timeout: float = 15) -> dict[str, Any] | None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.socket.settimeout(max(0.1, deadline - time.monotonic()))
+            first, second = self._read_exact(2)
+            opcode = first & 0x0F
+            length = second & 0x7F
+            if length == 126:
+                length = struct.unpack("!H", self._read_exact(2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", self._read_exact(8))[0]
+            mask = self._read_exact(4) if second & 0x80 else None
+            payload = self._read_exact(length)
+            if mask is not None:
+                payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+            if opcode == 0x8:
+                return None
+            if opcode == 0x9:
+                self._send_control(0xA, payload)
+                continue
+            if opcode != 0x1:
+                continue
+            try:
+                value = json.loads(payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                raise MatrixError("published Tightbeam WebSocket returned invalid JSON")
+            return value if isinstance(value, dict) else None
+        raise MatrixError("published Tightbeam WebSocket did not respond before timeout")
+
+    def _send_control(self, opcode: int, payload: bytes) -> None:
+        mask = os.urandom(4)
+        header = bytes([0x80 | opcode, 0x80 | len(payload)])
+        self.socket.sendall(header + mask + bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload)))
+
+    def close(self) -> None:
+        try:
+            self.socket.close()
+        except OSError:
+            pass
+
+    def __enter__(self) -> "_WebSocket":
+        return self
+
+    def __exit__(self, _type: Any, _value: Any, _traceback: Any) -> None:
+        self.close()
 
 
 def _safe_fail(message: str) -> None:
@@ -84,6 +203,86 @@ def _checked(args: list[str], *, env: dict[str, str] | None = None, cwd: Path | 
     return result.stdout
 
 
+def _http_json(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: int = 30,
+) -> tuple[int, dict[str, Any]]:
+    body = None if payload is None else _json_bytes(payload)
+    request_headers = {"Accept": "application/json", **(headers or {})}
+    if body is not None:
+        request_headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=request_headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = response.read()
+            status = int(response.status)
+    except urllib.error.HTTPError as error:
+        data = error.read()
+        status = int(error.code)
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise MatrixError("isolated published-runtime request failed") from error
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise MatrixError("isolated published-runtime response was not valid JSON") from error
+    if not isinstance(value, dict):
+        raise MatrixError("isolated published-runtime response had an invalid shape")
+    return status, value
+
+
+def _wait_for_reply(gateway_url: str, session_key: str, client_message_id: str, timeout: int = 90) -> int:
+    encoded_key = urllib.parse.quote(session_key, safe="")
+    url = f"{gateway_url}/api/sessions/{encoded_key}/messages?tail=true&limit=500"
+    deadline = time.monotonic() + timeout
+    human_sequence: int | None = None
+    while time.monotonic() < deadline:
+        status, page = _http_json(url, timeout=10)
+        if status == 200:
+            items = page.get("items")
+            if isinstance(items, list):
+                human_sequences: list[int] = []
+                for item in items:
+                    if not isinstance(item, dict) or item.get("sessionKey") != session_key:
+                        continue
+                    if item.get("role") == "user" and item.get("clientMessageId") == client_message_id:
+                        seq = item.get("seq")
+                        if isinstance(seq, int) and not isinstance(seq, bool):
+                            human_sequences.append(seq)
+                if len(human_sequences) > 1:
+                    raise MatrixError("published Tightbeam duplicated the uniquely identified fixture human post")
+                if human_sequences:
+                    human_sequence = human_sequences[0]
+                if human_sequence is not None:
+                    correlated = []
+                    for item in items:
+                        if not isinstance(item, dict) or item.get("sessionKey") != session_key:
+                            continue
+                        if (
+                            item.get("role") == "assistant"
+                            and item.get("turnIncludesHuman") is True
+                            and isinstance(item.get("seq"), int)
+                            and not isinstance(item.get("seq"), bool)
+                            and item["seq"] > human_sequence
+                        ):
+                            reply_to = item.get("replyToClientMessageId")
+                            if reply_to is None or reply_to == client_message_id:
+                                correlated.append(int(item["seq"]))
+                    if correlated:
+                        return min(correlated)
+        time.sleep(0.25)
+    raise MatrixError("published Tightbeam did not persist a correlated assistant reply to the fixture human post")
+
+
+def _failure_message(error: Exception) -> str:
+    if isinstance(error, (MatrixError, release_hook.ReleaseHookError, release_notes.ReleaseNoteError)):
+        return str(error)
+    return "compatibility matrix received an invalid input or could not write its report"
+
+
 def _available_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
@@ -106,7 +305,7 @@ def _require_loopback_listener(port: int, label: str) -> None:
     lsof = shutil.which("lsof")
     if lsof is None:
         _safe_fail("compatibility matrix cannot verify that its local service is loopback-only")
-    result = _run([lsof, "-nP", "-iTCP", f"{port}", "-sTCP:LISTEN"], timeout=10)
+    result = _run([lsof, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], timeout=10)
     if result.returncode != 0:
         _safe_fail(f"compatibility matrix could not verify the {label} listener")
     listeners = [line.split()[-2] for line in result.stdout.splitlines() if "(LISTEN)" in line and len(line.split()) >= 2]
@@ -161,14 +360,67 @@ def _ensure_baseline_commit(repo: Path, commit: str) -> None:
         _safe_fail("pinned baseline source commit could not be verified")
 
 
+def _inject_replied_observation(worktree: Path) -> None:
+    source_path = worktree / "ios" / "TightbeamTuner" / "Replied.swift"
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise MatrixError("baseline source has no Replies client to observe") from error
+    properties = (
+        "    private(set) var subscriptionReadyCount = 0\n"
+        "    private(set) var snapshotCompletedCount = 0\n"
+        "    private(set) var messageCreatedSequenceBySession: [String: Int] = [:]\n"
+        "    private(set) var readMarkerEventBySession: [String: Int] = [:]\n"
+    )
+    if all(value in source for value in properties.splitlines()):
+        return
+    if any(value in source for value in properties.splitlines()):
+        _safe_fail("baseline Replies client has partial compatibility observer instrumentation")
+    state_marker = "    private(set) var state = RepliedState()\n    private(set) var shownSessionKey: String?\n"
+    if source.count(state_marker) != 1:
+        _safe_fail("baseline Replies client cannot accept compatibility observer instrumentation")
+    source = source.replace(state_marker, state_marker + properties, 1)
+    event_marker = (
+        "                        default:\n"
+        "                            apply(frame, userID: user)\n"
+        "                            if frame.changesRoster { onRosterEvent(frame) }\n"
+    )
+    observer = (
+        "                        default:\n"
+        "                            switch frame {\n"
+        "                            case .message(let message) where message.role == \"assistant\" && message.turnIncludesHuman:\n"
+        "                                messageCreatedSequenceBySession[message.sessionKey] = max(\n"
+        "                                    messageCreatedSequenceBySession[message.sessionKey] ?? Int.min,\n"
+        "                                    message.seq\n"
+        "                                )\n"
+        "                            case .readMarker(let marker):\n"
+        "                                let suffix = \":session-read-position\"\n"
+        "                                if let value = marker.marker, marker.scopeKey.hasSuffix(suffix) {\n"
+        "                                    let sessionKey = String(marker.scopeKey.dropLast(suffix.count))\n"
+        "                                    readMarkerEventBySession[sessionKey] = value\n"
+        "                                }\n"
+        "                            default:\n"
+        "                                break\n"
+        "                            }\n"
+        "                            apply(frame, userID: user)\n"
+        "                            if frame.changesRoster { onRosterEvent(frame) }\n"
+    )
+    if source.count(event_marker) != 1:
+        _safe_fail("baseline Replies event loop cannot accept compatibility observer instrumentation")
+    source_path.write_text(source.replace(event_marker, observer, 1), encoding="utf-8")
+
+
 def _inject_compatibility_test(worktree: Path, candidate_test: Path) -> None:
     test_target = worktree / "ios" / "Tests" / "ReleaseCompatibilityTests.swift"
     project = worktree / "ios" / "TightbeamTuner.xcodeproj" / "project.pbxproj"
     if not candidate_test.is_file() or not project.is_file():
         _safe_fail("baseline source does not support the release compatibility test harness")
+    _inject_replied_observation(worktree)
     pbx = project.read_text(encoding="utf-8")
     if "ReleaseCompatibilityTests.swift" in pbx:
-        _safe_fail("baseline source unexpectedly contains the candidate compatibility harness")
+        test_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(candidate_test, test_target)
+        return
     build_id = "D61A9D384FA7407DAB23E109"
     file_id = "D61A9D384FA7407DAB23E10A"
     if build_id in pbx or file_id in pbx:
@@ -295,16 +547,18 @@ class LocalRuntimeFixture:
         while self.ssh_port == self.gateway_port:
             self.ssh_port = _available_port()
         self.fixture_token = secrets.token_hex(24)
-        self.admin_user = "test" + secrets.token_hex(16)
-        self.client_user = "test" + secrets.token_hex(16)
         self.local_user = getpass.getuser()
         self.cli_link_dir = root / "runner-bin"
         self.cli_link = self.cli_link_dir / "tightbeam"
         self.shim_dir = root / "harness-shim"
+        self.pi_package = root / "pi-fixture"
+        self.pi_bin = self.pi_package / "node_modules" / ".bin"
+        self.model_port = _available_port()
+        while self.model_port in {self.gateway_port, self.ssh_port}:
+            self.model_port = _available_port()
         self.state_root = root / "runtime-state"
         self.state_root.mkdir(parents=True, exist_ok=True)
         self.runtime_base: dict[int, Path] = {}
-        self.initialized: set[int] = set()
         self.selected_release_id: int | None = None
         self.gateway_process: subprocess.Popen[bytes] | None = None
         self.gateway_log: Any = None
@@ -320,8 +574,12 @@ class LocalRuntimeFixture:
         self.force_command = root / "roster-command.sh"
         self.current_runtime_env = root / "current-runtime-env.sh"
         self.ssh_host_key_line = ""
+        self.runtime_identities: dict[int, dict[str, Any]] = {}
+        self.model_server: http.server.ThreadingHTTPServer | None = None
+        self.model_thread: threading.Thread | None = None
         self._prepare_tools()
         self._prepare_sshd()
+        self._start_model_server()
         self._start_fixture_server()
 
     @property
@@ -336,10 +594,19 @@ class LocalRuntimeFixture:
     def _prepare_tools(self) -> None:
         self.cli_link_dir.mkdir(parents=True, exist_ok=True)
         self.shim_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("claude", "codex", "pi"):
+        for name in ("claude", "codex"):
             shim = self.shim_dir / name
             shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             shim.chmod(0o700)
+        shutil.copytree(SCRIPT_DIR / "model-endpoint", self.pi_package)
+        npm = _require_command("npm")
+        _checked([
+            npm, "ci", "--prefix", str(self.pi_package),
+            "--ignore-scripts", "--no-audit", "--no-fund",
+        ], cwd=self.root, timeout=600)
+        pi_cli = self.pi_bin / "pi"
+        if not pi_cli.is_file():
+            _safe_fail("pinned Pi harness package did not install its executable")
         self.authorized_keys.write_text("", encoding="utf-8")
         self.authorized_keys.chmod(0o600)
         self.ssh_host_key_line = _checked([
@@ -393,6 +660,75 @@ class LocalRuntimeFixture:
         _checked([sshd, "-t", "-f", str(self.sshd_config)], timeout=20)
         self._sshd_binary = sshd
 
+    def _start_model_server(self) -> None:
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, _format: str, *args: Any) -> None:
+                return
+
+            def _send(self, status: int, payload: dict[str, Any]) -> None:
+                body = _json_bytes(payload)
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self) -> None:
+                if self.path != "/v1/models":
+                    self._send(404, {"error": {"message": "not found", "type": "invalid_request_error"}})
+                    return
+                self._send(200, {
+                    "object": "list",
+                    "data": [{"id": "tuner-fixture", "object": "model", "created": 1, "owned_by": "local"}],
+                })
+
+            def do_POST(self) -> None:
+                if self.path != "/v1/chat/completions":
+                    self._send(404, {"error": {"message": "not found", "type": "invalid_request_error"}})
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    value = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(value, dict) or value.get("model") != "tuner-fixture":
+                        raise ValueError
+                except (ValueError, json.JSONDecodeError):
+                    self._send(400, {"error": {"message": "invalid fixture request", "type": "invalid_request_error"}})
+                    return
+                completion_id = "chatcmpl-tuner-fixture"
+                if value.get("stream") is True:
+                    chunks = [
+                        {"id": completion_id, "object": "chat.completion.chunk", "created": 1,
+                         "model": "tuner-fixture", "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]},
+                        {"id": completion_id, "object": "chat.completion.chunk", "created": 1,
+                         "model": "tuner-fixture", "choices": [{"index": 0, "delta": {"content": "Tightbeam compatibility fixture reply."}, "finish_reason": None}]},
+                        {"id": completion_id, "object": "chat.completion.chunk", "created": 1,
+                         "model": "tuner-fixture", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                    ]
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    for chunk in chunks:
+                        self.wfile.write(b"data: " + _json_bytes(chunk).strip() + b"\n\n")
+                        self.wfile.flush()
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                    return
+                self._send(200, {
+                    "id": completion_id,
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "tuner-fixture",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "Tightbeam compatibility fixture reply."}, "finish_reason": "stop"}],
+                })
+
+        self.model_server = http.server.ThreadingHTTPServer(("127.0.0.1", self.model_port), Handler)
+        self.model_server.daemon_threads = True
+        self.model_thread = threading.Thread(target=self.model_server.serve_forever, daemon=True)
+        self.model_thread.start()
+        _require_loopback_listener(self.model_port, "deterministic model fixture")
+
     def _start_fixture_server(self) -> None:
         fixture = self
 
@@ -439,16 +775,10 @@ class LocalRuntimeFixture:
         self.server_thread.start()
         _require_loopback_listener(self.server.server_port, "test fixture")
 
-    def _runtime_env(self, release_id: int) -> dict[str, str]:
+    def _runtime_env(self, release_id: int, *, port: int | None = None) -> dict[str, str]:
         package = self.package_paths[release_id]
-        cli_paths = list(package.rglob("tightbeam"))
-        gateway_paths = list(package.rglob("tightbeam-gateway"))
-        if len(cli_paths) != 1 or len(gateway_paths) != 1:
-            _safe_fail("verified runtime asset does not have one CLI and one gateway")
-        cli = cli_paths[0]
-        gateway = gateway_paths[0]
-        _require_command("node")
-        _require_command("git")
+        cli = release_hook.find_runtime_executable(package, "tightbeam")
+        release_hook.find_runtime_executable(package, "tightbeam-gateway")
         env = os.environ.copy()
         for key in (
             "TIGHTBEAM_HOME", "TIGHTBEAM_URL", "TIGHTBEAM_TOKEN", "TIGHTBEAM_SESSION",
@@ -458,19 +788,20 @@ class LocalRuntimeFixture:
         env["TIGHTBEAM_BASE_DIR"] = str(self.runtime_base.setdefault(
             release_id, self.state_root / str(release_id) / "base"
         ))
-        env["TIGHTBEAM_PORT"] = str(self.gateway_port)
-        env["TIGHTBEAM_ADVERTISED_URL"] = self.gateway_url
-        env["PATH"] = os.pathsep.join([str(self.shim_dir), str(cli.parent), env.get("PATH", "")])
+        actual_port = self.gateway_port if port is None else port
+        env["TIGHTBEAM_PORT"] = str(actual_port)
+        env["TIGHTBEAM_ADVERTISED_URL"] = f"http://127.0.0.1:{actual_port}"
+        env["PATH"] = os.pathsep.join([str(self.shim_dir), str(self.pi_bin), str(cli.parent), env.get("PATH", "")])
         return env
 
-    def _write_current_runtime_env(self, release_id: int | None) -> None:
+    def _write_current_runtime_env(self, release_id: int | None, user_id: str = "") -> None:
         if release_id is None:
             values = {
                 "TIGHTBEAM_BASE_DIR": str(self.state_root / "not-selected"),
                 "TIGHTBEAM_PORT": str(self.gateway_port),
                 "TIGHTBEAM_ADVERTISED_URL": self.gateway_url,
                 "TIGHTBEAM_CLI": str(self.cli_link),
-                "TIGHTBEAM_TEST_USER": self.client_user,
+                "TIGHTBEAM_TEST_USER": "",
             }
         else:
             values = {
@@ -478,9 +809,9 @@ class LocalRuntimeFixture:
                 "TIGHTBEAM_PORT": str(self.gateway_port),
                 "TIGHTBEAM_ADVERTISED_URL": self.gateway_url,
                 "TIGHTBEAM_CLI": str(self.cli_link),
-                "TIGHTBEAM_TEST_USER": self.client_user,
+                "TIGHTBEAM_TEST_USER": user_id,
             }
-        expected = f"{_shell_quote(str(self.cli_link))} 'list' '--as-user' {_shell_quote(self.client_user)}"
+        expected = f"{_shell_quote(str(self.cli_link))} 'list' '--as-user' {_shell_quote(user_id)}"
         lines = [f"{key}={_shell_quote(value)}" for key, value in values.items()]
         lines.append(f"EXPECTED_COMMAND={_shell_quote(expected)}")
         self.current_runtime_env.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -508,14 +839,15 @@ class LocalRuntimeFixture:
 
     def _start_gateway(self, release_id: int) -> None:
         env = self._runtime_env(release_id)
-        cli = self.package_paths[release_id]
-        cli_binary = next(path for path in cli.rglob("tightbeam") if path.is_file())
-        gateway_binary = next(path for path in cli.rglob("tightbeam-gateway") if path.is_file())
+        package = self.package_paths[release_id]
+        cli_binary = release_hook.find_runtime_executable(package, "tightbeam")
+        gateway_binary = release_hook.find_runtime_executable(package, "tightbeam-gateway")
         self.cli_link.unlink(missing_ok=True)
         self.cli_link.symlink_to(cli_binary)
         base_dir = Path(env["TIGHTBEAM_BASE_DIR"])
         base_dir.parent.mkdir(parents=True, exist_ok=True)
-        self._write_current_runtime_env(release_id)
+        identity = self.runtime_identities.get(release_id, {})
+        self._write_current_runtime_env(release_id, str(identity.get("userId", "")))
         self.gateway_log = (self.root / f"gateway-{release_id}.log").open("ab")
         self.gateway_process = subprocess.Popen(
             [str(gateway_binary)],
@@ -546,17 +878,6 @@ class LocalRuntimeFixture:
         if version_core is None or version_core.group(0) not in version_text or (build_part and build_part not in version_text):
             _safe_fail(f"published Tightbeam gateway version endpoint does not identify {release.tag}")
         _require_loopback_listener(self.gateway_port, "published Tightbeam gateway")
-        if release_id not in self.initialized:
-            cli_env = env.copy()
-            first = _run([str(self.cli_link), "add-user", self.admin_user], env=cli_env, cwd=self.root, timeout=30)
-            if first.returncode != 0:
-                _safe_fail("published Tightbeam runtime could not seed its isolated test administrator")
-            second = _run([
-                str(self.cli_link), "add-user", self.client_user, "--as-user", self.admin_user,
-            ], env=cli_env, cwd=self.root, timeout=30)
-            if second.returncode != 0:
-                _safe_fail("published Tightbeam runtime could not seed its isolated Tuner user")
-            self.initialized.add(release_id)
 
     def _stop_gateway(self) -> None:
         process = self.gateway_process
@@ -572,6 +893,365 @@ class LocalRuntimeFixture:
             self.gateway_log.close()
             self.gateway_log = None
 
+    def _cli(self, release_id: int, *arguments: str, timeout: int = 180) -> str:
+        result = _run(
+            [str(self.cli_link), *arguments],
+            env=self._runtime_env(release_id),
+            cwd=self.root,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise MatrixError(f"published Tightbeam CLI operation failed: {arguments[0] if arguments else 'command'}")
+        return result.stdout
+
+    @staticmethod
+    def _parse_cli_json(output: str, label: str) -> dict[str, Any]:
+        try:
+            value = json.loads(output)
+        except json.JSONDecodeError:
+            # Some CLI commands include a human-readable prelude; accept only a
+            # single JSON object from the final complete line.
+            try:
+                value = json.loads(output.strip().splitlines()[-1])
+            except (json.JSONDecodeError, IndexError) as error:
+                raise MatrixError(f"published Tightbeam {label} did not return structured data") from error
+        if not isinstance(value, dict):
+            raise MatrixError(f"published Tightbeam {label} returned an invalid response")
+        return value
+
+    def _pair_first_device(self, release_id: int) -> dict[str, str]:
+        device_id = "tuner-ci-" + secrets.token_hex(12)
+        with _WebSocket(self.gateway_url) as ws:
+            ws.send_json({
+                "type": "pair_request",
+                "protocolVersion": 1,
+                "deviceId": device_id,
+                "claimedName": "Tuner compatibility fixture",
+                "deviceInfo": {"platform": "sim", "model": "iOS compatibility client"},
+            })
+            result = ws.receive_json(timeout=20)
+        if (
+            not isinstance(result, dict) or result.get("type") != "pair_result"
+            or result.get("success") is not True
+            or not isinstance(result.get("token"), str)
+            or not isinstance(result.get("userId"), str)
+        ):
+            raise MatrixError("published Tightbeam did not auto-approve the first fixture device pair")
+        return {
+            "deviceId": device_id,
+            "deviceToken": str(result["token"]),
+            "userId": str(result["userId"]),
+        }
+
+    def _connect_device(self, token: str, device_id: str) -> None:
+        auth_result: dict[str, Any] | None = None
+        sync_complete = False
+        with _WebSocket(self.gateway_url) as ws:
+            ws.send_json({"type": "auth", "token": token, "deviceId": device_id})
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not sync_complete:
+                frame = ws.receive_json(timeout=max(0.1, deadline - time.monotonic()))
+                if frame is None:
+                    raise MatrixError("published Tightbeam closed the authenticated fixture device connection")
+                if frame.get("type") == "auth_result":
+                    auth_result = frame
+                elif frame.get("type") == "sync_complete":
+                    sync_complete = True
+        if not sync_complete or auth_result is None or auth_result.get("success") is not True:
+            raise MatrixError("published Tightbeam rejected fixture device authentication or initial sync")
+
+    def _post_human_message(
+        self,
+        gateway_url: str,
+        context: dict[str, Any],
+        session_key: str,
+        message_id: str,
+    ) -> int:
+        authenticated = False
+        acknowledged = False
+        with _WebSocket(gateway_url) as ws:
+            ws.send_json({
+                "type": "auth",
+                "token": str(context["deviceToken"]),
+                "deviceId": str(context["deviceId"]),
+            })
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not authenticated:
+                frame = ws.receive_json(timeout=max(0.1, deadline - time.monotonic()))
+                if frame is None:
+                    raise MatrixError("published Tightbeam closed the fixture chat connection before sync")
+                if frame.get("type") == "auth_result":
+                    if frame.get("success") is not True or frame.get("userId") != context["userId"]:
+                        raise MatrixError("published Tightbeam rejected the fixture chat identity")
+                if frame.get("type") == "sync_complete":
+                    authenticated = True
+            if not authenticated:
+                raise MatrixError("published Tightbeam did not complete fixture chat authentication")
+            ws.send_json({
+                "type": "message",
+                "id": message_id,
+                "sessionKey": session_key,
+                "content": "Reply to this uniquely identified Tuner compatibility fixture message.",
+            })
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not acknowledged:
+                frame = ws.receive_json(timeout=max(0.1, deadline - time.monotonic()))
+                if frame is None:
+                    break
+                if frame.get("type") == "error" and frame.get("id") == message_id:
+                    raise MatrixError("published Tightbeam rejected the fixture human message")
+                if frame.get("type") == "ack" and frame.get("id") == message_id:
+                    acknowledged = True
+            if not acknowledged:
+                raise MatrixError("published Tightbeam did not acknowledge the fixture human message")
+        return _wait_for_reply(gateway_url, session_key, message_id)
+
+    def _messages(self, gateway_url: str, session_key: str) -> list[dict[str, Any]]:
+        encoded = urllib.parse.quote(session_key, safe="")
+        _, page = _http_json(f"{gateway_url}/api/sessions/{encoded}/messages?tail=true&limit=500")
+        items = page.get("items")
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise MatrixError("published Tightbeam message page was invalid")
+        return items
+
+    def _latest_reply(self, gateway_url: str, context: dict[str, Any]) -> int:
+        session_key = str(context["replySessionKey"])
+        replies = [
+            item for item in self._messages(gateway_url, session_key)
+            if item.get("role") == "assistant" and item.get("turnIncludesHuman") is True
+            and isinstance(item.get("seq"), int) and not isinstance(item.get("seq"), bool)
+        ]
+        if not replies:
+            raise MatrixError("published Tightbeam did not retain a human-backed assistant reply")
+        return max(int(item["seq"]) for item in replies)
+
+    def _set_read_marker(self, gateway_url: str, context: dict[str, Any], marker: int) -> None:
+        session_key = str(context["replySessionKey"])
+        status, result = _http_json(
+            gateway_url + "/agent/dispatch",
+            method="POST",
+            payload={
+                "verb": "read-marker-set",
+                "params": {"scopeKey": session_key + ":session-read-position", "marker": marker},
+            },
+            headers={"Authorization": "Bearer " + str(context["deviceToken"])},
+        )
+        if status != 200 or result.get("ok") is False or result.get("error"):
+            raise MatrixError("published Tightbeam rejected the paired-device read-marker update")
+
+    def _marker_value(self, gateway_url: str, context: dict[str, Any]) -> int:
+        query = urllib.parse.urlencode({"asUser": context["userId"], "limit": 500})
+        _, page = _http_json(gateway_url + "/api/read-markers?" + query)
+        items = page.get("items")
+        if not isinstance(items, list):
+            raise MatrixError("published Tightbeam read-marker page was invalid")
+        scope = str(context["replySessionKey"]) + ":session-read-position"
+        for item in items:
+            if (
+                isinstance(item, dict) and item.get("userId") == context["userId"]
+                and item.get("scopeKey") == scope and isinstance(item.get("marker"), int)
+            ):
+                return int(item["marker"])
+        raise MatrixError("published Tightbeam did not retain the expected session read marker")
+
+    def _post_and_mark(self, gateway_url: str, context: dict[str, Any], stage: str) -> tuple[int, int]:
+        previous = context.get("latest", {"sequence": 0, "marker": 0})
+        previous_sequence = previous.get("sequence", 0)
+        previous_marker = previous.get("marker", 0)
+        if (
+            not isinstance(previous_sequence, int) or isinstance(previous_sequence, bool)
+            or not isinstance(previous_marker, int) or isinstance(previous_marker, bool)
+        ):
+            raise MatrixError("fixture's prior Replies position was invalid")
+        message_id = "c_tuner_ci_" + secrets.token_hex(12)
+        sequence = self._post_human_message(gateway_url, context, str(context["replySessionKey"]), message_id)
+        self._set_read_marker(gateway_url, context, sequence)
+        marker = self._marker_value(gateway_url, context)
+        if marker != sequence:
+            raise MatrixError("published Tightbeam read marker did not match the correlated reply")
+        context.setdefault("posts", {})[stage] = {
+            "sequence": sequence,
+            "marker": marker,
+            "previousSequence": previous_sequence,
+            "previousMarker": previous_marker,
+        }
+        context["latest"] = {"sequence": sequence, "marker": marker}
+        return sequence, marker
+
+    def _seed_replies(self, release_id: int) -> dict[str, Any]:
+        context = self.runtime_identities.get(release_id)
+        if context is None:
+            paired = self._pair_first_device(release_id)
+            context = {
+                **paired,
+                "posts": {},
+            }
+            self.runtime_identities[release_id] = context
+            self._write_current_runtime_env(release_id, str(context["userId"]))
+            self._connect_device(str(context["deviceToken"]), str(context["deviceId"]))
+            endpoint = f"http://127.0.0.1:{self.model_port}/v1"
+            self._cli(
+                release_id, "onboard", "local-openai", "--name", "tunerci",
+                "--endpoint", endpoint, "--as-user", str(context["userId"]),
+                timeout=180,
+            )
+            self._cli(
+                release_id, "spawn", "--as-user", str(context["userId"]),
+                "--display", "Tuner compatibility reply", "--harness", "pi",
+                "--model", "tunerci/tuner-fixture", "--key", "tuner-ci-" + secrets.token_hex(12),
+                timeout=180,
+            )
+            work_item = self._parse_cli_json(self._cli(
+                release_id, "work-item-create", "--as-user", str(context["userId"]),
+                "--title", "Tuner compatibility topology", "--key", "tuner-ci-" + secrets.token_hex(12),
+            ), "work-item creation")
+            work_item_id = self._find_cli_id(work_item, {"workItemId", "id"}, "wi_")
+            roster = self._read_roster(release_id, str(context["userId"]))
+            children = [item for item in roster if item.get("displayName") == "Tuner compatibility reply"]
+            mains = [item for item in roster if item.get("displayName") == "Main"]
+            if len(children) != 1 or len(mains) != 1:
+                raise MatrixError("published Tightbeam roster did not contain the unique fixture Main and child sessions")
+            child_key = children[0].get("sessionKey")
+            main_key = mains[0].get("sessionKey")
+            if not isinstance(child_key, str) or not isinstance(main_key, str) or not child_key or not main_key:
+                raise MatrixError("published Tightbeam roster did not return the fixture session identities")
+            assignment = self._parse_cli_json(self._cli(
+                release_id, "assign", "--as-user", str(context["userId"]), "--session", child_key,
+                "--subject", "Tuner compatibility topology", "--work-item", work_item_id,
+                "--effect-kind", "evidence", "--key", "tuner-ci-" + secrets.token_hex(12),
+            ), "session assignment")
+            assignment_id = self._find_cli_id(assignment, {"assignmentId", "id"}, "asg_")
+            self._cli(
+                release_id, "session-reparent", "--as-user", str(context["userId"]),
+                "--session", child_key, "--parent", main_key, "--assignment", assignment_id,
+                "--key", "tuner-ci-" + secrets.token_hex(12),
+            )
+            roster = self._read_roster(release_id, str(context["userId"]))
+            child = next((item for item in roster if item.get("sessionKey") == child_key), None)
+            if not isinstance(child, dict) or child.get("currentParent") != main_key:
+                raise MatrixError("published Tightbeam did not persist the assigned child's Main parent relation")
+            context.update({
+                "userId": str(context["userId"]),
+                "mainSessionKey": main_key,
+                "replySessionKey": child_key,
+            })
+            self._post_and_mark(self.gateway_url, context, "initial")
+        sequence = self._latest_reply(self.gateway_url, context)
+        marker = self._marker_value(self.gateway_url, context)
+        context["latest"] = {"sequence": sequence, "marker": marker}
+        return {
+            "userId": context["userId"],
+            "mainSessionKey": context["mainSessionKey"],
+            "replySessionKey": context["replySessionKey"],
+            "parentSessionKey": context["mainSessionKey"],
+            "assistantSequence": sequence,
+            "initialReadMarker": marker,
+        }
+
+    @staticmethod
+    def _find_cli_id(value: Any, names: set[str], prefix: str) -> str:
+        matches: list[str] = []
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in names and isinstance(child, str) and child.startswith(prefix):
+                    matches.append(child)
+                else:
+                    matches.extend(LocalRuntimeFixture._find_cli_id_collect(child, names, prefix))
+        else:
+            matches.extend(LocalRuntimeFixture._find_cli_id_collect(value, names, prefix))
+        unique = set(matches)
+        if len(unique) != 1:
+            raise MatrixError(f"published Tightbeam did not return one {prefix} identity")
+        return unique.pop()
+
+    @staticmethod
+    def _find_cli_id_collect(value: Any, names: set[str], prefix: str) -> list[str]:
+        if isinstance(value, dict):
+            output: list[str] = []
+            for key, child in value.items():
+                if key in names and isinstance(child, str) and child.startswith(prefix):
+                    output.append(child)
+                else:
+                    output.extend(LocalRuntimeFixture._find_cli_id_collect(child, names, prefix))
+            return output
+        if isinstance(value, list):
+            return [match for item in value for match in LocalRuntimeFixture._find_cli_id_collect(item, names, prefix)]
+        return []
+
+    def _read_roster(self, release_id: int, user_id: str) -> list[dict[str, Any]]:
+        value = self._parse_cli_json(self._cli(release_id, "list", "--as-user", user_id), "roster")
+        sessions = value.get("sessions")
+        if not isinstance(sessions, list) or any(not isinstance(item, dict) for item in sessions):
+            raise MatrixError("published Tightbeam CLI returned an invalid roster")
+        return sessions
+
+    def _catch_up(self, release_id: int, session_key: str) -> dict[str, Any]:
+        context = self.runtime_identities.get(release_id)
+        if context is None or session_key != context.get("replySessionKey"):
+            raise MatrixError("catch-up target did not match the seeded fixture session")
+        previous = context.get("latest")
+        if not isinstance(previous, dict):
+            raise MatrixError("catch-up has no prior committed Replies position")
+        self._stop_gateway()
+        _require_port_clear(self.gateway_port, "published gateway during catch-up disconnect")
+        temporary_port = _available_port()
+        while temporary_port in {self.gateway_port, self.ssh_port, self.model_port}:
+            temporary_port = _available_port()
+        temporary_process: subprocess.Popen[bytes] | None = None
+        temporary_log: Any = None
+        try:
+            package = self.package_paths[release_id]
+            binary = release_hook.find_runtime_executable(package, "tightbeam-gateway")
+            env = self._runtime_env(release_id, port=temporary_port)
+            temporary_log = (self.root / f"gateway-catch-up-{release_id}.log").open("ab")
+            temporary_process = subprocess.Popen(
+                [str(binary)], cwd=self.root, env=env, stdin=subprocess.DEVNULL,
+                stdout=temporary_log, stderr=temporary_log,
+            )
+            temporary_gateway = f"http://127.0.0.1:{temporary_port}"
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                if temporary_process.poll() is not None:
+                    raise MatrixError("published Tightbeam catch-up gateway exited during startup")
+                try:
+                    with urllib.request.urlopen(temporary_gateway + "/version", timeout=2) as response:
+                        version_text = response.read(65536).decode("utf-8", "replace")
+                    break
+                except (urllib.error.URLError, TimeoutError, OSError):
+                    time.sleep(0.25)
+            else:
+                raise MatrixError("published Tightbeam catch-up gateway did not become ready")
+            release = self.by_id[release_id]
+            version_core = re.search(r"\d+\.\d+\.\d+", release.tag)
+            build_part = release.tag.split("+", 1)[1] if "+" in release.tag else None
+            if version_core is None or version_core.group(0) not in version_text or (build_part and build_part not in version_text):
+                raise MatrixError("published Tightbeam catch-up gateway did not match its pinned release")
+            _require_loopback_listener(temporary_port, "published catch-up gateway")
+            sequence, marker = self._post_and_mark(temporary_gateway, context, "catch-up")
+        finally:
+            if temporary_process is not None and temporary_process.poll() is None:
+                temporary_process.terminate()
+                try:
+                    temporary_process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    temporary_process.kill()
+                    temporary_process.wait(timeout=5)
+            if temporary_log is not None:
+                temporary_log.close()
+            if temporary_process is not None:
+                _require_port_clear(temporary_port, "temporary catch-up gateway")
+            self._start_gateway(release_id)
+        return {
+            "ok": True,
+            "correlatedReply": True,
+            "previousSequence": int(previous["sequence"]),
+            "assistantSequence": sequence,
+            "previousMarker": int(previous["marker"]),
+            "marker": marker,
+            "changedSessionMatched": True,
+            "gatewayRestarted": True,
+        }
+
     def _route(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         if path == "/select-runtime":
             release_id = payload.get("releaseId")
@@ -581,6 +1261,11 @@ class LocalRuntimeFixture:
                 self._stop_gateway()
                 self._start_gateway(release_id)
             return {"ok": True}
+        if path == "/seed-replies":
+            release_id = payload.get("releaseId")
+            if release_id != self.selected_release_id or release_id not in self.by_id:
+                raise MatrixError("fixture seed does not match the selected published runtime")
+            return self._seed_replies(int(release_id))
         if path == "/authorized-key":
             line = payload.get("publicKey")
             if not isinstance(line, str) or not re.fullmatch(r"ssh-ed25519\s+[A-Za-z0-9+/=]+(?:\s+[A-Za-z0-9_.-]+)?", line):
@@ -607,26 +1292,33 @@ class LocalRuntimeFixture:
                 "savedConnectionLoaded": bool(previous and connection == previous["connection"]),
                 "rosterIdentityPreserved": bool(previous and key == previous["publicKey"]),
             }
-        if path == "/add-user":
-            user = payload.get("user")
-            if not isinstance(user, str) or not re.fullmatch(r"test[a-f0-9]{32}", user):
-                raise MatrixError("test user seed has an invalid identifier")
+        if path == "/post-reply":
             if self.selected_release_id is None:
                 raise MatrixError("no published runtime is selected")
-            env = self._runtime_env(self.selected_release_id)
-            result = _run([
-                str(self.cli_link), "add-user", user, "--as-user", self.admin_user,
-            ], env=env, cwd=self.root, timeout=30)
-            if result.returncode != 0:
-                raise MatrixError("published Tightbeam runtime rejected the isolated live-change seed")
-            return {"ok": True}
-        if path == "/restart-gateway":
+            release_id = payload.get("releaseId")
+            context = self.runtime_identities.get(release_id) if isinstance(release_id, int) else None
+            if context is None or payload.get("sessionKey") != context.get("replySessionKey"):
+                raise MatrixError("live reply target did not match the seeded fixture session")
+            sequence, marker = self._post_and_mark(self.gateway_url, context, "live")
+            observation = context["posts"]["live"]
+            return {
+                "ok": True,
+                "correlatedReply": True,
+                "previousSequence": observation["previousSequence"],
+                "assistantSequence": sequence,
+                "previousMarker": observation["previousMarker"],
+                "marker": marker,
+            }
+        if path == "/catch-up":
             if self.selected_release_id is None:
                 raise MatrixError("no published runtime is selected")
-            release_id = self.selected_release_id
-            self._stop_gateway()
-            self._start_gateway(release_id)
-            return {"ok": True}
+            release_id = payload.get("releaseId")
+            if not isinstance(release_id, int) or release_id != self.selected_release_id:
+                raise MatrixError("catch-up release identity did not match the selected runtime")
+            session_key = payload.get("sessionKey")
+            if not isinstance(session_key, str):
+                raise MatrixError("catch-up session identity is missing")
+            return self._catch_up(release_id, session_key)
         if path == "/phase-result":
             result = dict(payload)
             release_id = result.get("releaseId")
@@ -655,8 +1347,16 @@ class LocalRuntimeFixture:
         if self.server_thread is not None:
             self.server_thread.join(timeout=5)
             self.server_thread = None
+        if self.model_server is not None:
+            self.model_server.shutdown()
+            self.model_server.server_close()
+            self.model_server = None
+        if self.model_thread is not None:
+            self.model_thread.join(timeout=5)
+            self.model_thread = None
         _require_port_clear(self.gateway_port, "gateway")
         _require_port_clear(self.ssh_port, "SSH fixture")
+        _require_port_clear(self.model_port, "model fixture")
 
 
 def _create_simulator(device_type: str, runtime_id: str, build_number: int) -> tuple[str, str]:
@@ -719,7 +1419,6 @@ def _run_test_phase(
         "TUNER_COMPAT_SSH_PORT": str(fixture.ssh_port),
         "TUNER_COMPAT_SSH_HOST_KEY": fixture.ssh_host_key_line,
         "TUNER_COMPAT_SSH_USER": fixture.local_user,
-        "TUNER_COMPAT_USER": fixture.client_user,
         "TUNER_COMPAT_CLI": str(fixture.cli_link),
         "TUNER_COMPAT_RELEASES_JSON": json.dumps([{"id": item.release_id} for item in pair], separators=(",", ":")),
         "TUNER_COMPAT_PHASE_SOURCE_JSON": json.dumps(phase_source, separators=(",", ":")),
@@ -839,7 +1538,7 @@ def _prepare_candidate(repo: Path, baseline_file: dict[str, Any], build_number: 
     if not re.fullmatch(r"[0-9a-f]{40}", commit_from_ci) or not scheme or not run_id:
         _safe_fail("Xcode Cloud candidate identity is incomplete")
     commit, tree = _current_source(repo, commit_from_ci)
-    configuration = os.environ.get("TUNER_RELEASE_CONFIGURATION", "Release")
+    configuration = "Release"
     if baseline_file["scheme"] != scheme or baseline_file["configuration"] != configuration:
         _safe_fail("candidate and pinned baseline use different release schemes or configurations")
     return {
@@ -862,6 +1561,9 @@ def run_matrix() -> None:
     if not build_number_value.isdigit() or int(build_number_value) <= 0:
         _safe_fail("Xcode Cloud archive has no positive numbered build")
     build_number = int(build_number_value)
+    run_id = os.environ.get("CI_BUILD_ID", "")
+    if not run_id:
+        _safe_fail("Xcode Cloud archive has no unique CI_BUILD_ID")
     repo_value = os.environ.get("CI_PRIMARY_REPOSITORY_PATH")
     derived_value = os.environ.get("CI_DERIVED_DATA_PATH")
     if not repo_value or not derived_value:
@@ -870,13 +1572,13 @@ def run_matrix() -> None:
     derived = Path(derived_value).resolve()
     if not repo.is_dir() or not derived.is_dir():
         _safe_fail("Xcode Cloud repository or DerivedData path is unavailable")
+    for tool in ("git", "xcodebuild", "xcrun", "ssh-keygen", "sshd", "lsof", "node"):
+        _require_command(tool)
     test_root = derived / "TunerCompatibilityResults"
     test_root.mkdir(parents=True, exist_ok=True)
     repo_root = Path(tempfile.mkdtemp(prefix="tuner-compat-", dir=str(test_root))).resolve()
     if os.path.commonpath([str(derived), str(repo_root)]) != str(derived):
         _safe_fail("compatibility scratch escaped Xcode Cloud DerivedData")
-    for tool in ("git", "xcodebuild", "xcrun", "ssh-keygen", "sshd", "lsof", "node"):
-        _require_command(tool)
 
     report_path = repo / "ios" / "TightbeamTuner" / "ReleaseCompatibilityReport.json"
     current_note_path = repo / "ios" / "TightbeamTuner" / "CurrentBuildReleaseNote.json"
@@ -891,6 +1593,12 @@ def run_matrix() -> None:
     try:
         baseline_source = _baseline_input(baseline_path)
         candidate = _prepare_candidate(repo, baseline_source, build_number)
+        release_hook.validate_release_tag_identity(
+            repo,
+            candidate["commit"],
+            os.environ.get("CI_GIT_REF", ""),
+            os.environ.get("CI_TAG", ""),
+        )
         matrix_report["candidate"] = candidate
         matrix_report["baseline"] = {
             "commit": baseline_source["sourceCommit"],
@@ -958,7 +1666,7 @@ def run_matrix() -> None:
         print(f"Created isolated simulator {simulator_name} ({device_type_name}, {runtime_name})")
 
         fixture = LocalRuntimeFixture(repo_root, pair, packages)
-        candidate["runId"] = os.environ["CI_BUILD_ID"]
+        candidate["runId"] = run_id
         candidate["attempt"] = release_notes.XCODE_CLOUD_ATTEMPT_NUMBER
         matrix_candidate = dict(candidate)
         baseline_phase_source = dict(baseline_identity)
@@ -1026,7 +1734,8 @@ def run_matrix() -> None:
             if run["checks"].get(path, {}).get("status") != "passed"
         ]
         base_note, note_data = release_notes.load_current_note(current_note_path, expected_build=build_number)
-        release_hook.validate_history_claims(release_notes.load_notes(history_path))
+        history_data = json.loads(history_path.read_text(encoding="utf-8"))
+        release_hook.validate_history_claims(release_notes.notes_from_history_data(history_data))
         original_compatibility = release_hook.section_details(base_note, release_hook.COMPATIBILITY_TITLE)
         generated_line = release_hook.compatibility_line(pair) if not candidate_failures else None
         updated_note_data = (
@@ -1089,6 +1798,28 @@ def run_matrix() -> None:
 
         resolved_pair_after_tests = release_hook.resolve_published_pair("darwin-aarch64")
         release_hook.same_release_pair(pair, resolved_pair_after_tests)
+        pair = resolved_pair_after_tests
+        candidate_object = release_hook.candidate_object(
+            matrix_candidate,
+            baseline_report_identity,
+            pair,
+            findings,
+            updated_note_data,
+            history_data,
+        )
+        candidate_object_digest = release_hook.candidate_object_digest(candidate_object)
+        confirmation = release_hook.latest_public_review_status(
+            matrix_candidate["commit"], candidate_object_digest
+        )
+        pre_archive_gate = {
+            "status": "passed",
+            "sourceCommit": matrix_candidate["commit"],
+            "candidateDigest": candidate_object_digest,
+            **confirmation,
+        }
+        matrix_report["candidateObject"] = candidate_object
+        matrix_report["candidateObjectSha256"] = candidate_object_digest
+        matrix_report["preArchiveGate"] = pre_archive_gate
         note_bytes = _json_bytes(updated_note_data)
         matrix_report["currentNoteSha256"] = release_hook.note_digest(updated_note_data)
         release_hook.validate_archive_report(
@@ -1097,6 +1828,7 @@ def run_matrix() -> None:
             baseline=baseline_report_identity,
             pair=pair,
             note_data=updated_note_data,
+            history_data=history_data,
             expected_ci_run_id=producer["runId"],
         )
         current_note_path.write_bytes(note_bytes)
@@ -1117,9 +1849,21 @@ def run_matrix() -> None:
         except OSError:
             pass
         raise
+    except (release_hook.ReleaseHookError, release_notes.ReleaseNoteError) as error:
+        matrix_report["status"] = "failed"
+        matrix_report["failure"] = _failure_message(error)
+        matrix_report["detectors"] = {
+            "status": "failed", "findings": [],
+            "findingsSha256": release_hook.findings_digest([]),
+        }
+        try:
+            _write_json(report_path, matrix_report)
+        except OSError:
+            pass
+        raise MatrixError(matrix_report["failure"]) from error
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         matrix_report["status"] = "failed"
-        matrix_report["failure"] = "compatibility matrix received an invalid input or could not write its report"
+        matrix_report["failure"] = _failure_message(error)
         matrix_report.setdefault("detectors", {"status": "failed", "findings": [], "findingsSha256": release_hook.findings_digest([])})
         try:
             _write_json(report_path, matrix_report)

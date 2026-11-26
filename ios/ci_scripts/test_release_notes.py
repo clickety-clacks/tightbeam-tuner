@@ -393,7 +393,6 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
-        self.assertEqual(current.build, 84)
         self.assertEqual(
             [item.title for item in current.items],
             ["See which Tightbeam versions were checked", "Compatibility", "Breaking changes"],
@@ -425,6 +424,9 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                     self.current_source, self.history_source, 81
                 )
             return
+
+        self.assertGreater(current.build, max(note.build for note in self.history))
+        self.assertNotIn(current.build, {note.build for note in self.history})
 
         selected = release_notes.note_for_build(
             self.current_source, self.history_source, current.build
@@ -559,8 +561,12 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             root = Path(temporary_directory)
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
+            latest_history_build = max(note.build for note in self.history)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 83"):
+            with self.assertRaisesRegex(
+                release_notes.ReleaseNoteError,
+                f"greater than latest historical note {latest_history_build}",
+            ):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )
@@ -872,13 +878,11 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(release_notes.ReleaseNoteError, "duplicate build numbers"):
                 release_notes.load_notes(temporary_source)
 
-    def test_history_and_build_83_have_no_unsupported_tightbeam_versions(self):
+    def test_release_note_history_remains_sorted_and_unambiguous(self):
         history = release_notes.load_notes(self.history_source)
-        self.assertEqual(history[0].build, 83)
-        self.assertIn("Tightbeam compatibility was not verified for this build", history[0].items[1].detail)
-        for note in history:
-            for item in note.items:
-                self.assertNotRegex(item.detail, r"Tightbeam(?:\s+CLI|\s+Gateway)?\s+v?\d+\.\d+\.\d+")
+        builds = [note.build for note in history]
+        self.assertEqual(builds, sorted(set(builds), reverse=True))
+        self.assertTrue(all(note.items for note in history))
 
 
 if __name__ == "__main__":

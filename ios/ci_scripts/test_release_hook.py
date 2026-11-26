@@ -1,10 +1,12 @@
 import copy
+import io
 import json
 import os
 import plistlib
 import sys
 import subprocess
 import tempfile
+import tarfile
 import unittest
 import zipfile
 from pathlib import Path
@@ -88,33 +90,49 @@ def compatibility_report(pair, target=None):
         checks = {
             "roster": {
                 "status": "passed", "implementation": "production-client",
-                "observed": {"sessionIdentity": "matched", "parentRelation": "matched"},
+                "observed": {
+                    "sessionIdentity": "matched", "parentRelation": "matched",
+                    "sessionCount": 2,
+                },
             },
             "initial_message_sync": {
                 "status": "passed", "implementation": "production-client",
                 "observed": {
-                    "sequenceSummaryDecoded": True, "messagePageDecoded": True,
-                    "clientStateMatched": True,
+                    "sequenceSummaryRoute": "not-supported", "sequenceSummaryDecoded": False,
+                    "sequenceSummaryValid": True, "messagePageDecoded": True,
+                    "clientStateMatched": True, "turnIncludesHuman": True,
+                    "messageCount": 3, "latestReplySequence": 8,
                 },
             },
             "read_marker_sync": {
                 "status": "passed", "implementation": "production-client",
-                "observed": {"pageDecoded": True, "clientStateMatched": True},
+                "observed": {
+                    "pageDecoded": True, "clientStateMatched": True,
+                    "markerCount": 1, "replySessionMarkerPresent": True,
+                },
             },
             "catch_up": {
                 "status": "passed", "implementation": "production-client",
                 "observed": {
                     "gatewayRestarted": True,
                     "reconnected": True,
+                    "subscriptionReadyCount": 2,
+                    "snapshotCompletedCount": 2,
                     "snapshotReadCompleted": True,
                     "clientStateMatched": True,
+                    "changeEventClass": "message.created",
+                    "correlatedReply": True, "changedSessionMatched": True,
+                    "previousSequence": 8, "changedSequence": 9,
+                    "previousMarker": 7, "changedMarker": 8,
                 },
             },
             "live_subscription": {
                 "status": "passed", "implementation": "production-client",
                 "observed": {
-                    "eventClass": "session.spawned", "observedByClient": True,
-                    "sessionIdentity": "matched", "parentRelation": "matched",
+                    "eventClass": "message.created", "observedByClient": True,
+                    "sessionIdentity": "matched", "stateMatched": True,
+                    "correlatedReply": True, "previousReplySequence": 7,
+                    "replySequence": 8, "previousMarker": 6, "marker": 7,
                 },
             },
         }
@@ -158,6 +176,19 @@ def note(detail="None."):
             release_notes.NoteItem("Breaking changes", detail),
         ),
     )
+
+
+class FakeHTTPResponse(io.BytesIO):
+    def __init__(self, payload: dict, *, link: str = ""):
+        super().__init__(json.dumps(payload).encode("utf-8"))
+        self.status = 200
+        self.headers = {"Link": link}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _type, _value, _traceback):
+        self.close()
 
 
 class ReleaseResolutionTests(unittest.TestCase):
@@ -215,6 +246,109 @@ class ReleaseResolutionTests(unittest.TestCase):
         with self.assertRaisesRegex(release_hook.ReleaseHookError, "ambiguous"):
             release_hook.resolve_release_pair(latest, records, "darwin-aarch64")
 
+    def test_runtime_extractor_ignores_directory_named_tightbeam(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = root / "runtime.tgz"
+            with tarfile.open(package, "w:gz") as archive:
+                directory = tarfile.TarInfo("tightbeam")
+                directory.type = tarfile.DIRTYPE
+                directory.mode = 0o755
+                archive.addfile(directory)
+                for name, contents in (
+                    ("tightbeam/bin/tightbeam", b"cli"),
+                    ("tightbeam/bin/tightbeam-gateway", b"gateway"),
+                ):
+                    info = tarfile.TarInfo(name)
+                    info.mode = 0o755
+                    info.size = len(contents)
+                    archive.addfile(info, io.BytesIO(contents))
+            gateway = release_hook.extract_release_package(package, root / "unpacked")
+            self.assertEqual(gateway.relative_to(root / "unpacked").as_posix(), "tightbeam/bin/tightbeam-gateway")
+            self.assertTrue(release_hook.find_runtime_executable(root / "unpacked", "tightbeam").is_file())
+
+
+class ReleaseReviewStatusTests(unittest.TestCase):
+    commit = "a" * 40
+    digest = "b" * 64
+
+    def _status(self, state="success", description=None, timestamp="2026-11-26T08:00:00Z"):
+        return {
+            "context": release_hook.RELEASE_REVIEW_CONTEXT,
+            "state": state,
+            "description": description if description is not None else f"sha256:{self.digest}",
+            "updated_at": timestamp,
+        }
+
+    def test_requires_latest_matching_status_and_follows_all_status_pages(self):
+        first = FakeHTTPResponse(
+            {"sha": self.commit, "statuses": [self._status(timestamp="2026-11-25T08:00:00Z")]},
+            link=(f'<https://api.github.com/repos/{release_hook.TUNER_REPOSITORY}/commits/'
+                  f'{self.commit}/status?per_page=100&page=2>; rel="next"'),
+        )
+        second = FakeHTTPResponse({"sha": self.commit, "statuses": [self._status(timestamp="2026-11-26T08:00:00Z")]})
+        with mock.patch.object(release_hook.urllib.request, "urlopen", side_effect=[first, second]) as opened:
+            result = release_hook.latest_public_review_status(self.commit, self.digest)
+        self.assertEqual(result["description"], f"sha256:{self.digest}")
+        self.assertEqual(opened.call_count, 2)
+
+    def test_newer_rejection_and_digest_mismatch_block(self):
+        rejection = self._status("failure", timestamp="2026-11-26T08:01:00Z")
+        older_success = self._status(timestamp="2026-11-26T08:00:00Z")
+        with mock.patch.object(
+            release_hook.urllib.request, "urlopen",
+            side_effect=[FakeHTTPResponse({"sha": self.commit, "statuses": [older_success, rejection]})],
+        ), self.assertRaisesRegex(release_hook.ReleaseHookError, "not successful"):
+            release_hook.latest_public_review_status(self.commit, self.digest)
+
+        stale = self._status(description=f"sha256:{'c' * 64}")
+        with mock.patch.object(
+            release_hook.urllib.request, "urlopen",
+            return_value=FakeHTTPResponse({"sha": self.commit, "statuses": [stale]}),
+        ), self.assertRaisesRegex(release_hook.ReleaseHookError, "does not match"):
+            release_hook.latest_public_review_status(self.commit, self.digest)
+
+    def test_absent_or_unreadable_confirmation_blocks(self):
+        with mock.patch.object(
+            release_hook.urllib.request, "urlopen",
+            return_value=FakeHTTPResponse({"sha": self.commit, "statuses": []}),
+        ), self.assertRaisesRegex(release_hook.ReleaseHookError, "missing"):
+            release_hook.latest_public_review_status(self.commit, self.digest)
+
+        wrong_host_link = FakeHTTPResponse(
+            {"sha": self.commit, "statuses": []},
+            link='<https://example.com/status?page=2>; rel="next"',
+        )
+        with mock.patch.object(
+            release_hook.urllib.request, "urlopen", return_value=wrong_host_link,
+        ), self.assertRaisesRegex(release_hook.ReleaseHookError, "left the expected"):
+            release_hook.latest_public_review_status(self.commit, self.digest)
+
+
+class ReleaseTagIdentityTests(unittest.TestCase):
+    def test_release_ref_must_point_to_the_candidate_commit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+            (repo / "file.txt").write_text("candidate\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "file.txt"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate"], check=True)
+            commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            subprocess.run(["git", "-C", str(repo), "tag", "tuner-ios-build-84", commit], check=True)
+            release_hook.validate_release_tag_identity(
+                repo, commit, "refs/tags/tuner-ios-build-84", "tuner-ios-build-84"
+            )
+            with self.assertRaisesRegex(release_hook.ReleaseHookError, "exact release tag"):
+                release_hook.validate_release_tag_identity(
+                    repo, commit, "refs/heads/main", "tuner-ios-build-84"
+                )
+            with self.assertRaisesRegex(release_hook.ReleaseHookError, "does not identify"):
+                release_hook.validate_release_tag_identity(
+                    repo, "0" * 40, "refs/tags/tuner-ios-build-84", "tuner-ios-build-84"
+                )
+
 
 class CompatibilityReportTests(unittest.TestCase):
     def setUp(self):
@@ -258,6 +392,7 @@ class CompatibilityReportTests(unittest.TestCase):
                         changed, candidate(), self.pair, baseline=baseline()
                     )
 
+
     def test_mocked_path_missing_identity_and_unobserved_live_change_block(self):
         cases = [
             lambda run: run["checks"]["roster"].update(implementation="mock"),
@@ -272,6 +407,23 @@ class CompatibilityReportTests(unittest.TestCase):
                     changed, candidate(), self.pair, baseline=baseline()
                 )
 
+    def test_empty_seeded_paths_and_roster_relations_cannot_claim_pass(self):
+        mutations = (
+            lambda run: run["checks"]["roster"]["observed"].update(parentRelation="mismatched"),
+            lambda run: run["checks"]["initial_message_sync"]["observed"].update(messageCount=0),
+            lambda run: run["checks"]["read_marker_sync"]["observed"].update(markerCount=0),
+            lambda run: run["checks"]["catch_up"]["observed"].update(changedMarker=2),
+            lambda run: run["checks"]["live_subscription"]["observed"].update(eventClass="session.spawned"),
+        )
+        for mutate in mutations:
+            changed = copy.deepcopy(self.report)
+            mutate(changed["runs"][0])
+            with self.subTest(run=changed["runs"][0]):
+                with self.assertRaises(release_hook.ReleaseHookError):
+                    release_hook.validate_compatibility_runs(
+                        changed, candidate(), self.pair, baseline=baseline()
+                    )
+
     def test_claimed_pass_requires_expected_client_state_for_each_path(self):
         mutations = (
             lambda run: run["checks"]["initial_message_sync"]["observed"].update(clientStateMatched=False),
@@ -284,6 +436,24 @@ class CompatibilityReportTests(unittest.TestCase):
             changed = copy.deepcopy(self.report)
             mutate(changed["runs"][0])
             with self.subTest(run=changed["runs"][0]):
+                with self.assertRaises(release_hook.ReleaseHookError):
+                    release_hook.validate_compatibility_runs(
+                        changed, candidate(), self.pair, baseline=baseline()
+                    )
+
+    def test_claimed_replies_pass_requires_correlated_advanced_positions(self):
+        mutations = (
+            lambda run: run["checks"]["initial_message_sync"]["observed"].update(turnIncludesHuman=False),
+            lambda run: run["checks"]["live_subscription"]["observed"].update(correlatedReply=False),
+            lambda run: run["checks"]["live_subscription"]["observed"].update(replySequence=7),
+            lambda run: run["checks"]["catch_up"]["observed"].update(correlatedReply=False),
+            lambda run: run["checks"]["catch_up"]["observed"].update(changedSequence=8),
+            lambda run: run["checks"]["catch_up"]["observed"].update(snapshotCompletedCount=1),
+        )
+        for mutate in mutations:
+            changed = copy.deepcopy(self.report)
+            mutate(changed["runs"][0])
+            with self.subTest(changed=changed["runs"][0]["checks"]):
                 with self.assertRaises(release_hook.ReleaseHookError):
                     release_hook.validate_compatibility_runs(
                         changed, candidate(), self.pair, baseline=baseline()
@@ -316,6 +486,14 @@ class CompatibilityReportTests(unittest.TestCase):
             release_hook.author_compatibility_line("Compatible with Tightbeam: v0.0.1", expected)
         with self.assertRaisesRegex(release_hook.ReleaseHookError, "unsupported"):
             release_hook.author_compatibility_line("Also works with Tightbeam v0.1.0", expected)
+        for unsupported in (
+            "Also tested with Tightbeam release 0.1.14",
+            "Also supports Tightbeam build 4283",
+        ):
+            with self.subTest(unsupported=unsupported), self.assertRaisesRegex(
+                release_hook.ReleaseHookError, "unsupported"
+            ):
+                release_hook.author_compatibility_line(unsupported, expected)
 
     def test_archive_report_requires_completed_deterministic_detector_results_and_note_digest(self):
         note_data = {"build": 84, "items": [{"title": "Compatibility", "detail": "x"}]}
@@ -327,6 +505,11 @@ class CompatibilityReportTests(unittest.TestCase):
                 {"symbol": "exclamationmark.triangle", "title": "Breaking changes", "detail": "None."},
             ],
         }
+        history_data = []
+        candidate_object = release_hook.candidate_object(
+            candidate(), baseline(), self.pair, [], note_data, history_data
+        )
+        candidate_digest = release_hook.candidate_object_digest(candidate_object)
         report = {
             "schemaVersion": 1,
             "status": "completed",
@@ -348,9 +531,18 @@ class CompatibilityReportTests(unittest.TestCase):
             "breakingChangesSha256": release_hook.breaking_section_digest("None."),
             "detectors": {"status": "completed", "findings": [], "findingsSha256": release_hook.findings_digest([])},
             "compatibility": self.report,
+            "candidateObject": candidate_object,
+            "candidateObjectSha256": candidate_digest,
+            "preArchiveGate": {
+                "status": "passed", "sourceCommit": candidate()["commit"],
+                "candidateDigest": candidate_digest,
+                "context": release_hook.RELEASE_REVIEW_CONTEXT, "state": "success",
+                "description": f"sha256:{candidate_digest}",
+            },
         }
         self.assertEqual(len(release_hook.validate_archive_report(
             report, candidate=candidate(), baseline=baseline(), pair=self.pair, note_data=note_data,
+            history_data=history_data,
             expected_ci_run_id="cloud-run-84",
         )), 2)
         for mutate in (
@@ -364,18 +556,46 @@ class CompatibilityReportTests(unittest.TestCase):
             with self.assertRaises(release_hook.ReleaseHookError):
                 release_hook.validate_archive_report(
                     changed, candidate=candidate(), baseline=baseline(), pair=self.pair, note_data=note_data,
+                    history_data=history_data,
                     expected_ci_run_id="cloud-run-84",
                 )
 
 
+class CompatibilityInstrumentationTests(unittest.TestCase):
+    def test_replied_observer_is_added_to_baseline_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source_path = Path(temporary) / "ios" / "TightbeamTuner" / "Replied.swift"
+            source_path.parent.mkdir(parents=True)
+            source_path.write_text(
+                "struct RepliedFeed {\n"
+                "    private(set) var state = RepliedState()\n"
+                "    private(set) var shownSessionKey: String?\n"
+                "    func run() {\n"
+                "                        default:\n"
+                "                            apply(frame, userID: user)\n"
+                "                            if frame.changesRoster { onRosterEvent(frame) }\n"
+                "                }\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            worktree = Path(temporary)
+            compatibility_matrix._inject_replied_observation(worktree)
+            first = source_path.read_text(encoding="utf-8")
+            compatibility_matrix._inject_replied_observation(worktree)
+            second = source_path.read_text(encoding="utf-8")
+            self.assertEqual(first, second)
+            self.assertIn("messageCreatedSequenceBySession", second)
+            self.assertIn("readMarkerEventBySession", second)
+            self.assertIn('case .message(let message) where message.role == "assistant"', second)
+
+
 class CompatibilityMatrixWiringTests(unittest.TestCase):
-    def test_candidate_attempt_is_fixed_even_if_an_attempt_environment_value_exists(self):
+    def test_candidate_attempt_is_fixed_per_unique_cloud_run(self):
         environment = {
             "CI_COMMIT": "a" * 40,
             "CI_XCODE_SCHEME": "TightbeamTuner",
             "CI_BUILD_ID": "cloud-run-84",
-            "CI_BUILD_ATTEMPT": "9",
-            "TUNER_RELEASE_CONFIGURATION": "Release",
         }
         with mock.patch.dict(os.environ, environment, clear=True):
             with mock.patch.object(
@@ -385,6 +605,61 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
                     Path("."), {"scheme": "TightbeamTuner", "configuration": "Release"}, 84
                 )
         self.assertEqual(result["attempt"], 1)
+        self.assertEqual(result["configuration"], "Release")
+
+    def test_loopback_probe_uses_lsof_tcp_port_filter(self):
+        output = (
+            "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
+            "Python 231 runner 4u IPv4 0x0 0t0 TCP 127.0.0.1:19450 (LISTEN)\n"
+        )
+        with mock.patch.object(compatibility_matrix.shutil, "which", return_value="/usr/bin/lsof"):
+            with mock.patch.object(
+                compatibility_matrix,
+                "_run",
+                return_value=subprocess.CompletedProcess([], 0, output),
+            ) as run:
+                compatibility_matrix._require_loopback_listener(19450, "test fixture")
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/lsof", "-nP", "-iTCP:19450", "-sTCP:LISTEN"])
+
+    def test_existing_compatibility_test_source_is_replaced_without_reediting_project(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            test_path = root / "ios/Tests/ReleaseCompatibilityTests.swift"
+            test_path.parent.mkdir(parents=True)
+            test_path.write_text("old test", encoding="utf-8")
+            project = root / "ios/TightbeamTuner.xcodeproj/project.pbxproj"
+            project.parent.mkdir(parents=True)
+            original_project = "/* ReleaseCompatibilityTests.swift is already integrated */\n"
+            project.write_text(original_project, encoding="utf-8")
+            replied = root / "ios/TightbeamTuner/Replied.swift"
+            replied.parent.mkdir(parents=True)
+            replied.write_text(
+                "    private(set) var state = RepliedState()\n"
+                "    private(set) var shownSessionKey: String?\n"
+                "                        default:\n"
+                "                            apply(frame, userID: user)\n"
+                "                            if frame.changesRoster { onRosterEvent(frame) }\n",
+                encoding="utf-8",
+            )
+            candidate_test = Path(__file__).resolve().parents[1] / "Tests/ReleaseCompatibilityTests.swift"
+            compatibility_matrix._inject_compatibility_test(root, candidate_test)
+            self.assertEqual(test_path.read_bytes(), candidate_test.read_bytes())
+            self.assertEqual(project.read_text(encoding="utf-8"), original_project)
+            self.assertIn("messageCreatedSequenceBySession", replied.read_text(encoding="utf-8"))
+
+    def test_matrix_keeps_release_hook_failure_reason(self):
+        self.assertEqual(
+            compatibility_matrix._failure_message(release_hook.ReleaseHookError("pinned package digest mismatch")),
+            "pinned package digest mismatch",
+        )
+        self.assertEqual(
+            compatibility_matrix._failure_message(compatibility_matrix.MatrixError("runtime asset is incomplete")),
+            "runtime asset is incomplete",
+        )
+        self.assertEqual(
+            compatibility_matrix._failure_message(ValueError("unexpected value")),
+            "compatibility matrix received an invalid input or could not write its report",
+        )
 
     def test_baseline_phase_identity_is_the_measured_release_identity(self):
         source = {
@@ -430,31 +705,41 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
         observed_checks = {
             "roster": {
                 "status": "passed", "implementation": "production-client",
-                "observed": {"sessionIdentity": "matched", "parentRelation": "matched"},
+                "observed": {
+                    "sessionIdentity": "matched", "parentRelation": "matched",
+                    "sessionKey": "agent:fixture:reply", "parentSessionKey": "agent:fixture:parent",
+                },
             },
             "initial_message_sync": {
                 "status": "passed", "implementation": "production-client",
                 "observed": {
-                    "sequenceSummaryDecoded": True, "messagePageDecoded": True,
-                    "clientStateMatched": True,
+                    "sequenceSummaryRoute": "available", "sequenceSummaryDecoded": True,
+                    "sequenceSummaryValid": True, "messagePageDecoded": True,
+                    "clientStateMatched": True, "messageCount": 2, "latestReplySequence": 2,
                 },
             },
             "read_marker_sync": {
                 "status": "passed", "implementation": "production-client",
-                "observed": {"pageDecoded": True, "clientStateMatched": True},
+                "observed": {
+                    "pageDecoded": True, "clientStateMatched": True,
+                    "markerCount": 1, "replySessionMarkerPresent": True,
+                },
             },
             "catch_up": {
                 "status": "passed", "implementation": "production-client",
                 "observed": {
                     "gatewayRestarted": True, "reconnected": True,
-                    "snapshotReadCompleted": True, "clientStateMatched": True,
+                        "snapshotReadCompleted": True, "clientStateMatched": True,
+                        "changeEventClass": "read_marker.updated",
+                        "changedSessionKey": "agent:fixture:reply",
+                        "previousMarker": 2, "changedMarker": 3,
                 },
             },
             "live_subscription": {
                 "status": "passed", "implementation": "production-client",
                 "observed": {
-                    "eventClass": "session.spawned", "observedByClient": True,
-                    "sessionIdentity": "matched", "parentRelation": "matched",
+                    "eventClass": "read_marker.updated", "observedByClient": True,
+                    "sessionKey": "agent:fixture:reply", "stateMatched": True, "marker": 4,
                 },
             },
         }
@@ -539,7 +824,11 @@ class DetectorAndNotesTests(unittest.TestCase):
 
     def test_breaking_section_requires_substance_for_findings(self):
         findings = [{"detectorId": "device-support.minimum-os", "path": "devices", "before": "26", "after": "27"}]
-        for detail in ("", "None.", "No breaking changes.", "TBD", "!!!"):
+        for detail in (
+            "", "None.", "None identified.", "No breaking changes.",
+            "No breaking changes in this release.", "There are no known breaking changes.",
+            "None, nothing changes.", "No.", "No breaking changes were found.", "TBD", "!!!",
+        ):
             with self.subTest(detail=detail), self.assertRaises(release_hook.ReleaseHookError):
                 release_hook.validate_breaking_section(note(detail), findings)
         digest = release_hook.validate_breaking_section(
@@ -606,6 +895,32 @@ class SignedArchiveTests(unittest.TestCase):
         }
         matrix = compatibility_report(self.pair, self.target)
         findings = release_hook.detect_breaking_changes(self.baseline, self.target, matrix["runs"])
+        # Keep this archive fixture independent from the app's moving release
+        # history. Build 83 represents a pre-hook historical note; the signed
+        # export test should remain valid after later releases add entries.
+        self.history_data = [
+            {
+                "version": "1.0",
+                "build": 83,
+                "date": "November 25, 2026",
+                "items": [
+                    {
+                        "symbol": "checkmark.seal",
+                        "title": "Compatibility",
+                        "detail": "Tightbeam compatibility was not verified for this build.",
+                    },
+                    {
+                        "symbol": "exclamationmark.triangle",
+                        "title": "Breaking changes",
+                        "detail": "None.",
+                    },
+                ],
+            }
+        ]
+        candidate_object = release_hook.candidate_object(
+            self.target, self.baseline, self.pair, findings, self.note_data, self.history_data
+        )
+        candidate_digest = release_hook.candidate_object_digest(candidate_object)
         self.report = {
             "schemaVersion": 1,
             "status": "completed",
@@ -626,10 +941,15 @@ class SignedArchiveTests(unittest.TestCase):
             },
             "breakingChangesSha256": release_hook.breaking_section_digest("None."),
             "currentNoteSha256": release_hook.note_digest(self.note_data),
+            "candidateObject": candidate_object,
+            "candidateObjectSha256": candidate_digest,
+            "preArchiveGate": {
+                "status": "passed", "sourceCommit": self.target["commit"],
+                "candidateDigest": candidate_digest,
+                "context": release_hook.RELEASE_REVIEW_CONTEXT,
+                "state": "success", "description": f"sha256:{candidate_digest}",
+            },
         }
-        self.history_data = json.loads(
-            (self.repo / "ios" / "TightbeamTuner" / "ReleaseNotesHistory.json").read_text(encoding="utf-8")
-        )
         self.info = {
             "CFBundleIdentifier": "co.clicketyclacks.tightbeam-tuner",
             "CFBundleVersion": "84",
@@ -659,19 +979,33 @@ class SignedArchiveTests(unittest.TestCase):
                 "CI_COMMIT": self.commit,
                 "CI_BUILD_ID": "cloud-run-84",
                 "CI_BUILD_NUMBER": "84",
-                "CI_BUILD_ATTEMPT": "2",
+                "CI_TAG": "tuner-ios-build-84",
+                "CI_GIT_REF": "refs/tags/tuner-ios-build-84",
                 "CI_XCODE_SCHEME": "TightbeamTuner",
                 "CI_PRIMARY_REPOSITORY_PATH": str(self.repo),
             })
-            result = subprocess.run([
-                sys.executable, str(Path(__file__).with_name("release_notes.py")), "render",
-                "--build-number", "84", "--signed-app-path", str(signed),
-                "--require-archive-evidence", "--output", str(output),
-            ], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(release_hook, "validate_release_tag_identity"),
+                mock.patch.object(release_hook, "resolve_published_pair", return_value=self.pair),
+                mock.patch.object(release_hook, "latest_public_review_status", return_value={
+                    "context": release_hook.RELEASE_REVIEW_CONTEXT,
+                    "state": "success",
+                    "description": f"sha256:{self.report['candidateObjectSha256']}",
+                }),
+            ):
+                result = release_notes.main([
+                    "render", "--build-number", "84", "--signed-app-path", str(signed),
+                    "--require-archive-evidence", "--output", str(output),
+                ])
+            self.assertEqual(result, 0)
             rendered = output.read_text(encoding="utf-8")
             self.assertIn(release_hook.compatibility_line(self.pair), rendered)
             self.assertIn("Breaking changes\nNone.", rendered)
+            gate_outcome = json.loads((root / "ReleaseGateOutcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(gate_outcome["candidateObjectSha256"], self.report["candidateObjectSha256"])
+            self.assertEqual(gate_outcome["preArchiveGate"]["status"], "passed")
+            self.assertEqual(gate_outcome["finalArchiveGate"]["status"], "passed")
 
     def test_signed_export_blocks_report_mismatch_before_rendering(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -684,18 +1018,24 @@ class SignedArchiveTests(unittest.TestCase):
                 "CI_COMMIT": self.commit,
                 "CI_BUILD_ID": "cloud-run-84",
                 "CI_BUILD_NUMBER": "84",
-                "CI_BUILD_ATTEMPT": "2",
+                "CI_TAG": "tuner-ios-build-84",
+                "CI_GIT_REF": "refs/tags/tuner-ios-build-84",
                 "CI_XCODE_SCHEME": "TightbeamTuner",
                 "CI_PRIMARY_REPOSITORY_PATH": str(self.repo),
             })
-            result = subprocess.run([
-                sys.executable, str(Path(__file__).with_name("release_notes.py")), "render",
-                "--build-number", "84", "--signed-app-path", str(signed),
-                "--require-archive-evidence", "--output", str(output),
-            ], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("note digest", result.stderr)
+            error_output = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch("sys.stderr", error_output),
+            ):
+                result = release_notes.main([
+                    "render", "--build-number", "84", "--signed-app-path", str(signed),
+                    "--require-archive-evidence", "--output", str(output),
+                ])
+            self.assertNotEqual(result, 0)
+            self.assertIn("note digest", error_output.getvalue())
             self.assertFalse(output.exists())
+            self.assertFalse((root / "ReleaseGateOutcome.json").exists())
 
 
 if __name__ == "__main__":
