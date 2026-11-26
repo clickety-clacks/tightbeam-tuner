@@ -721,6 +721,10 @@ def replace_compatibility_detail(note_data: dict[str, Any], line: str) -> dict[s
 
 def validate_history_claims(history: tuple[release_notes.Note, ...]) -> None:
     """Check public history shape; private exact-record matching stays external."""
+    verified_pair_line = re.compile(
+        r"^Compatible with Tightbeam: v\d+\.\d+\.\d+\+[A-Za-z0-9.-]+, "
+        r"v\d+\.\d+\.\d+\+[A-Za-z0-9.-]+$"
+    )
     for note in history:
         compatibility_items = [item for item in note.items if item.title.casefold() == COMPATIBILITY_TITLE.casefold()]
         breaking_items = [item for item in note.items if item.title.casefold() == BREAKING_TITLE.casefold()]
@@ -752,8 +756,29 @@ def validate_history_claims(history: tuple[release_notes.Note, ...]) -> None:
         else:
             compatibility = section_details(note, COMPATIBILITY_TITLE)
             section_details(note, BREAKING_TITLE)
-            if re.search(r"\bTightbeam\s+v?\d+\.\d+\.\d+", compatibility, re.IGNORECASE):
-                _fail(f"historical build {note.build} uses a legacy Tightbeam version claim")
+            declaration_match = re.match(
+                r"(?i)^(Compatible with Tightbeam:\s*(?:none verified\.|"
+                r"v\d+\.\d+\.\d+\+[A-Za-z0-9.-]+,\s*"
+                r"v\d+\.\d+\.\d+\+[A-Za-z0-9.-]+))",
+                compatibility.strip(),
+            )
+            if declaration_match is None:
+                _fail(f"historical build {note.build} must contain exactly one Tightbeam compatibility declaration")
+            declaration = declaration_match.group(1).strip()
+            if declaration == "Compatible with Tightbeam: none verified.":
+                if not re.fullmatch(
+                    r"(?is)Compatible with Tightbeam: none verified\. "
+                    r"This build was not verified against .+\. "
+                    r"No version-specific test evidence is tied to this build\.",
+                    compatibility.strip(),
+                ):
+                    _fail(f"historical build {note.build} must explain that no Tightbeam version was verified")
+            elif verified_pair_line.fullmatch(declaration):
+                remainder = compatibility.strip()[declaration_match.end():]
+                if re.search(r"\bTightbeam\b", remainder, re.IGNORECASE):
+                    _fail(f"historical build {note.build} contains a Tightbeam claim outside its compatibility line")
+            else:
+                _fail(f"historical build {note.build} has a malformed or unsupported Tightbeam compatibility declaration")
 
 
 def _os_version(value: object) -> tuple[int, ...]:

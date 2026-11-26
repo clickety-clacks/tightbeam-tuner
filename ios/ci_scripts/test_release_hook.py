@@ -74,8 +74,9 @@ def baseline():
 def compatibility_report(pair, target=None):
     target = target or candidate()
     baseline_value = baseline()
+    run_id = f"cloud-run-{target['buildNumber']}"
     producer = {
-        "runId": "cloud-run-84",
+        "runId": run_id,
         "attempt": 1,
         "sourceCommit": target["commit"],
         "sourceTree": target["tree"],
@@ -1138,6 +1139,35 @@ class DetectorAndNotesTests(unittest.TestCase):
                 ),
             ),))
 
+    def test_history_accepts_explicit_none_verified_and_generated_pair_lines(self):
+        history_path = Path(__file__).resolve().parents[1] / "TightbeamTuner" / "ReleaseNotesHistory.json"
+        history_data = json.loads(history_path.read_text(encoding="utf-8"))
+        history = release_notes.notes_from_history_data(history_data)
+        release_hook.validate_history_claims(history)
+        self.assertEqual([note.build for note in history[:2]], [85, 84])
+
+        release_hook.validate_history_claims((release_notes.Note(
+            86,
+            (
+                release_notes.NoteItem(
+                    "Compatibility",
+                    "Compatible with Tightbeam: v0.1.16+4304, v0.1.15+4082. Chat v0.1.104.",
+                ),
+                release_notes.NoteItem("Breaking changes", "None."),
+            ),
+        ),))
+        with self.assertRaisesRegex(release_hook.ReleaseHookError, "outside its compatibility line"):
+            release_hook.validate_history_claims((release_notes.Note(
+                86,
+                (
+                    release_notes.NoteItem(
+                        "Compatibility",
+                        "Compatible with Tightbeam: v0.1.16+4304, v0.1.15+4082. Also works with Tightbeam 0.1.14.",
+                    ),
+                    release_notes.NoteItem("Breaking changes", "None."),
+                ),
+            ),))
+
 
 class SignedArchiveTests(unittest.TestCase):
     def setUp(self):
@@ -1150,13 +1180,21 @@ class SignedArchiveTests(unittest.TestCase):
             "tree": self.tree,
             "scheme": "TightbeamTuner",
             "configuration": "Release",
+            "buildNumber": 86,
+            "minimumOS": "26.0",
+            "deviceFamilies": ["1", "2"],
+        }
+        self.baseline = {
+            "commit": "a06bf7a13c63b08de023619ef83b7cd1eb4b1cec",
+            "tree": "a5e546ba4181503764acd8e8d0f989d0f95b06e3",
+            "scheme": "TightbeamTuner",
+            "configuration": "Release",
             "buildNumber": 84,
             "minimumOS": "26.0",
             "deviceFamilies": ["1", "2"],
         }
-        self.baseline = baseline()
         self.note_data = {
-            "version": "1.0", "build": 84, "date": "November 26, 2026",
+            "version": "1.0", "build": 86, "date": "November 26, 2026",
             "items": [
                 {
                     "symbol": "checkmark.seal", "title": "Compatibility",
@@ -1166,6 +1204,10 @@ class SignedArchiveTests(unittest.TestCase):
             ],
         }
         matrix = compatibility_report(self.pair, self.target)
+        matrix["baseline"] = copy.deepcopy(self.baseline)
+        for run in matrix["runs"]:
+            run["baseline"] = copy.deepcopy(self.baseline)
+            run["baselinePhaseSource"] = copy.deepcopy(self.baseline)
         findings = release_hook.detect_breaking_changes(self.baseline, self.target, matrix["runs"])
         # Keep this archive fixture independent from the app's moving release
         # history. Build 83 represents a pre-hook historical note; the signed
@@ -1224,7 +1266,7 @@ class SignedArchiveTests(unittest.TestCase):
         }
         self.info = {
             "CFBundleIdentifier": "co.clicketyclacks.tightbeam-tuner",
-            "CFBundleVersion": "84",
+            "CFBundleVersion": "86",
             "MinimumOSVersion": "26.0",
             "UIDeviceFamily": [1, 2],
         }
@@ -1249,10 +1291,10 @@ class SignedArchiveTests(unittest.TestCase):
             env = os.environ.copy()
             env.update({
                 "CI_COMMIT": self.commit,
-                "CI_BUILD_ID": "cloud-run-84",
-                "CI_BUILD_NUMBER": "84",
-                "CI_TAG": "tuner-ios-build-84",
-                "CI_GIT_REF": "refs/tags/tuner-ios-build-84",
+                "CI_BUILD_ID": "cloud-run-86",
+                "CI_BUILD_NUMBER": "86",
+                "CI_TAG": "tuner-ios-build-86",
+                "CI_GIT_REF": "refs/tags/tuner-ios-build-86",
                 "CI_XCODE_SCHEME": "TightbeamTuner",
                 "CI_PRIMARY_REPOSITORY_PATH": str(self.repo),
             })
@@ -1267,7 +1309,7 @@ class SignedArchiveTests(unittest.TestCase):
                 }),
             ):
                 result = release_notes.main([
-                    "render", "--build-number", "84", "--signed-app-path", str(signed),
+                    "render", "--build-number", "86", "--signed-app-path", str(signed),
                     "--require-archive-evidence", "--output", str(output),
                 ])
             self.assertEqual(result, 0)
@@ -1288,10 +1330,10 @@ class SignedArchiveTests(unittest.TestCase):
             env = os.environ.copy()
             env.update({
                 "CI_COMMIT": self.commit,
-                "CI_BUILD_ID": "cloud-run-84",
-                "CI_BUILD_NUMBER": "84",
-                "CI_TAG": "tuner-ios-build-84",
-                "CI_GIT_REF": "refs/tags/tuner-ios-build-84",
+                "CI_BUILD_ID": "cloud-run-86",
+                "CI_BUILD_NUMBER": "86",
+                "CI_TAG": "tuner-ios-build-86",
+                "CI_GIT_REF": "refs/tags/tuner-ios-build-86",
                 "CI_XCODE_SCHEME": "TightbeamTuner",
                 "CI_PRIMARY_REPOSITORY_PATH": str(self.repo),
             })
@@ -1301,7 +1343,7 @@ class SignedArchiveTests(unittest.TestCase):
                 mock.patch("sys.stderr", error_output),
             ):
                 result = release_notes.main([
-                    "render", "--build-number", "84", "--signed-app-path", str(signed),
+                    "render", "--build-number", "86", "--signed-app-path", str(signed),
                     "--require-archive-evidence", "--output", str(output),
                 ])
             self.assertNotEqual(result, 0)
