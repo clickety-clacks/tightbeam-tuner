@@ -86,6 +86,8 @@ jobs:
           echo "PLANNED_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
 
       - name: Run non-distributing compatibility and detector matrix
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           export CI_DERIVED_DATA_PATH="$RUNNER_TEMP/TunerCompatibilityDerivedData"
           export REPORT_PATH="$RUNNER_TEMP/ReleaseCompatibilityReport.json"

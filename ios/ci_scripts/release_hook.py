@@ -179,15 +179,27 @@ def compatibility_line(pair: tuple[PublishedRelease, PublishedRelease]) -> str:
 
 
 def _read_github_json(url: str) -> tuple[Any, str | None]:
-    request = urllib.request.Request(url, headers={
+    headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": GITHUB_USER_AGENT,
         "X-GitHub-Api-Version": "2022-11-28",
-    })
+    }
+    # Public-release resolution may use the short-lived, read-only GitHub Actions
+    # token to avoid the much lower anonymous API rate limit. This helper is only
+    # used for public Tightbeam release metadata; the private reviewer-status
+    # projection deliberately uses its own unauthenticated endpoint.
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
             return payload, response.headers.get("Link")
+    except urllib.error.HTTPError as error:
+        raise ReleaseHookError(
+            f"could not resolve published Tightbeam releases from GitHub (HTTP {error.code})"
+        ) from None
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
         raise ReleaseHookError("could not resolve published Tightbeam releases from GitHub") from error
 

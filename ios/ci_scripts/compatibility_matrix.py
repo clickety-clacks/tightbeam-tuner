@@ -810,8 +810,21 @@ class LocalRuntimeFixture:
                         raise ValueError
                     result = fixture._route(self.path, payload)
                     self._send(200, result)
-                except MatrixError:
-                    self._send(500, {"ok": False, "error": "isolated fixture operation failed"})
+                except MatrixError as error:
+                    # MatrixError messages are authored as credential-free summaries.
+                    # Preserve the operation's safe reason so a failed XCTest points
+                    # at the fixture/runtime boundary instead of a secondary decode.
+                    self._send(500, {
+                        "ok": False,
+                        "error": "isolated fixture operation failed",
+                        "diagnostic": str(error),
+                    })
+                except release_hook.ReleaseHookError as error:
+                    self._send(500, {
+                        "ok": False,
+                        "error": "isolated fixture operation failed",
+                        "diagnostic": str(error),
+                    })
                 except (ValueError, json.JSONDecodeError):
                     self._send(400, {"ok": False, "error": "invalid fixture request"})
 

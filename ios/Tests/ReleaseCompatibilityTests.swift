@@ -10,6 +10,7 @@ final class ReleaseCompatibilityTests: XCTestCase {
 
     private struct FixtureReply: Decodable {
         let ok: Bool
+        let diagnostic: String?
     }
 
     private struct UpgradeReply: Decodable {
@@ -84,7 +85,10 @@ final class ReleaseCompatibilityTests: XCTestCase {
                 token: token,
                 body: ["releaseId": release.id]
             )
-            XCTAssertTrue(selected.ok, "The test fixture must start the digest-pinned published runtime.")
+            guard selected.ok else {
+                XCTFail(selected.diagnostic ?? "The test fixture must start the digest-pinned published runtime.")
+                return
+            }
             let runtime = try await fixtureGet(
                 fixtureBase + "/runtime-context",
                 token: token,

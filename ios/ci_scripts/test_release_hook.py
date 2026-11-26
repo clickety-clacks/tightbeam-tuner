@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import tarfile
 import unittest
+import urllib.error
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -192,6 +193,29 @@ class FakeHTTPResponse(io.BytesIO):
 
 
 class ReleaseResolutionTests(unittest.TestCase):
+    def test_public_release_api_uses_scoped_actions_token_without_logging_it(self):
+        latest, _, _ = pinned_pair()
+        response = FakeHTTPResponse(latest)
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ephemeral-read-only-token"}):
+            with mock.patch.object(release_hook.urllib.request, "urlopen", return_value=response) as urlopen:
+                payload, _ = release_hook._read_github_json("https://api.github.com/repos/example/releases/latest")
+        self.assertEqual(payload, latest)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer ephemeral-read-only-token")
+
+    def test_public_release_api_reports_http_status_without_response_body(self):
+        error = urllib.error.HTTPError(
+            "https://api.github.com/repos/example/releases/latest",
+            403,
+            "rate limited",
+            {},
+            io.BytesIO(b"body must not be copied into the error"),
+        )
+        with mock.patch.object(release_hook.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(release_hook.ReleaseHookError, "HTTP 403") as raised:
+                release_hook._read_github_json("https://api.github.com/repos/example/releases/latest")
+        self.assertNotIn("body must not be copied", str(raised.exception))
+
     def test_selects_latest_full_and_strict_predecessor_not_prerelease(self):
         latest, records, expected = pinned_pair()
         pair = release_hook.resolve_release_pair(latest, records, "darwin-aarch64")
