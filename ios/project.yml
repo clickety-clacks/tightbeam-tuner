@@ -58,6 +58,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources: [Tests]
+    resources: [TightbeamTuner/ReleaseNotesHistory.json]
     dependencies:
       - target: TightbeamTuner
     settings:

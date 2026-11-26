@@ -25,6 +25,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Test release-note and compatibility-hook rules
+        run: python3 -m unittest discover -s ios/ci_scripts -p 'test_*.py' -v
+
       - name: Validate fresh author-written release note
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}

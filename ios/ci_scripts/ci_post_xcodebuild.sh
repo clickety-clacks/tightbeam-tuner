@@ -9,10 +9,15 @@ esac
 [ "${CI_XCODEBUILD_ACTION:-}" = "archive" ] || exit 0
 [ "${CI_XCODEBUILD_EXIT_CODE:-0}" = "0" ] || exit 0
 
-# Non-TestFlight archives have no App Store signed export and don't set
-# TestFlight's What to Test field.
+# This workflow stages Internal TestFlight candidates. Other build, test, and
+# analyze workflows do not produce a publishable signed export.
+[ "${CI_WORKFLOW:-}" = "Internal Testflight" ] || exit 0
+
 SIGNED_APP_PATH=${CI_APP_STORE_SIGNED_APP_PATH:-}
-[ -n "$SIGNED_APP_PATH" ] || exit 0
+[ -n "$SIGNED_APP_PATH" ] || {
+    echo "release-note gate: Internal Testflight archive has no signed-app export" >&2
+    exit 1
+}
 
 # The signed export is a directory containing the IPA that TestFlight receives.
 [ -d "$SIGNED_APP_PATH" ] || {
@@ -32,4 +37,5 @@ PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 python3 "$SCRIPT_DIR/release_notes.py" render \
     --build-number "$CI_BUILD_NUMBER" \
     --signed-app-path "$SIGNED_APP_PATH" \
+    --require-archive-evidence \
     --output "$PROJECT_DIR/TestFlight/WhatToTest.en-US.txt"

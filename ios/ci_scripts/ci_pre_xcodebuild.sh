@@ -18,4 +18,7 @@ case "${CI_BUILD_NUMBER:-}" in
 esac
 
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+if [ "${CI_WORKFLOW:-}" = "Internal Testflight" ]; then
+    python3 "$SCRIPT_DIR/compatibility_matrix.py"
+fi
 python3 "$SCRIPT_DIR/release_notes.py" validate --build-number "$CI_BUILD_NUMBER"

@@ -9,8 +9,9 @@ import os
 import plistlib
 import re
 import sys
+import subprocess
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -22,12 +23,15 @@ class ReleaseNoteError(ValueError):
 class NoteItem:
     title: str
     detail: str
+    symbol: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
 class Note:
     build: int
     items: tuple[NoteItem, ...]
+    version: str = field(default="1.0", compare=False)
+    date: str = field(default="", compare=False)
 
     def tester_text(self) -> str:
         return "\n\n".join(f"{item.title}\n{item.detail}" for item in self.items) + "\n"
@@ -133,11 +137,12 @@ def _parse_item(item_source: str) -> NoteItem:
     match = ITEM_FIELDS.fullmatch(item_source)
     if match is None:
         raise ReleaseNoteError("unrecognized release-note item; expected symbol, title, and detail")
+    symbol = _decode_string(match.group(1)).strip()
     title = _decode_string(match.group(2)).strip()
     detail = _decode_string(match.group(3)).strip()
-    if not title or not detail:
-        raise ReleaseNoteError("release-note titles and details must not be empty")
-    return NoteItem(title=title, detail=detail)
+    if not symbol or not title or not detail:
+        raise ReleaseNoteError("release-note symbols, titles, and details must not be empty")
+    return NoteItem(title=title, detail=detail, symbol=symbol)
 
 
 def _parse_entry(entry_source: str) -> Note:
@@ -174,11 +179,61 @@ def _parse_entry(entry_source: str) -> Note:
     if not items:
         raise ReleaseNoteError("each numbered build must have at least one release-note item")
 
-    return Note(build=int(header.group(2)), items=tuple(items))
+    return Note(
+        build=int(header.group(2)),
+        items=tuple(items),
+        version=_decode_string(header.group(1)),
+        date=_decode_string(header.group(3)),
+    )
+
+
+def _note_from_history_data(value: object) -> Note:
+    if not isinstance(value, dict):
+        raise ReleaseNoteError("each bundled history entry must be a JSON object")
+    version, date, build, item_values = (
+        value.get("version"), value.get("date"), value.get("build"), value.get("items")
+    )
+    if not isinstance(version, str) or not version.strip():
+        raise ReleaseNoteError("history release-note version must not be empty")
+    if not isinstance(date, str) or not date.strip():
+        raise ReleaseNoteError("history release-note date must not be empty")
+    if not isinstance(build, int) or isinstance(build, bool) or build <= 0:
+        raise ReleaseNoteError("history release-note build must be a positive integer")
+    if not isinstance(item_values, list) or not item_values:
+        raise ReleaseNoteError("each history release note must contain items")
+    items: list[NoteItem] = []
+    for value in item_values:
+        if not isinstance(value, dict):
+            raise ReleaseNoteError("history release-note item must be a JSON object")
+        symbol, title, detail = value.get("symbol"), value.get("title"), value.get("detail")
+        if not all(isinstance(part, str) and part.strip() for part in (symbol, title, detail)):
+            raise ReleaseNoteError("history release-note symbols, titles, and details must not be empty")
+        items.append(NoteItem(title=title.strip(), detail=detail.strip(), symbol=symbol.strip()))
+    return Note(build=build, items=tuple(items), version=version.strip(), date=date.strip())
+
+
+def notes_from_history_data(value: object) -> tuple[Note, ...]:
+    if not isinstance(value, list):
+        raise ReleaseNoteError("bundled release-note history must be a JSON array")
+    notes = tuple(_note_from_history_data(item) for item in value)
+    builds = [note.build for note in notes]
+    if len(set(builds)) != len(builds):
+        raise ReleaseNoteError("ReleaseNotes.history contains duplicate build numbers")
+    if builds != sorted(builds, reverse=True):
+        raise ReleaseNoteError("ReleaseNotes.history must remain sorted newest build first")
+    return notes
 
 
 def load_notes(source_path: Path) -> tuple[Note, ...]:
     source = source_path.read_text(encoding="utf-8")
+    if source.lstrip().startswith("["):
+        try:
+            values = json.loads(source)
+        except json.JSONDecodeError as error:
+            raise ReleaseNoteError(f"could not parse bundled release-note history: {error}") from error
+        return notes_from_history_data(values)
+
+    # Retain the Swift reader for migration fixtures and one-time conversion only.
     marker = re.search(r"static\s+let\s+history\s*:\s*\[ReleaseNote\]\s*=\s*\[", source)
     if marker is None:
         raise ReleaseNoteError("could not find ReleaseNotes.history in the Swift source")
@@ -212,7 +267,7 @@ def exact_note(notes: tuple[Note, ...], build_number: int) -> Note:
 
 
 def _default_source() -> Path:
-    return Path(__file__).resolve().parent.parent / "TightbeamTuner" / "ReleaseNotes.swift"
+    return Path(__file__).resolve().parent.parent / "TightbeamTuner" / "ReleaseNotesHistory.json"
 
 
 def _default_current_source() -> Path:
@@ -340,10 +395,6 @@ def validate_premerge_note(
             "premerge release note must contain exactly one `Compatibility` item"
         )
     compatibility = compatibility_items[0].detail
-    if not re.search(r"\bTightbeam(?:\s+CLI)?\s+v?\d+\.\d+\.\d+\b", compatibility, re.IGNORECASE):
-        raise ReleaseNoteError(
-            "premerge Compatibility item must name a Tightbeam semantic version"
-        )
     if not re.search(r"\bChat\s+v?\d+\.\d+\.\d+\b", compatibility, re.IGNORECASE):
         raise ReleaseNoteError(
             "premerge Compatibility item must name a Chat semantic version"
@@ -399,8 +450,8 @@ def _entry_names(names: list[str]) -> str:
     return summary
 
 
-def _signed_export_app_info(signed_app_path: Path) -> dict:
-    """Read the sole app Info.plist from Xcode Cloud's TestFlight-signed IPA."""
+def _signed_export_app_contents(signed_app_path: Path, resource_names: tuple[str, ...] = ()) -> tuple[dict, dict[str, bytes]]:
+    """Read the sole app Info.plist and selected resources from the signed IPA."""
     if not signed_app_path.is_dir():
         raise ReleaseNoteError("the Xcode Cloud signed-app export path is not a directory")
     try:
@@ -424,15 +475,15 @@ def _signed_export_app_info(signed_app_path: Path) -> dict:
     try:
         with zipfile.ZipFile(ipa_path) as ipa:
             ipa_entries = ipa.namelist()
-            app_info_entries = sorted({
+            app_info_entries = sorted(
                 name
                 for name in ipa_entries
                 if name.startswith("Payload/")
                 and name.endswith(".app/Info.plist")
                 and name.count("/") == 2
-            })
+            )
             app_bundles = [name.rsplit("/", 1)[0] for name in app_info_entries]
-            if len(app_bundles) != 1:
+            if len(app_bundles) != 1 or len(set(app_bundles)) != 1:
                 raise ReleaseNoteError(
                     "the Xcode Cloud signed IPA must contain exactly one app bundle; "
                     f"found {len(app_bundles)}; export entries: {_entry_names(export_entries)}; "
@@ -440,6 +491,16 @@ def _signed_export_app_info(signed_app_path: Path) -> dict:
                 )
             with ipa.open(app_info_entries[0]) as info_file:
                 info = plistlib.load(info_file)
+            bundle_root = app_bundles[0]
+            resources: dict[str, bytes] = {}
+            for resource_name in resource_names:
+                archive_name = f"{bundle_root}/{resource_name}"
+                matches = [entry for entry in ipa.infolist() if entry.filename == archive_name]
+                if len(matches) != 1 or matches[0].file_size > 2 * 1024 * 1024:
+                    raise ReleaseNoteError(
+                        f"the signed app is missing one bounded {resource_name} resource"
+                    )
+                resources[resource_name] = ipa.read(matches[0])
     except zipfile.BadZipFile as error:
         raise ReleaseNoteError(
             "the Xcode Cloud signed app is not a readable IPA; "
@@ -457,7 +518,93 @@ def _signed_export_app_info(signed_app_path: Path) -> dict:
             "the app Info.plist in the Xcode Cloud signed IPA is not a dictionary; "
             f"IPA entries: {_entry_names(ipa_entries)}"
         )
+    return info, resources
+
+
+def _signed_export_app_info(signed_app_path: Path) -> dict:
+    """Read the sole app Info.plist from Xcode Cloud's TestFlight-signed IPA."""
+    info, _ = _signed_export_app_contents(signed_app_path)
     return info
+
+
+def _decode_signed_json(resources: dict[str, bytes], name: str) -> object:
+    try:
+        return json.loads(resources[name].decode("utf-8"))
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReleaseNoteError(f"the signed app's {name} resource is invalid JSON") from error
+
+
+def _validate_signed_candidate(signed_app_path: Path, build_number: int) -> tuple[Note, dict, object, dict]:
+    info, resources = _signed_export_app_contents(
+        signed_app_path,
+        ("CurrentBuildReleaseNote.json", "ReleaseNotesHistory.json", "ReleaseCompatibilityReport.json"),
+    )
+    note_data = _decode_signed_json(resources, "CurrentBuildReleaseNote.json")
+    history_data = _decode_signed_json(resources, "ReleaseNotesHistory.json")
+    report = _decode_signed_json(resources, "ReleaseCompatibilityReport.json")
+    if not isinstance(note_data, dict) or not isinstance(report, dict):
+        raise ReleaseNoteError("the signed app note or compatibility report has an invalid shape")
+
+    commit = os.environ.get("CI_COMMIT", "")
+    run_id = os.environ.get("CI_BUILD_ID", "")
+    scheme = os.environ.get("CI_XCODE_SCHEME", "")
+    configuration = os.environ.get("TUNER_RELEASE_CONFIGURATION", "Release")
+    attempt_value = os.environ.get("CI_BUILD_ATTEMPT", "1")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit) or not run_id or not scheme:
+        raise ReleaseNoteError("Xcode Cloud candidate identity is incomplete during signed-export verification")
+    if not attempt_value.isdigit() or int(attempt_value) < 1:
+        raise ReleaseNoteError("Xcode Cloud attempt number is invalid during signed-export verification")
+    repo = Path(os.environ.get("CI_PRIMARY_REPOSITORY_PATH", Path(__file__).resolve().parents[2])).resolve()
+    try:
+        tree_result = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=repo, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReleaseNoteError("could not verify the signed candidate Git tree") from error
+    tree = tree_result.stdout.strip()
+    if tree_result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree):
+        raise ReleaseNoteError("could not verify the signed candidate Git tree")
+
+    baseline_path = repo / "ios" / "ci_scripts" / "ReleaseBaseline.json"
+    try:
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ReleaseNoteError("the pinned preceding-build reference is unreadable") from error
+    if not isinstance(baseline, dict):
+        raise ReleaseNoteError("the pinned preceding-build reference is invalid")
+    expected_candidate = {
+        "commit": commit,
+        "tree": tree,
+        "scheme": scheme,
+        "configuration": configuration,
+        "buildNumber": build_number,
+    }
+    expected_baseline = {
+        "commit": baseline.get("sourceCommit"),
+        "tree": baseline.get("sourceTree"),
+        "scheme": baseline.get("scheme"),
+        "configuration": baseline.get("configuration"),
+        "buildNumber": baseline.get("buildNumber"),
+    }
+    try:
+        import release_hook
+
+        release_hook.validate_signed_archive(
+            report,
+            note_data,
+            history_data,
+            info,
+            expected_candidate=expected_candidate,
+            baseline_reference_data=expected_baseline,
+            expected_ci_run_id=run_id,
+            expected_attempt=int(attempt_value),
+            expected_build_number=build_number,
+        )
+        note = _note_from_data(note_data, expected_build=build_number)
+    except release_hook.ReleaseHookError as error:
+        raise ReleaseNoteError(str(error)) from error
+    return note, note_data, history_data, report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -469,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-note", type=Path)
     parser.add_argument("--require-pr-provenance", action="store_true")
     parser.add_argument("--signed-app-path", type=Path)
+    parser.add_argument("--require-archive-evidence", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
 
@@ -482,6 +630,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("premerge requires --base-note")
     if args.action == "premerge" and args.signed_app_path is not None:
         parser.error("premerge does not accept --signed-app-path")
+    if args.require_archive_evidence and (args.action != "render" or args.signed_app_path is None):
+        parser.error("--require-archive-evidence requires render and --signed-app-path")
     if args.action == "premerge" and args.output is not None:
         parser.error("premerge does not accept --output")
     if args.require_pr_provenance and args.action != "premerge":
@@ -499,16 +649,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Release note build {note.build} is fresh against the base and history.")
             return 0
 
-        note = note_for_build(args.source, args.history, args.build_number)
-        if args.signed_app_path is not None:
-            info = _signed_export_app_info(args.signed_app_path)
-            app_build = info.get("CFBundleVersion")
-            if not isinstance(app_build, str) or not app_build.isdigit() or int(app_build) <= 0:
-                raise ReleaseNoteError("the signed app has no numeric CFBundleVersion")
-            if app_build != str(args.build_number):
-                raise ReleaseNoteError(
-                    f"signed app CFBundleVersion {app_build} does not match build {args.build_number}"
-                )
+        if args.signed_app_path is not None and args.require_archive_evidence:
+            if args.action != "render":
+                parser.error("--signed-app-path is only valid for render")
+            note, _, _, _ = _validate_signed_candidate(args.signed_app_path, args.build_number)
+        else:
+            note = note_for_build(args.source, args.history, args.build_number)
+            if args.signed_app_path is not None:
+                info = _signed_export_app_info(args.signed_app_path)
+                app_build = info.get("CFBundleVersion")
+                if not isinstance(app_build, str) or not app_build.isdigit() or int(app_build) <= 0:
+                    raise ReleaseNoteError("the signed app has no numeric CFBundleVersion")
+                if app_build != str(args.build_number):
+                    raise ReleaseNoteError(
+                        f"signed app CFBundleVersion {app_build} does not match build {args.build_number}"
+                    )
         text = note.tester_text()
         if not text.strip():
             raise ReleaseNoteError(f"release notes for build {args.build_number} are empty")
@@ -517,7 +672,8 @@ def main(argv: list[str] | None = None) -> int:
             temporary = args.output.with_name(args.output.name + ".tmp")
             temporary.write_text(text, encoding="utf-8")
             os.replace(temporary, args.output)
-            print(f"Generated TestFlight notes for build {args.build_number} from the bundled release-note data.")
+            source = "the signed app note" if args.require_archive_evidence else "the selected release-note data"
+            print(f"Generated TestFlight notes for build {args.build_number} from {source}.")
         else:
             print(f"Found {len(note.items)} user-facing note item(s) for build {args.build_number}.")
     except (OSError, ReleaseNoteError) as error:
