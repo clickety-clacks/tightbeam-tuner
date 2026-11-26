@@ -11,7 +11,7 @@
     {
       "symbol": "info.circle",
       "title": "Compatibility",
-      "detail": "Tightbeam compatibility was not verified for this build."
+      "detail": "This build was not verified against Tightbeam 0.1.16 (build 4304), Tightbeam 0.1.15 (build 4082), or Chat v0.1.104. No version-specific test evidence is tied to this build."
     },
     {
       "symbol": "exclamationmark.triangle",
