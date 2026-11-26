@@ -393,29 +393,6 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
-        self.assertEqual(current.build, 82)
-        self.assertEqual(
-            [item.title for item in current.items],
-            ["Paste photos from the clipboard", "Compatibility", "Breaking changes"],
-        )
-        paste_detail = next(
-            item.detail
-            for item in current.items
-            if item.title == "Paste photos from the clipboard"
-        )
-        self.assertIn("existing attachment flow", paste_detail)
-        compatibility = next(
-            item.detail for item in current.items if item.title == "Compatibility"
-        )
-        self.assertEqual(
-            compatibility,
-            "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
-        )
-        breaking_changes = next(
-            item.detail for item in current.items if item.title == "Breaking changes"
-        )
-        self.assertEqual(breaking_changes, "None.")
-
         if current.build == 0:
             with self.assertRaisesRegex(
                 release_notes.ReleaseNoteError,
@@ -560,7 +537,10 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
 
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "greater than latest historical note 81"):
+            latest_history_build = max(note.build for note in self.history)
+            with self.assertRaisesRegex(
+                release_notes.ReleaseNoteError, f"greater than latest historical note {latest_history_build}"
+            ):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
                 )

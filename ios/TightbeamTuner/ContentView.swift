@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @State private var store = TunerStore()
@@ -509,13 +510,15 @@ private struct AgentBranch: View {
     }
 }
 
-private struct AgentSectionHeader: View {
+private struct AgentSectionHeader<Status: View>: View {
     let title: LocalizedStringKey
     let count: Int
+    @ViewBuilder var status: () -> Status = { EmptyView() }
 
     var body: some View {
         HStack(spacing: 8) {
             Text(title)
+            status()
             Text(count, format: .number)
                 .font(TunerTypography.caption)
                 .monospacedDigit()
@@ -537,6 +540,7 @@ private struct AgentSidebar: View {
     @Binding var selectedArchetypes: Set<String>
     let isRegularWidthIPad: Bool
     @State private var collapsed: Set<String> = []
+    @State private var showingRosterError = false
     @State private var keyboardBottomOverlap: CGFloat = 0
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("maxRecents") private var maxRecents = 10
@@ -612,29 +616,6 @@ private struct AgentSidebar: View {
             let matchingRecents = recents.filter { filter.matches($0) }
             let counts = AgentSectionCounts(replied: replied, recent: recents,
                                             agents: mainSectionAgents, filter: filter)
-            if store.isLoading {
-                ProgressView("Loading agents…")
-                    .listRowBackground(Color.nordicSurface)
-            }
-            if store.isRosterStale {
-                Label {
-                    Text("Agent list may be out of date")
-                        .foregroundStyle(Color.nordicSecondaryText)
-                } icon: {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .foregroundStyle(Color.nordicCaution)
-                }
-                    .font(TunerTypography.supporting)
-                    .listRowBackground(Color.nordicSurface)
-            }
-            if let error = store.error {
-                ContentUnavailableView(
-                    "Could not load agents",
-                    systemImage: "wifi.exclamationmark",
-                    description: Text(error).foregroundStyle(Color.nordicDanger)
-                )
-                    .listRowBackground(Color.nordicSurface)
-            }
             if !replied.isEmpty {
                 Section(isExpanded: $repliedSectionExpanded) {
                     ForEach(matchingReplied) { agent in
@@ -683,10 +664,51 @@ private struct AgentSidebar: View {
                                 collapsed: $collapsed)
                 }
             } header: {
-                AgentSectionHeader(title: "Agents", count: counts.agents)
+                AgentSectionHeader(title: "Agents", count: counts.agents) {
+                    if store.isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel("Loading agents")
+                    } else if store.error != nil {
+                        Button {
+                            showingRosterError = true
+                        } label: {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundStyle(Color.nordicCaution)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Show agent list error")
+                    }
+                }
             }
         }
         .nordicListStyle()
+        .sheet(isPresented: $showingRosterError) {
+            if let error = store.error {
+                NavigationStack {
+                    ScrollView {
+                        Text(error)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                    }
+                    .navigationTitle("Could not load agents")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showingRosterError = false }
+                        }
+                        ToolbarItem(placement: .primaryAction) {
+                            Button("Copy") { UIPasteboard.general.string = error }
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: store.error) { _, error in
+            if error == nil { showingRosterError = false }
+        }
         .background {
             GeometryReader { geometry in
                 SidebarKeyboardOcclusionReader { keyboardBottomOverlap = $0 }
@@ -704,7 +726,10 @@ private struct AgentSidebar: View {
                     .allowsHitTesting(false)
             }
         }
-        .refreshable { await store.refresh() }
+        .refreshable {
+            // End the system refresh indicator while the heading shows fetch progress.
+            _ = Task { await store.refresh() }
+        }
         .searchable(text: $query, placement: .sidebar, prompt: "Filter agents")
         // Keep the archetype menu in the toolbar while searching.
         .searchPresentationToolbarBehavior(.avoidHidingContent)
