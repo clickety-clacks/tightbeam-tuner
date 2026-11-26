@@ -1,4 +1,5 @@
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -79,6 +80,34 @@ class DiagnosticArgumentsTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as error:
             compatibility_matrix.main(["--build-number", "84", "--output", "/tmp/report.json"])
         self.assertEqual(error.exception.code, 2)
+
+    def test_diagnostic_workflow_checks_out_and_reports_the_pull_request_head(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/release-note-gate.yml").read_text(
+            encoding="utf-8"
+        )
+        expression = "${{ github.event.pull_request.head.sha || github.sha }}"
+        self.assertEqual(workflow.count(expression), 3)
+        self.assertIn(f"CI_COMMIT: {expression}", workflow)
+        self.assertIn(f"ref: {expression}", workflow)
+
+    def test_xcode_failure_summary_keeps_locations_but_not_sensitive_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log_path = Path(temporary) / "baseline.log"
+            log_path.write_text(
+                "/Volumes/private-task/ReleaseCompatibilityTests.swift:426: error: token=do-not-retain XCTAssertTrue failed - ssh-ed25519 key data\n"
+                "xcodebuild: error: test failed\n",
+                encoding="utf-8",
+            )
+            summary = compatibility_matrix._safe_xcode_failure_summary(log_path)
+
+        self.assertEqual(summary["sourceLocations"], [
+            {"file": "ReleaseCompatibilityTests.swift", "line": 426, "severity": "error"}
+        ])
+        self.assertEqual(summary["assertionKinds"], ["XCTAssertTrue"])
+        self.assertEqual(summary["errorCount"], 2)
+        self.assertNotIn("private-task", json.dumps(summary))
+        self.assertNotIn("do-not-retain", json.dumps(summary))
+        self.assertNotIn("ssh-ed25519", json.dumps(summary))
 
 
 if __name__ == "__main__":

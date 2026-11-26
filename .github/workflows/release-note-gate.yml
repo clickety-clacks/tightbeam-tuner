@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 120
     env:
       CI_BUILD_ID: ${{ github.run_id }}
-      CI_COMMIT: ${{ github.sha }}
+      CI_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       CI_XCODE_SCHEME: TightbeamTuner
       CI_XCODEBUILD_ACTION: test
       CI_PRIMARY_REPOSITORY_PATH: ${{ github.workspace }}
@@ -67,6 +67,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Record toolchain and simulator runtimes
         run: |
@@ -101,7 +102,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tuner-compatibility-${{ github.sha }}
+          name: tuner-compatibility-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/ReleaseCompatibilityReport.json
           if-no-files-found: warn
           retention-days: 30

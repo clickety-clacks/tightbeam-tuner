@@ -35,7 +35,9 @@ import release_notes
 
 
 class MatrixError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, diagnostics: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 class _WebSocket:
@@ -1515,7 +1517,57 @@ def _run_test_phase(
     if result.returncode != 0:
         # Do not echo raw xcodebuild output: the test process contains a private
         # fixture token and ephemeral user/key material in its environment.
-        raise MatrixError(f"Xcode {phase} compatibility test failed; inspect the result bundle")
+        raise MatrixError(
+            f"Xcode {phase} compatibility test failed; inspect the sanitized failure summary",
+            diagnostics=_safe_xcode_failure_summary(log_path),
+        )
+
+
+def _safe_xcode_failure_summary(log_path: Path) -> dict[str, Any]:
+    """Retain source locations and assertion kinds without copying private test output."""
+    try:
+        with log_path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - 1024 * 1024), os.SEEK_SET)
+            lines = stream.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return {"available": False, "sourceLocations": [], "assertionKinds": [], "errorCount": 0}
+
+    location_pattern = re.compile(
+        r"(?P<file>[A-Za-z0-9_.-]+\.swift):(?P<line>\d+)(?::\d+)?:\s*(?P<severity>error|warning):",
+        re.IGNORECASE,
+    )
+    assertion_pattern = re.compile(r"\b(XCTAssert[A-Za-z]*|XCTFail|XCTUnwrap)\b")
+    locations: set[tuple[str, int, str]] = set()
+    assertions: set[str] = set()
+    errors = 0
+    warnings = 0
+    for line in lines:
+        match = location_pattern.search(line)
+        if match:
+            source_name = match.group("file")
+            line_number = int(match.group("line"))
+            severity = match.group("severity").lower()
+            locations.add((source_name, line_number, severity))
+            errors += severity == "error"
+            warnings += severity == "warning"
+        if "error:" in line.casefold() and not match:
+            errors += 1
+        assertion = assertion_pattern.search(line)
+        if assertion:
+            assertions.add(assertion.group(1))
+
+    return {
+        "available": True,
+        "sourceLocations": [
+            {"file": filename, "line": line_number, "severity": severity}
+            for filename, line_number, severity in sorted(locations)
+        ][:50],
+        "assertionKinds": sorted(assertions),
+        "errorCount": errors,
+        "warningCount": warnings,
+    }
 
 
 def _combine_results(
@@ -1951,6 +2003,8 @@ def run_matrix(
             matrix_report["failure"] = str(error)
         else:
             matrix_report.setdefault("failure", str(error))
+        if error.diagnostics is not None:
+            matrix_report["xcodeFailureSummary"] = error.diagnostics
         if fixture is not None and fixture.phase_results:
             matrix_report["observedPhaseResults"] = fixture.phase_results
         matrix_report.setdefault("detectors", {"status": "failed", "findings": [], "findingsSha256": release_hook.findings_digest([])})
