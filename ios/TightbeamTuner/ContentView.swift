@@ -513,12 +513,18 @@ private struct AgentBranch: View {
 private struct AgentSectionHeader<Status: View>: View {
     let title: LocalizedStringKey
     let count: Int
-    @ViewBuilder var status: () -> Status = { EmptyView() }
+    let status: Status
+
+    init(title: LocalizedStringKey, count: Int, @ViewBuilder status: () -> Status) {
+        self.title = title
+        self.count = count
+        self.status = status()
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             Text(title)
-            status()
+            status
             Text(count, format: .number)
                 .font(TunerTypography.caption)
                 .monospacedDigit()
@@ -529,6 +535,12 @@ private struct AgentSectionHeader<Status: View>: View {
         }
         .font(TunerTypography.caption)
         .foregroundStyle(Color.nordicSecondaryText)
+    }
+}
+
+private extension AgentSectionHeader where Status == EmptyView {
+    init(title: LocalizedStringKey, count: Int) {
+        self.init(title: title, count: count) { EmptyView() }
     }
 }
 
