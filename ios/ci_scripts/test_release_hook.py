@@ -84,7 +84,9 @@ def compatibility_report(pair, target=None):
         "configuration": target["configuration"],
         "execution": "ios-simulator",
         "runtimeSource": "published-release-asset",
-        "networkScope": "loopback-only",
+        "networkScope": "disposable-per-release-base-and-state",
+        "modelEndpointNetworkScope": "loopback-only",
+        "runtimeClientAddress": "loopback-advertised-url",
     }
     runs = []
     for item in pair:
@@ -165,6 +167,10 @@ def compatibility_report(pair, target=None):
         "candidate": copy.deepcopy(target),
         "baseline": baseline_value,
         "producer": producer,
+        "runtimeGatewayListeners": [
+            {"releaseId": item.release_id, "observedBindings": ["wildcard"]}
+            for item in pair
+        ],
         "runs": runs,
     }
 
@@ -393,6 +399,32 @@ class CompatibilityReportTests(unittest.TestCase):
             expected_ci_run_id="cloud-run-84"
         )
         self.assertEqual(len(runs), 2)
+
+    def test_disposable_gateway_wildcard_is_recorded_and_accepted(self):
+        self.assertEqual(
+            [row["observedBindings"] for row in self.report["runtimeGatewayListeners"]],
+            [["wildcard"], ["wildcard"]],
+        )
+        self.assertEqual(
+            len(release_hook.validate_compatibility_runs(
+                self.report, candidate(), self.pair, baseline=baseline()
+            )),
+            2,
+        )
+
+    def test_report_requires_exact_isolation_and_listener_observations(self):
+        mutations = (
+            lambda value: value["producer"].update(modelEndpointNetworkScope="wildcard"),
+            lambda value: value["runtimeGatewayListeners"].pop(),
+            lambda value: value["runtimeGatewayListeners"][0].update(observedBindings=[]),
+        )
+        for mutate in mutations:
+            changed = copy.deepcopy(self.report)
+            mutate(changed)
+            with self.assertRaises(release_hook.ReleaseHookError):
+                release_hook.validate_compatibility_runs(
+                    changed, candidate(), self.pair, baseline=baseline()
+                )
 
     def test_attempt_is_fixed_to_one_for_each_unique_cloud_run(self):
         self.assertEqual(self.report["producer"]["attempt"], 1)

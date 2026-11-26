@@ -325,8 +325,36 @@ def validate_compatibility_runs(
         _fail("compatibility CI producer used a different scheme or release configuration")
     if producer.get("execution") != "ios-simulator" or producer.get("runtimeSource") != "published-release-asset":
         _fail("compatibility result was not produced by the required isolated simulator and published runtime")
-    if producer.get("networkScope") != "loopback-only":
-        _fail("compatibility run was not isolated to its local disposable Tightbeam instance")
+    if (
+        producer.get("networkScope") != "disposable-per-release-base-and-state"
+        or producer.get("modelEndpointNetworkScope") != "loopback-only"
+        or producer.get("runtimeClientAddress") != "loopback-advertised-url"
+    ):
+        _fail("compatibility run did not use isolated runtime state, a loopback model endpoint, and the loopback client URL")
+    listener_rows = report.get("runtimeGatewayListeners")
+    expected_release_ids = {item.release_id for item in pair}
+    if not isinstance(listener_rows, list) or len(listener_rows) != len(expected_release_ids):
+        _fail("compatibility report does not record gateway listener bindings for both published releases")
+    observed_release_ids: set[int] = set()
+    allowed_binding_labels = {
+        "wildcard", "IPv4 loopback", "IPv6 loopback", "non-loopback IPv4",
+        "non-loopback IPv6", "unrecognized address", "unexpected listener entry",
+    }
+    for row in listener_rows:
+        if not isinstance(row, dict):
+            _fail("compatibility report contains an invalid gateway listener observation")
+        release_id = row.get("releaseId")
+        bindings = row.get("observedBindings")
+        if (
+            type(release_id) is not int or release_id not in expected_release_ids
+            or release_id in observed_release_ids
+            or not isinstance(bindings, list) or not bindings
+            or any(not isinstance(value, str) or value not in allowed_binding_labels for value in bindings)
+        ):
+            _fail("compatibility report contains incomplete or unrecognized gateway listener observations")
+        observed_release_ids.add(release_id)
+    if observed_release_ids != expected_release_ids:
+        _fail("compatibility report does not identify both published gateway listeners")
     runs = report.get("runs")
     if not isinstance(runs, list) or len(runs) != 2:
         _fail("compatibility report must contain exactly two per-release CI runs")

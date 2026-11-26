@@ -56,7 +56,7 @@ class SimulatorSelectionTests(unittest.TestCase):
 
 
 class LoopbackListenerTests(unittest.TestCase):
-    def test_listener_check_scopes_lsof_to_owner_and_rejects_non_loopback_bind(self):
+    def test_loopback_check_queries_only_the_assigned_port_and_rejects_wildcard(self):
         output = (
             "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
             "python 123 user 4u IPv4 0x1 0t0 TCP 127.0.0.1:19450 (LISTEN)\n"
@@ -69,10 +69,10 @@ class LoopbackListenerTests(unittest.TestCase):
                 return_value=mock.Mock(returncode=0, stdout=output),
             ) as run,
         ):
-            compatibility_matrix._require_loopback_listener(19450, "fixture", 123)
+            compatibility_matrix._require_loopback_listener(19450, "fixture")
         self.assertEqual(
             run.call_args.args[0],
-            ["/usr/sbin/lsof", "-nP", "-a", "-p", "123", "-iTCP:19450", "-sTCP:LISTEN"],
+            ["/usr/sbin/lsof", "-nP", "-a", "-iTCP:19450", "-sTCP:LISTEN"],
         )
         self.assertEqual(run.call_args.kwargs["timeout"], 30)
 
@@ -88,7 +88,19 @@ class LoopbackListenerTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(compatibility_matrix.MatrixError, "not bound exclusively to loopback"),
         ):
-            compatibility_matrix._require_loopback_listener(19450, "fixture", 123)
+            compatibility_matrix._require_loopback_listener(19450, "fixture")
+
+    def test_published_runtime_wildcard_listener_is_recorded_not_rejected(self):
+        fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
+        fixture.gateway_listener_bindings = {}
+        with mock.patch.object(
+            compatibility_matrix, "_listener_bindings", return_value={"wildcard"}
+        ):
+            fixture._record_gateway_listener(4304, 19450, "published Tightbeam gateway")
+        self.assertEqual(
+            fixture.gateway_listener_report(),
+            [{"releaseId": 4304, "observedBindings": ["wildcard"]}],
+        )
 
     def test_command_timeout_is_reported_without_echoing_process_output(self):
         with (

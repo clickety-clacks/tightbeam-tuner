@@ -328,13 +328,12 @@ def _sha_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _require_loopback_listener(port: int, label: str) -> None:
+def _listener_bindings(port: int, label: str) -> set[str]:
     lsof = shutil.which("lsof")
     if lsof is None:
-        _safe_fail("compatibility matrix cannot verify that its local service is loopback-only")
+        _safe_fail("compatibility matrix cannot inspect its local service listener")
     # Query only the allocated port because a service may bind from a child
-    # process. This checks every listener on the fixture port without scanning
-    # unrelated sockets, and still rejects wildcard or external binds.
+    # process. Callers decide which listener addresses their service permits.
     result = _run(
         [lsof, "-nP", "-a", f"-iTCP:{port}", "-sTCP:LISTEN"],
         timeout=30,
@@ -361,12 +360,16 @@ def _require_loopback_listener(port: int, label: str) -> None:
             return "IPv4 loopback" if parsed.version == 4 else "IPv6 loopback"
         return "non-loopback IPv4" if parsed.version == 4 else "non-loopback IPv6"
 
-    if not listeners:
+    return {listener_kind(address) for address in listeners}
+
+
+def _require_loopback_listener(port: int, label: str) -> None:
+    kinds = _listener_bindings(port, label)
+    if not kinds:
         _safe_fail(
             f"compatibility matrix {label} is not bound exclusively to loopback "
             "(lsof returned no TCP listener row for the assigned port)"
         )
-    kinds = {listener_kind(address) for address in listeners}
     non_loopback = kinds - {"IPv4 loopback", "IPv6 loopback"}
     if non_loopback:
         _safe_fail(
@@ -667,6 +670,7 @@ class LocalRuntimeFixture:
         self.state_root = root / "runtime-state"
         self.state_root.mkdir(parents=True, exist_ok=True)
         self.runtime_base: dict[int, Path] = {}
+        self.gateway_listener_bindings: dict[int, set[str]] = {}
         self.selected_release_id: int | None = None
         self.gateway_process: subprocess.Popen[bytes] | None = None
         self.gateway_log: Any = None
@@ -699,6 +703,18 @@ class LocalRuntimeFixture:
             except Exception:
                 pass
             raise
+
+    def _record_gateway_listener(self, release_id: int, port: int, label: str) -> None:
+        bindings = _listener_bindings(port, label)
+        if not bindings:
+            _safe_fail(f"compatibility matrix could not observe the {label} listener")
+        self.gateway_listener_bindings.setdefault(release_id, set()).update(bindings)
+
+    def gateway_listener_report(self) -> list[dict[str, Any]]:
+        return [
+            {"releaseId": release_id, "observedBindings": sorted(bindings)}
+            for release_id, bindings in sorted(self.gateway_listener_bindings.items())
+        ]
 
     @property
     def fixture_url(self) -> str:
@@ -1002,7 +1018,7 @@ class LocalRuntimeFixture:
         build_part = release.tag.split("+", 1)[1] if "+" in release.tag else None
         if version_core is None or version_core.group(0) not in version_text or (build_part and build_part not in version_text):
             _safe_fail(f"published Tightbeam gateway version endpoint does not identify {release.tag}")
-        _require_loopback_listener(self.gateway_port, "published Tightbeam gateway")
+        self._record_gateway_listener(release_id, self.gateway_port, "published Tightbeam gateway")
 
     def _stop_gateway(self) -> None:
         process = self.gateway_process
@@ -1351,7 +1367,7 @@ class LocalRuntimeFixture:
             build_part = release.tag.split("+", 1)[1] if "+" in release.tag else None
             if version_core is None or version_core.group(0) not in version_text or (build_part and build_part not in version_text):
                 raise MatrixError("published Tightbeam catch-up gateway did not match its pinned release")
-            _require_loopback_listener(temporary_port, "published catch-up gateway")
+            self._record_gateway_listener(release_id, temporary_port, "published catch-up gateway")
             sequence, marker = self._post_and_mark(temporary_gateway, context, "catch-up")
         finally:
             if temporary_process is not None and temporary_process.poll() is None:
@@ -2098,7 +2114,9 @@ def run_matrix(
             "configuration": candidate["configuration"],
             "execution": "ios-simulator",
             "runtimeSource": "published-release-asset",
-            "networkScope": "loopback-only",
+            "networkScope": "disposable-per-release-base-and-state",
+            "modelEndpointNetworkScope": "loopback-only",
+            "runtimeClientAddress": "loopback-advertised-url",
         }
         matrix_report["candidate"] = matrix_candidate
         matrix_report["producer"] = producer
@@ -2173,6 +2191,7 @@ def run_matrix(
             "candidate": matrix_candidate,
             "baseline": baseline_report_identity,
             "producer": producer,
+            "runtimeGatewayListeners": fixture.gateway_listener_report(),
             "runs": combined,
         }
         matrix_report = {
@@ -2191,6 +2210,7 @@ def run_matrix(
                 }
                 for item in pair
             ],
+            "runtimeGatewayListeners": fixture.gateway_listener_report(),
             "compatibility": compatibility,
             "detectors": {
                 "status": "completed",
@@ -2277,6 +2297,8 @@ def run_matrix(
             matrix_report["xcodeFailureSummary"] = error.diagnostics
         if fixture is not None and fixture.phase_results:
             matrix_report["observedPhaseResults"] = fixture.phase_results
+        if fixture is not None:
+            matrix_report["runtimeGatewayListeners"] = fixture.gateway_listener_report()
         matrix_report.setdefault("detectors", {"status": "failed", "findings": [], "findingsSha256": release_hook.findings_digest([])})
         try:
             _write_json(report_path, matrix_report)
@@ -2290,6 +2312,8 @@ def run_matrix(
             "status": "failed", "findings": [],
             "findingsSha256": release_hook.findings_digest([]),
         }
+        if fixture is not None:
+            matrix_report["runtimeGatewayListeners"] = fixture.gateway_listener_report()
         try:
             _write_json(report_path, matrix_report)
         except OSError:
