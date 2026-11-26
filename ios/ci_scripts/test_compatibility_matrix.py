@@ -286,7 +286,10 @@ class DiagnosticArgumentsTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/release-note-gate.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("CI_DIAGNOSTIC_ARTIFACTS_PATH: ${{ runner.temp }}/TunerCompatibilityDiagnostics", workflow)
+        self.assertIn(
+            'export CI_DIAGNOSTIC_ARTIFACTS_PATH="$RUNNER_TEMP/TunerCompatibilityDiagnostics"',
+            workflow,
+        )
         self.assertIn("${{ runner.temp }}/ReleaseCompatibilityReport.json", workflow)
         self.assertIn("${{ runner.temp }}/TunerCompatibilityDiagnostics/", workflow)
         self.assertIn("if-no-files-found: error", workflow)

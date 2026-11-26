@@ -63,7 +63,6 @@ jobs:
       CI_XCODE_SCHEME: TightbeamTuner
       CI_XCODEBUILD_ACTION: test
       CI_PRIMARY_REPOSITORY_PATH: ${{ github.workspace }}
-      CI_DIAGNOSTIC_ARTIFACTS_PATH: ${{ runner.temp }}/TunerCompatibilityDiagnostics
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,6 +91,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           export CI_DERIVED_DATA_PATH="$RUNNER_TEMP/TunerCompatibilityDerivedData"
+          export CI_DIAGNOSTIC_ARTIFACTS_PATH="$RUNNER_TEMP/TunerCompatibilityDiagnostics"
           export REPORT_PATH="$RUNNER_TEMP/ReleaseCompatibilityReport.json"
           mkdir -p "$CI_DERIVED_DATA_PATH"
           mkdir -p "$CI_DIAGNOSTIC_ARTIFACTS_PATH"
