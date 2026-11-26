@@ -510,21 +510,13 @@ private struct AgentBranch: View {
     }
 }
 
-private struct AgentSectionHeader<Status: View>: View {
+private struct AgentSectionHeader: View {
     let title: LocalizedStringKey
     let count: Int
-    let status: Status
-
-    init(title: LocalizedStringKey, count: Int, @ViewBuilder status: () -> Status) {
-        self.title = title
-        self.count = count
-        self.status = status()
-    }
 
     var body: some View {
         HStack(spacing: 8) {
             Text(title)
-            status
             Text(count, format: .number)
                 .font(TunerTypography.caption)
                 .monospacedDigit()
@@ -535,12 +527,6 @@ private struct AgentSectionHeader<Status: View>: View {
         }
         .font(TunerTypography.caption)
         .foregroundStyle(Color.nordicSecondaryText)
-    }
-}
-
-private extension AgentSectionHeader where Status == EmptyView {
-    init(title: LocalizedStringKey, count: Int) {
-        self.init(title: title, count: count) { EmptyView() }
     }
 }
 
@@ -619,6 +605,31 @@ private struct AgentSidebar: View {
         return roots.compactMap(project)
     }
 
+    private func rosterTitle(font: Font) -> some View {
+        HStack(spacing: 8) {
+            Text("Agents")
+                .font(font)
+                .foregroundStyle(Color.nordicText)
+                .accessibilityAddTraits(.isHeader)
+            if store.isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Loading agents")
+            } else {
+                Button {
+                    showingRosterError = true
+                } label: {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(Color.nordicCaution)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show agent list error")
+            }
+        }
+    }
+
     var body: some View {
         List(selection: $store.selectedID) {
             let filter = listFilter
@@ -676,24 +687,7 @@ private struct AgentSidebar: View {
                                 collapsed: $collapsed)
                 }
             } header: {
-                AgentSectionHeader(title: "Agents", count: counts.agents) {
-                    if store.isLoading {
-                        ProgressView()
-                            .controlSize(.small)
-                            .accessibilityLabel("Loading agents")
-                    } else if store.error != nil {
-                        Button {
-                            showingRosterError = true
-                        } label: {
-                            Image(systemName: "exclamationmark.triangle")
-                                .foregroundStyle(Color.nordicCaution)
-                                .frame(minWidth: 44, minHeight: 44)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Show agent list error")
-                    }
-                }
+                AgentSectionHeader(title: "Agents", count: counts.agents)
             }
         }
         .nordicListStyle()
@@ -746,6 +740,14 @@ private struct AgentSidebar: View {
         // Keep the archetype menu in the toolbar while searching.
         .searchPresentationToolbarBehavior(.avoidHidingContent)
         .toolbar {
+            if store.isLoading || store.error != nil {
+                ToolbarItem(placement: .largeTitle) {
+                    rosterTitle(font: .largeTitle.bold())
+                }
+                ToolbarItem(placement: .title) {
+                    rosterTitle(font: .headline)
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu("Filter archetypes", systemImage: "line.3.horizontal.decrease.circle") {
                     ForEach(archetypes, id: \.self) { archetype in
