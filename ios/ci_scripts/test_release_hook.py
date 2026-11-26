@@ -1378,6 +1378,41 @@ class SignedArchiveTests(unittest.TestCase):
             self.assertEqual(gate_outcome["preArchiveGate"]["status"], "passed")
             self.assertEqual(gate_outcome["finalArchiveGate"]["status"], "passed")
 
+    def test_signed_export_uses_configured_bundle_identifier(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            proof_bundle_identifier = "co.clicketyclacks.tightbeam-tuner-release-proof"
+            self.info["CFBundleIdentifier"] = proof_bundle_identifier
+            signed = self._signed_export(root)
+            output = root / "WhatToTest.txt"
+            env = os.environ.copy()
+            env.update({
+                "CI_COMMIT": self.commit,
+                "CI_BUILD_ID": f"cloud-run-{self.build_number}",
+                "CI_BUILD_NUMBER": str(self.build_number),
+                "CI_TAG": f"tuner-ios-build-{self.build_number}",
+                "CI_GIT_REF": f"refs/tags/tuner-ios-build-{self.build_number}",
+                "CI_XCODE_SCHEME": "TightbeamTuner",
+                "CI_PRIMARY_REPOSITORY_PATH": str(self.repo),
+                release_hook.EXPECTED_BUNDLE_IDENTIFIER_ENV: proof_bundle_identifier,
+            })
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(release_hook, "validate_release_tag_identity"),
+                mock.patch.object(release_hook, "resolve_published_pair", return_value=self.pair),
+                mock.patch.object(release_hook, "latest_public_review_status", return_value={
+                    "context": release_hook.RELEASE_REVIEW_CONTEXT,
+                    "state": "success",
+                    "description": f"sha256:{self.report['candidateObjectSha256']}",
+                }),
+            ):
+                result = release_notes.main([
+                    "render", "--build-number", str(self.build_number), "--signed-app-path", str(signed),
+                    "--require-archive-evidence", "--output", str(output),
+                ])
+            self.assertEqual(result, 0)
+            self.assertTrue(output.exists())
+
     def test_signed_export_blocks_report_mismatch_before_rendering(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

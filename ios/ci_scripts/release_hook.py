@@ -44,6 +44,8 @@ TIGHTBEAM_RELEASES_API = "https://api.github.com/repos/clickety-clacks/tightbeam
 GITHUB_USER_AGENT = "TightbeamTuner-release-check"
 TUNER_REPOSITORY = "clickety-clacks/tightbeam-tuner"
 RELEASE_REVIEW_CONTEXT = "tuner-ios/release-review"
+DEFAULT_BUNDLE_IDENTIFIER = "co.clicketyclacks.tightbeam-tuner"
+EXPECTED_BUNDLE_IDENTIFIER_ENV = "TUNER_EXPECTED_BUNDLE_IDENTIFIER"
 
 
 @dataclass(frozen=True)
@@ -1129,8 +1131,11 @@ def validate_signed_archive(
     repo: Path,
 ) -> None:
     """Verify that the signed app carries the completed archive-side evidence and note."""
-    if app_info.get("CFBundleIdentifier") != "co.clicketyclacks.tightbeam-tuner":
-        _fail("signed IPA is not the Tuner iOS app")
+    expected_bundle_identifier = os.environ.get(
+        EXPECTED_BUNDLE_IDENTIFIER_ENV, DEFAULT_BUNDLE_IDENTIFIER
+    )
+    if app_info.get("CFBundleIdentifier") != expected_bundle_identifier:
+        _fail("signed IPA bundle identifier does not match the configured app")
     if app_info.get("CFBundleVersion") != str(expected_build_number):
         _fail("signed IPA build number does not match the Xcode Cloud archive")
     minimum_os = app_info.get("MinimumOSVersion")
