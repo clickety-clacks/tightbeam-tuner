@@ -388,6 +388,47 @@ class ReleaseTagIdentityTests(unittest.TestCase):
                     repo, "0" * 40, "refs/tags/tuner-ios-build-84", "tuner-ios-build-84", 84
                 )
 
+    def test_proof_route_requires_its_distinct_tag(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+            (repo / "file.txt").write_text("candidate\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "file.txt"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate"], check=True)
+            commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            subprocess.run(["git", "-C", str(repo), "tag", "tuner-ios-proof-build-84", commit], check=True)
+            with mock.patch.dict(os.environ, {release_hook.RELEASE_ROUTE_ENV: "proof"}, clear=False):
+                release_hook.validate_release_tag_identity(
+                    repo, commit, "refs/tags/tuner-ios-proof-build-84", "tuner-ios-proof-build-84", 84
+                )
+                with self.assertRaisesRegex(release_hook.ReleaseHookError, "dedicated tag"):
+                    release_hook.validate_release_tag_identity(
+                        repo, commit, "refs/tags/tuner-ios-build-84", "tuner-ios-build-84", 84
+                    )
+                self.assertEqual(
+                    release_hook.review_context_for_route(),
+                    release_hook.RELEASE_PROOF_REVIEW_CONTEXT,
+                )
+
+    def test_bundle_identifier_is_fixed_by_route_and_rejects_cross_route_override(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                release_hook.expected_bundle_identifier(),
+                release_hook.DEFAULT_BUNDLE_IDENTIFIER,
+            )
+        with mock.patch.dict(os.environ, {release_hook.RELEASE_ROUTE_ENV: "proof"}, clear=True):
+            self.assertEqual(
+                release_hook.expected_bundle_identifier(),
+                release_hook.PROOF_BUNDLE_IDENTIFIER,
+            )
+            with mock.patch.dict(os.environ, {
+                release_hook.EXPECTED_BUNDLE_IDENTIFIER_ENV: release_hook.DEFAULT_BUNDLE_IDENTIFIER,
+            }, clear=False):
+                with self.assertRaisesRegex(release_hook.ReleaseHookError, "does not match"):
+                    release_hook.expected_bundle_identifier()
+
 
 class CompatibilityReportTests(unittest.TestCase):
     def setUp(self):
@@ -1382,7 +1423,30 @@ class SignedArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             proof_bundle_identifier = "co.clicketyclacks.tightbeam-tuner-release-proof"
+            proof_environment = {
+                release_hook.RELEASE_ROUTE_ENV: "proof",
+                release_hook.PROOF_WORKFLOW_NAME_ENV: "Tuner Release Proof",
+                release_hook.EXPECTED_BUNDLE_IDENTIFIER_ENV: proof_bundle_identifier,
+            }
+            with mock.patch.dict(os.environ, proof_environment, clear=False):
+                proof_object = release_hook.candidate_object(
+                    self.target, self.baseline, self.pair,
+                    self.report["detectors"]["findings"], self.note_data, self.history_data,
+                )
+            proof_digest = release_hook.candidate_object_digest(proof_object)
+            self.report["candidateObject"] = proof_object
+            self.report["candidateObjectSha256"] = proof_digest
+            self.report["preArchiveGate"] = {
+                "status": "passed", "sourceCommit": self.target["commit"],
+                "candidateDigest": proof_digest,
+                "context": release_hook.RELEASE_PROOF_REVIEW_CONTEXT,
+                "state": "success", "description": f"sha256:{proof_digest}",
+            }
             self.info["CFBundleIdentifier"] = proof_bundle_identifier
+            subprocess.run(
+                ["git", "-C", str(self.repo), "tag", f"tuner-ios-proof-build-{self.build_number}", self.commit],
+                check=True,
+            )
             signed = self._signed_export(root)
             output = root / "WhatToTest.txt"
             env = os.environ.copy()
@@ -1390,20 +1454,21 @@ class SignedArchiveTests(unittest.TestCase):
                 "CI_COMMIT": self.commit,
                 "CI_BUILD_ID": f"cloud-run-{self.build_number}",
                 "CI_BUILD_NUMBER": str(self.build_number),
-                "CI_TAG": f"tuner-ios-build-{self.build_number}",
-                "CI_GIT_REF": f"refs/tags/tuner-ios-build-{self.build_number}",
+                "CI_TAG": f"tuner-ios-proof-build-{self.build_number}",
+                "CI_GIT_REF": f"refs/tags/tuner-ios-proof-build-{self.build_number}",
                 "CI_XCODE_SCHEME": "TightbeamTuner",
                 "CI_PRIMARY_REPOSITORY_PATH": str(self.repo),
+                release_hook.RELEASE_ROUTE_ENV: "proof",
+                release_hook.PROOF_WORKFLOW_NAME_ENV: "Tuner Release Proof",
                 release_hook.EXPECTED_BUNDLE_IDENTIFIER_ENV: proof_bundle_identifier,
             })
             with (
                 mock.patch.dict(os.environ, env, clear=True),
-                mock.patch.object(release_hook, "validate_release_tag_identity"),
                 mock.patch.object(release_hook, "resolve_published_pair", return_value=self.pair),
                 mock.patch.object(release_hook, "latest_public_review_status", return_value={
-                    "context": release_hook.RELEASE_REVIEW_CONTEXT,
+                    "context": release_hook.RELEASE_PROOF_REVIEW_CONTEXT,
                     "state": "success",
-                    "description": f"sha256:{self.report['candidateObjectSha256']}",
+                    "description": f"sha256:{proof_digest}",
                 }),
             ):
                 result = release_notes.main([

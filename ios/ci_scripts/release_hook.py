@@ -44,8 +44,66 @@ TIGHTBEAM_RELEASES_API = "https://api.github.com/repos/clickety-clacks/tightbeam
 GITHUB_USER_AGENT = "TightbeamTuner-release-check"
 TUNER_REPOSITORY = "clickety-clacks/tightbeam-tuner"
 RELEASE_REVIEW_CONTEXT = "tuner-ios/release-review"
+RELEASE_PROOF_REVIEW_CONTEXT = "tuner-ios/release-proof/release-review"
 DEFAULT_BUNDLE_IDENTIFIER = "co.clicketyclacks.tightbeam-tuner"
+PROOF_BUNDLE_IDENTIFIER = "co.clicketyclacks.tightbeam-tuner-release-proof"
 EXPECTED_BUNDLE_IDENTIFIER_ENV = "TUNER_EXPECTED_BUNDLE_IDENTIFIER"
+RELEASE_ROUTE_ENV = "TUNER_RELEASE_ROUTE"
+PROOF_WORKFLOW_NAME_ENV = "TUNER_PROOF_WORKFLOW_NAME"
+PRODUCTION_ROUTE = "production"
+PROOF_ROUTE = "proof"
+
+
+def configured_release_route() -> str:
+    route = os.environ.get(RELEASE_ROUTE_ENV, PRODUCTION_ROUTE).strip().casefold()
+    if route not in {PRODUCTION_ROUTE, PROOF_ROUTE}:
+        _fail("release route must be production or proof")
+    return route
+
+
+def release_tag_for_route(build_number: int, route: str | None = None) -> str:
+    selected = configured_release_route() if route is None else route
+    if selected not in {PRODUCTION_ROUTE, PROOF_ROUTE}:
+        _fail("release route must be production or proof")
+    if not isinstance(build_number, int) or isinstance(build_number, bool) or build_number <= 0:
+        _fail("release build number must be a positive integer")
+    prefix = "tuner-ios-proof-build" if selected == PROOF_ROUTE else "tuner-ios-build"
+    return f"{prefix}-{build_number}"
+
+
+def review_context_for_route(route: str | None = None) -> str:
+    selected = configured_release_route() if route is None else route
+    if selected == PRODUCTION_ROUTE:
+        return RELEASE_REVIEW_CONTEXT
+    if selected == PROOF_ROUTE:
+        return RELEASE_PROOF_REVIEW_CONTEXT
+    _fail("release route must be production or proof")
+
+
+def expected_bundle_identifier(route: str | None = None) -> str:
+    selected = configured_release_route() if route is None else route
+    default = {
+        PRODUCTION_ROUTE: DEFAULT_BUNDLE_IDENTIFIER,
+        PROOF_ROUTE: PROOF_BUNDLE_IDENTIFIER,
+    }.get(selected)
+    if default is None:
+        _fail("release route must be production or proof")
+    configured = os.environ.get(EXPECTED_BUNDLE_IDENTIFIER_ENV, "").strip()
+    if configured and configured != default:
+        _fail("configured app bundle identifier does not match the selected release route")
+    return default
+
+
+def expected_archive_workflow(route: str | None = None) -> str:
+    selected = configured_release_route() if route is None else route
+    if selected == PRODUCTION_ROUTE:
+        return "Internal Testflight"
+    if selected == PROOF_ROUTE:
+        configured = os.environ.get(PROOF_WORKFLOW_NAME_ENV, "").strip()
+        if configured:
+            return configured
+        _fail(f"{PROOF_WORKFLOW_NAME_ENV} must identify the isolated proof workflow")
+    _fail("release route must be production or proof")
 
 
 @dataclass(frozen=True)
@@ -852,6 +910,7 @@ def candidate_object(
         "scheme": candidate["scheme"],
         "configuration": candidate["configuration"],
         "buildNumber": candidate["buildNumber"],
+        "appBundleIdentifier": expected_bundle_identifier(),
         "baseline": {
             "buildNumber": baseline["buildNumber"],
             "sourceCommit": baseline["commit"],
@@ -873,10 +932,11 @@ def candidate_object_digest(value: dict[str, Any]) -> str:
 def validate_release_tag_identity(
     repo: Path, commit: str, git_ref: str, tag: str, build_number: int
 ) -> None:
+    expected_tag = release_tag_for_route(build_number)
     if (
         not re.fullmatch(r"[0-9a-f]{40}", commit)
         or not isinstance(build_number, int) or isinstance(build_number, bool) or build_number <= 0
-        or not isinstance(tag, str) or tag != f"tuner-ios-build-{build_number}"
+        or not isinstance(tag, str) or tag != expected_tag
         or git_ref != f"refs/tags/{tag}"
     ):
         _fail("upload-capable archive must use the dedicated tag for its planned build number")
@@ -935,7 +995,8 @@ def latest_public_review_status(commit: str, digest: str) -> dict[str, str]:
         ):
             _fail("GitHub release review status pagination left the expected public endpoint")
         url = next_links[0]
-    matching = [item for item in statuses if isinstance(item, dict) and item.get("context") == RELEASE_REVIEW_CONTEXT]
+    expected_context = review_context_for_route()
+    matching = [item for item in statuses if isinstance(item, dict) and item.get("context") == expected_context]
     if not matching:
         _fail("release reviewer confirmation is missing")
     times: list[tuple[datetime, dict[str, Any]]] = []
@@ -960,7 +1021,7 @@ def latest_public_review_status(commit: str, digest: str) -> dict[str, str]:
     if status.get("description") != f"sha256:{digest}":
         _fail("latest release reviewer confirmation does not match the candidate digest")
     return {
-        "context": RELEASE_REVIEW_CONTEXT,
+        "context": expected_context,
         "state": "success",
         "description": f"sha256:{digest}",
     }
@@ -1056,12 +1117,13 @@ def validate_archive_report(
     if report.get("candidateObjectSha256") != expected_object_digest:
         _fail("archive report candidate object digest is invalid")
     pre_gate = report.get("preArchiveGate")
+    expected_context = review_context_for_route()
     if (
         not isinstance(pre_gate, dict)
         or pre_gate.get("status") != "passed"
         or pre_gate.get("sourceCommit") != candidate["commit"]
         or pre_gate.get("candidateDigest") != expected_object_digest
-        or pre_gate.get("context") != RELEASE_REVIEW_CONTEXT
+        or pre_gate.get("context") != expected_context
         or pre_gate.get("state") != "success"
         or pre_gate.get("description") != f"sha256:{expected_object_digest}"
     ):
@@ -1131,10 +1193,8 @@ def validate_signed_archive(
     repo: Path,
 ) -> None:
     """Verify that the signed app carries the completed archive-side evidence and note."""
-    expected_bundle_identifier = os.environ.get(
-        EXPECTED_BUNDLE_IDENTIFIER_ENV, DEFAULT_BUNDLE_IDENTIFIER
-    )
-    if app_info.get("CFBundleIdentifier") != expected_bundle_identifier:
+    configured_bundle_identifier = expected_bundle_identifier()
+    if app_info.get("CFBundleIdentifier") != configured_bundle_identifier:
         _fail("signed IPA bundle identifier does not match the configured app")
     if app_info.get("CFBundleVersion") != str(expected_build_number):
         _fail("signed IPA build number does not match the Xcode Cloud archive")
@@ -1192,12 +1252,13 @@ def validate_signed_archive(
     current_pair = resolve_published_pair("darwin-aarch64")
     same_release_pair(pair, current_pair)
     digest = report["candidateObjectSha256"]
+    expected_context = review_context_for_route()
     latest_public_review_status(report_candidate["commit"], digest)
     report["finalArchiveGate"] = {
         "status": "passed",
         "sourceCommit": report_candidate["commit"],
         "candidateDigest": digest,
-        "context": RELEASE_REVIEW_CONTEXT,
+        "context": expected_context,
         "state": "success",
         "description": f"sha256:{digest}",
         "releasePairUnchanged": True,

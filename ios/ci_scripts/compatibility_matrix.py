@@ -1690,6 +1690,7 @@ def _run_test_phase(
         "-only-testing:TightbeamTunerTests/ReleaseCompatibilityTests/testProductionRosterAndRepliesPathsAgainstPublishedRuntime",
         "test", f"CURRENT_PROJECT_VERSION={build_number}", "CODE_SIGNING_ALLOWED=NO",
         "ENABLE_TESTABILITY=YES",
+        f"TUNER_EXPECTED_BUNDLE_IDENTIFIER={release_hook.expected_bundle_identifier()}",
     ]
     log_path = result_bundle.with_suffix(".log")
     try:
@@ -1986,8 +1987,14 @@ def _validate_execution_mode(diagnostic: bool) -> None:
         if action == "archive":
             _safe_fail("diagnostic compatibility matrix cannot run in an archive action")
         return
-    if os.environ.get("CI_WORKFLOW", "").strip().casefold() != "internal testflight":
-        _safe_fail("compatibility matrix is restricted to the Internal Testflight Xcode Cloud workflow")
+    try:
+        expected_workflow = release_hook.expected_archive_workflow()
+    except release_hook.ReleaseHookError as error:
+        raise MatrixError(str(error)) from error
+    if os.environ.get("CI_WORKFLOW", "").strip().casefold() != expected_workflow.casefold():
+        if release_hook.configured_release_route() == release_hook.PRODUCTION_ROUTE:
+            _safe_fail("compatibility matrix is restricted to the Internal Testflight Xcode Cloud workflow")
+        _safe_fail("compatibility matrix is restricted to the configured proof release workflow")
     if action != "archive":
         _safe_fail("compatibility matrix requires the Xcode Cloud archive action")
 

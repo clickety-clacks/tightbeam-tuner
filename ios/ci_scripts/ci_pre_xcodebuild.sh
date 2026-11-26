@@ -19,8 +19,24 @@ esac
 
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 WORKFLOW_NORMALIZED=$(printf '%s' "${CI_WORKFLOW:-}" | tr '[:upper:]' '[:lower:]')
-if [ "$WORKFLOW_NORMALIZED" != "internal testflight" ]; then
-    echo "release-note gate: upload-capable archives are restricted to the Internal TestFlight workflow" >&2
+RELEASE_ROUTE=${TUNER_RELEASE_ROUTE:-production}
+case "$RELEASE_ROUTE" in
+    production) EXPECTED_WORKFLOW="Internal Testflight" ;;
+    proof)
+        EXPECTED_WORKFLOW=${TUNER_PROOF_WORKFLOW_NAME:-}
+        if [ -z "$EXPECTED_WORKFLOW" ]; then
+            echo "release-note gate: proof workflow name is not configured" >&2
+            exit 1
+        fi
+        ;;
+    *)
+        echo "release-note gate: release route is invalid" >&2
+        exit 1
+        ;;
+esac
+EXPECTED_WORKFLOW_NORMALIZED=$(printf '%s' "$EXPECTED_WORKFLOW" | tr '[:upper:]' '[:lower:]')
+if [ "$WORKFLOW_NORMALIZED" != "$EXPECTED_WORKFLOW_NORMALIZED" ]; then
+    echo "release-note gate: upload-capable archives are restricted to their configured release workflow" >&2
     exit 1
 fi
 python3 "$SCRIPT_DIR/compatibility_matrix.py"
