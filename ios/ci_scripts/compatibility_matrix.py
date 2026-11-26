@@ -344,9 +344,9 @@ def _current_source(repo: Path, commit_from_ci: str) -> tuple[str, str]:
     head = _checked(["git", "rev-parse", "HEAD"], cwd=repo).strip()
     tree = _checked(["git", "rev-parse", "HEAD^{tree}"], cwd=repo).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", head) or head != commit_from_ci:
-        _safe_fail("Xcode Cloud checkout does not match CI_COMMIT")
+        _safe_fail("CI checkout does not match CI_COMMIT")
     if not re.fullmatch(r"[0-9a-f]{40}", tree):
-        _safe_fail("Xcode Cloud checkout has no verifiable Git tree")
+        _safe_fail("CI checkout has no verifiable Git tree")
     return head, tree
 
 
@@ -1501,7 +1501,7 @@ def _run_test_phase(
     if result.returncode != 0:
         # Do not echo raw xcodebuild output: the test process contains a private
         # fixture token and ephemeral user/key material in its environment.
-        raise MatrixError(f"Xcode {phase} compatibility test failed; inspect the Xcode Cloud result bundle")
+        raise MatrixError(f"Xcode {phase} compatibility test failed; inspect the result bundle")
 
 
 def _combine_results(
@@ -1578,7 +1578,7 @@ def _prepare_candidate(repo: Path, baseline_file: dict[str, Any], build_number: 
     scheme = os.environ.get("CI_XCODE_SCHEME", "")
     run_id = os.environ.get("CI_BUILD_ID", "")
     if not re.fullmatch(r"[0-9a-f]{40}", commit_from_ci) or not scheme or not run_id:
-        _safe_fail("Xcode Cloud candidate identity is incomplete")
+        _safe_fail("CI candidate identity is incomplete")
     commit, tree = _current_source(repo, commit_from_ci)
     configuration = "Release"
     if baseline_file["scheme"] != scheme or baseline_file["configuration"] != configuration:
@@ -1649,7 +1649,7 @@ def run_matrix(
     test_root.mkdir(parents=True, exist_ok=True)
     repo_root = Path(tempfile.mkdtemp(prefix="tuner-compat-", dir=str(test_root))).resolve()
     if os.path.commonpath([str(derived), str(repo_root)]) != str(derived):
-        _safe_fail("compatibility scratch escaped Xcode Cloud DerivedData")
+        _safe_fail("compatibility scratch escaped the configured DerivedData directory")
 
     report_path = (
         diagnostic_output.expanduser().resolve()

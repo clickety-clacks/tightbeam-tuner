@@ -63,8 +63,6 @@ jobs:
       CI_XCODE_SCHEME: TightbeamTuner
       CI_XCODEBUILD_ACTION: test
       CI_PRIMARY_REPOSITORY_PATH: ${{ github.workspace }}
-      CI_DERIVED_DATA_PATH: ${{ runner.temp }}/TunerCompatibilityDerivedData
-      REPORT_PATH: ${{ runner.temp }}/ReleaseCompatibilityReport.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,7 +72,6 @@ jobs:
         run: |
           xcodebuild -version
           xcrun simctl list runtimes
-          mkdir -p "$CI_DERIVED_DATA_PATH"
 
       - name: Read the planned release build number
         run: |
@@ -90,6 +87,9 @@ jobs:
 
       - name: Run non-distributing compatibility and detector matrix
         run: |
+          export CI_DERIVED_DATA_PATH="$RUNNER_TEMP/TunerCompatibilityDerivedData"
+          export REPORT_PATH="$RUNNER_TEMP/ReleaseCompatibilityReport.json"
+          mkdir -p "$CI_DERIVED_DATA_PATH"
           python3 ios/ci_scripts/compatibility_matrix.py \
             --diagnostic \
             --build-number "$PLANNED_BUILD_NUMBER" \
