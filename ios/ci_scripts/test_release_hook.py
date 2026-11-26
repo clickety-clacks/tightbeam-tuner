@@ -734,8 +734,11 @@ class CompatibilityMatrixWiringTests(unittest.TestCase):
                 "_run",
                 return_value=subprocess.CompletedProcess([], 0, output),
             ) as run:
-                compatibility_matrix._require_loopback_listener(19450, "test fixture")
-        self.assertEqual(run.call_args.args[0], ["/usr/bin/lsof", "-nP", "-iTCP:19450", "-sTCP:LISTEN"])
+                compatibility_matrix._require_loopback_listener(19450, "test fixture", 231)
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/bin/lsof", "-nP", "-a", "-p", "231", "-iTCP:19450", "-sTCP:LISTEN"],
+        )
 
     def test_existing_compatibility_test_source_is_replaced_without_reediting_project(self):
         with tempfile.TemporaryDirectory() as temporary:

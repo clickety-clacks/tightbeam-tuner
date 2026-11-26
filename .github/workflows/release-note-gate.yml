@@ -63,6 +63,7 @@ jobs:
       CI_XCODE_SCHEME: TightbeamTuner
       CI_XCODEBUILD_ACTION: test
       CI_PRIMARY_REPOSITORY_PATH: ${{ github.workspace }}
+      CI_DIAGNOSTIC_ARTIFACTS_PATH: ${{ runner.temp }}/TunerCompatibilityDiagnostics
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,6 +94,7 @@ jobs:
           export CI_DERIVED_DATA_PATH="$RUNNER_TEMP/TunerCompatibilityDerivedData"
           export REPORT_PATH="$RUNNER_TEMP/ReleaseCompatibilityReport.json"
           mkdir -p "$CI_DERIVED_DATA_PATH"
+          mkdir -p "$CI_DIAGNOSTIC_ARTIFACTS_PATH"
           python3 ios/ci_scripts/compatibility_matrix.py \
             --diagnostic \
             --build-number "$PLANNED_BUILD_NUMBER" \
@@ -103,6 +105,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tuner-compatibility-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ runner.temp }}/ReleaseCompatibilityReport.json
-          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/ReleaseCompatibilityReport.json
+            ${{ runner.temp }}/TunerCompatibilityDiagnostics/
+          if-no-files-found: error
           retention-days: 30

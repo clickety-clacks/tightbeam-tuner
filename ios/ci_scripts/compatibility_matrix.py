@@ -205,8 +205,14 @@ def _run(
             timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise MatrixError(f"required compatibility-matrix command could not complete: {Path(args[0]).name}") from error
+    except subprocess.TimeoutExpired as error:
+        raise MatrixError(
+            f"required compatibility-matrix command timed out: {Path(args[0]).name}"
+        ) from error
+    except OSError as error:
+        raise MatrixError(
+            f"required compatibility-matrix command could not start: {Path(args[0]).name}"
+        ) from error
 
 
 def _require_command(name: str) -> str:
@@ -321,11 +327,16 @@ def _sha_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _require_loopback_listener(port: int, label: str) -> None:
+def _require_loopback_listener(port: int, label: str, process_id: int) -> None:
     lsof = shutil.which("lsof")
     if lsof is None:
         _safe_fail("compatibility matrix cannot verify that its local service is loopback-only")
-    result = _run([lsof, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], timeout=10)
+    # Scope lsof to the process that owns the fixture. Scanning every process
+    # for each temporary listener can exceed the short CI timeout on macOS.
+    result = _run(
+        [lsof, "-nP", "-a", "-p", str(process_id), f"-iTCP:{port}", "-sTCP:LISTEN"],
+        timeout=30,
+    )
     if result.returncode != 0:
         _safe_fail(f"compatibility matrix could not verify the {label} listener")
     listeners = [line.split()[-2] for line in result.stdout.splitlines() if "(LISTEN)" in line and len(line.split()) >= 2]
@@ -627,10 +638,20 @@ class LocalRuntimeFixture:
         self.runtime_identities: dict[int, dict[str, Any]] = {}
         self.model_server: http.server.ThreadingHTTPServer | None = None
         self.model_thread: threading.Thread | None = None
-        self._prepare_tools()
-        self._prepare_sshd()
-        self._start_model_server()
-        self._start_fixture_server()
+        try:
+            self._prepare_tools()
+            self._prepare_sshd()
+            self._start_model_server()
+            self._start_fixture_server()
+        except BaseException:
+            # A listener check can fail partway through startup. The caller
+            # does not receive this object when __init__ raises, so release
+            # anything this fixture already started here.
+            try:
+                self.close()
+            except Exception:
+                pass
+            raise
 
     @property
     def fixture_url(self) -> str:
@@ -775,7 +796,7 @@ class LocalRuntimeFixture:
         self.model_server.daemon_threads = True
         self.model_thread = threading.Thread(target=self.model_server.serve_forever, daemon=True)
         self.model_thread.start()
-        _require_loopback_listener(self.model_port, "deterministic model fixture")
+        _require_loopback_listener(self.model_port, "deterministic model fixture", os.getpid())
 
     def _start_fixture_server(self) -> None:
         fixture = self
@@ -834,7 +855,7 @@ class LocalRuntimeFixture:
         self.server.daemon_threads = True
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
-        _require_loopback_listener(self.server.server_port, "test fixture")
+        _require_loopback_listener(self.server.server_port, "test fixture", os.getpid())
 
     def _runtime_env(self, release_id: int, *, port: int | None = None) -> dict[str, str]:
         package = self.package_paths[release_id]
@@ -888,7 +909,7 @@ class LocalRuntimeFixture:
                 _safe_fail("isolated SSH fixture did not start")
             try:
                 with socket.create_connection(("127.0.0.1", self.ssh_port), timeout=0.2):
-                    _require_loopback_listener(self.ssh_port, "SSH fixture")
+                    _require_loopback_listener(self.ssh_port, "SSH fixture", self.sshd_process.pid)
                     return
             except OSError:
                 time.sleep(0.1)
@@ -934,7 +955,9 @@ class LocalRuntimeFixture:
         build_part = release.tag.split("+", 1)[1] if "+" in release.tag else None
         if version_core is None or version_core.group(0) not in version_text or (build_part and build_part not in version_text):
             _safe_fail(f"published Tightbeam gateway version endpoint does not identify {release.tag}")
-        _require_loopback_listener(self.gateway_port, "published Tightbeam gateway")
+        _require_loopback_listener(
+            self.gateway_port, "published Tightbeam gateway", self.gateway_process.pid
+        )
 
     def _stop_gateway(self) -> None:
         process = self.gateway_process
@@ -1283,7 +1306,9 @@ class LocalRuntimeFixture:
             build_part = release.tag.split("+", 1)[1] if "+" in release.tag else None
             if version_core is None or version_core.group(0) not in version_text or (build_part and build_part not in version_text):
                 raise MatrixError("published Tightbeam catch-up gateway did not match its pinned release")
-            _require_loopback_listener(temporary_port, "published catch-up gateway")
+            _require_loopback_listener(
+                temporary_port, "published catch-up gateway", temporary_process.pid
+            )
             sequence, marker = self._post_and_mark(temporary_gateway, context, "catch-up")
         finally:
             if temporary_process is not None and temporary_process.poll() is None:
@@ -1415,6 +1440,68 @@ class LocalRuntimeFixture:
         _require_port_clear(self.ssh_port, "SSH fixture")
         _require_port_clear(self.model_port, "model fixture")
 
+    def diagnostic_redaction_values(self) -> set[str]:
+        values = {
+            self.fixture_token,
+            self.local_user,
+            self.ssh_host_key_line,
+            str(self.root),
+            str(self.home_root),
+        }
+        values.update(str(path) for path in self.package_paths.values())
+        values.update(str(path) for path in self.runtime_base.values())
+
+        def collect(value: Any, field: str = "") -> None:
+            sensitive_field = any(part in field.casefold() for part in (
+                "key", "token", "user", "session", "device", "credential", "password", "secret",
+            ))
+            if isinstance(value, str) and sensitive_field and len(value) >= 6:
+                values.add(value)
+            elif isinstance(value, dict):
+                for name, child in value.items():
+                    collect(child, str(name))
+            elif isinstance(value, (list, tuple, set)):
+                for child in value:
+                    collect(child, field)
+
+        collect(self.runtime_identities)
+        collect(self.saved_state)
+        collect(self.phase_results)
+        for private_path in (self.host_key,):
+            try:
+                private_value = private_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if private_value.strip():
+                values.add(private_value.strip())
+        return {value for value in values if len(value) >= 6}
+
+    def export_safe_runtime_logs(self, destination: Path) -> list[str]:
+        destination.mkdir(parents=True, exist_ok=True)
+        redactions = self.diagnostic_redaction_values()
+        retained: list[str] = []
+        for source in sorted(self.root.rglob("*.log")):
+            if not source.is_file():
+                continue
+            try:
+                contents = source.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            relative_name = source.relative_to(self.root).as_posix().replace("/", "__")
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", relative_name)
+            (destination / safe_name).write_text(
+                _safe_diagnostic_text(contents, redactions), encoding="utf-8"
+            )
+            retained.append(safe_name)
+        if not retained:
+            marker = "no-runtime-logs-generated.txt"
+            (destination / marker).write_text(
+                "The compatibility fixture did not generate runtime log files.\n",
+                encoding="utf-8",
+            )
+            retained.append(marker)
+        return retained
+
 
 def _create_simulator(device_type: str, runtime_id: str, build_number: int) -> tuple[str, str]:
     simctl = _require_command("xcrun")
@@ -1434,14 +1521,32 @@ def _create_simulator(device_type: str, runtime_id: str, build_number: int) -> t
 
 def _delete_simulator(udid: str) -> None:
     simctl = _require_command("xcrun")
-    shutdown = _run([simctl, "simctl", "shutdown", udid], timeout=30)
-    delete = _run([simctl, "simctl", "delete", udid], timeout=60)
-    if delete.returncode != 0:
-        _safe_fail("Xcode did not delete the compatibility matrix's owned simulator")
-    if shutdown.returncode != 0:
-        # `delete` owns the device now; report cleanup as incomplete rather than
-        # touching any other simulator or treating an unknown state as success.
-        _safe_fail("Xcode did not shut down the compatibility matrix's owned simulator cleanly")
+    try:
+        _run([simctl, "simctl", "shutdown", udid], timeout=30)
+    except MatrixError:
+        # Still try to delete this exact task-owned device and verify its final
+        # absence below. A stale shutdown result must not prevent cleanup.
+        pass
+    try:
+        _run([simctl, "simctl", "delete", udid], timeout=60)
+    except MatrixError:
+        # simctl can report failure after completing the delete; the device
+        # inventory below is the source of truth for whether cleanup finished.
+        pass
+    inventory = _run([simctl, "simctl", "list", "devices", "--json"], timeout=30)
+    if inventory.returncode != 0:
+        _safe_fail("Xcode could not verify the compatibility matrix simulator cleanup")
+    try:
+        devices = json.loads(inventory.stdout).get("devices", {})
+    except (json.JSONDecodeError, AttributeError):
+        _safe_fail("Xcode returned an invalid simulator inventory during cleanup")
+    if any(
+        isinstance(device, dict) and device.get("udid") == udid
+        for runtime_devices in devices.values()
+        if isinstance(runtime_devices, list)
+        for device in runtime_devices
+    ):
+        _safe_fail("Xcode retained the compatibility matrix's owned simulator")
 
 
 def _run_test_phase(
@@ -1513,13 +1618,25 @@ def _run_test_phase(
                 check=False,
             )
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise MatrixError(f"Xcode {phase} compatibility test did not complete") from error
+        retained = _retain_xctest_diagnostics(result_bundle, log_path, fixture, phase)
+        diagnostics = {
+            **_safe_xcode_failure_summary(log_path),
+            "retainedArtifacts": retained,
+        }
+        raise MatrixError(
+            f"Xcode {phase} compatibility test did not complete", diagnostics=diagnostics
+        ) from error
     if result.returncode != 0:
         # Do not echo raw xcodebuild output: the test process contains a private
         # fixture token and ephemeral user/key material in its environment.
+        retained = _retain_xctest_diagnostics(result_bundle, log_path, fixture, phase)
+        diagnostics = {
+            **_safe_xcode_failure_summary(log_path),
+            "retainedArtifacts": retained,
+        }
         raise MatrixError(
             f"Xcode {phase} compatibility test failed; inspect the sanitized failure summary",
-            diagnostics=_safe_xcode_failure_summary(log_path),
+            diagnostics=diagnostics,
         )
 
 
@@ -1568,6 +1685,116 @@ def _safe_xcode_failure_summary(log_path: Path) -> dict[str, Any]:
         "errorCount": errors,
         "warningCount": warnings,
     }
+
+
+def _safe_diagnostic_text(text: str, redaction_values: set[str]) -> str:
+    safe = text
+    for value in sorted(redaction_values, key=len, reverse=True):
+        safe = safe.replace(value, "[redacted]")
+    safe = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}", r"\1[redacted]", safe)
+    safe = re.sub(r"(?i)(x-test-fixture-token\s*[:=]\s*)[^\s,;]+", r"\1[redacted]", safe)
+    safe = re.sub(r"(?i)(authorization\s*:\s*)[^\r\n]+", r"\1[redacted]", safe)
+    safe = re.sub(r"ssh-ed25519\s+[A-Za-z0-9+/=]+(?:\s+[A-Za-z0-9_.-]+)?", "ssh-ed25519 [redacted]", safe)
+    safe = re.sub(r"\bagent:[A-Za-z0-9:_-]{12,}", "[session-key]", safe)
+    safe = re.sub(r"\b(?:user|device|wi|asg|art|dr)_[A-Za-z0-9_-]{8,}\b", "[private-id]", safe)
+    safe = re.sub(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "[private key redacted]",
+        safe,
+        flags=re.DOTALL,
+    )
+    return safe
+
+
+def _contains_sensitive_bytes(bundle: Path, redaction_values: set[str]) -> bool:
+    needles = [value.encode("utf-8") for value in redaction_values if len(value) >= 6]
+    needles = [needle for needle in needles if needle]
+    if not needles:
+        return False
+    overlap = max(map(len, needles)) - 1
+    try:
+        for source in bundle.rglob("*"):
+            if not source.is_file():
+                continue
+            carry = b""
+            with source.open("rb") as stream:
+                while block := stream.read(1024 * 1024):
+                    data = carry + block
+                    if any(needle in data for needle in needles):
+                        return True
+                    carry = data[-overlap:] if overlap else b""
+    except OSError:
+        return True
+    return False
+
+
+def _retain_xctest_diagnostics(
+    result_bundle: Path,
+    log_path: Path,
+    fixture: LocalRuntimeFixture,
+    phase: str,
+) -> dict[str, bool]:
+    destination_value = os.environ.get("CI_DIAGNOSTIC_ARTIFACTS_PATH")
+    if not destination_value:
+        return {"xcodebuildLog": False, "xcresult": False, "readableTestResults": False}
+    destination = Path(destination_value).expanduser().resolve() / "xctest"
+    redactions = fixture.diagnostic_redaction_values()
+    retained = {"xcodebuildLog": False, "xcresult": False, "readableTestResults": False}
+
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        log_contents = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log_contents = "Xcode test log was not available.\n"
+    try:
+        (destination / f"{phase}-xcodebuild.log.txt").write_text(
+            _safe_diagnostic_text(log_contents, redactions), encoding="utf-8"
+        )
+        retained["xcodebuildLog"] = True
+    except OSError:
+        pass
+
+    if result_bundle.is_dir():
+        if _contains_sensitive_bytes(result_bundle, redactions):
+            try:
+                (destination / f"{phase}-xcresult-omitted.txt").write_text(
+                    "The result bundle contained a known ephemeral fixture value and was not uploaded.\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+        else:
+            try:
+                shutil.copytree(result_bundle, destination / f"{phase}.xcresult")
+                retained["xcresult"] = True
+            except OSError:
+                pass
+
+        try:
+            command = [
+                _require_command("xcrun"), "xcresulttool", "get", "test-results", "tests",
+                "--path", str(result_bundle),
+            ]
+            extracted = _run(command, cwd=result_bundle.parent, timeout=120)
+            readable = extracted.stdout or extracted.stderr or "xcresulttool did not return test results.\n"
+            readable = _safe_diagnostic_text(readable, redactions)
+            readable_succeeded = extracted.returncode == 0
+        except Exception:
+            readable = "xcresulttool could not extract readable test results.\n"
+            readable_succeeded = False
+        try:
+            (destination / f"{phase}-test-results.txt").write_text(readable, encoding="utf-8")
+            retained["readableTestResults"] = readable_succeeded
+        except OSError:
+            pass
+    return retained
+
+
+def _retain_runtime_diagnostics(fixture: LocalRuntimeFixture | None) -> list[str] | None:
+    destination_value = os.environ.get("CI_DIAGNOSTIC_ARTIFACTS_PATH")
+    if not destination_value or fixture is None:
+        return None
+    return fixture.export_safe_runtime_logs(Path(destination_value).expanduser().resolve() / "runtime")
 
 
 def _combine_results(
@@ -2036,12 +2263,24 @@ def run_matrix(
         raise MatrixError(str(matrix_report["failure"])) from error
     finally:
         cleanup_failures: list[str] = []
+        diagnostic_capture_failures: list[str] = []
         active_error = sys.exc_info()[0] is not None
         if fixture is not None:
             try:
                 fixture.close()
             except Exception:
                 cleanup_failures.append("local fixture")
+            if os.environ.get("CI_DIAGNOSTIC_ARTIFACTS_PATH"):
+                try:
+                    retained_logs = _retain_runtime_diagnostics(fixture)
+                    matrix_report.setdefault("diagnosticArtifacts", {})[
+                        "runtimeLogs"
+                    ] = retained_logs or []
+                except Exception:
+                    diagnostic_capture_failures.append("runtime logs")
+                    matrix_report.setdefault("diagnosticArtifacts", {})[
+                        "runtimeLogs"
+                    ] = []
         if simulator_id is not None:
             try:
                 _delete_simulator(simulator_id)
@@ -2062,11 +2301,18 @@ def run_matrix(
             if matrix_report.get("status") != "blocked":
                 matrix_report["status"] = "failed"
             matrix_report.setdefault("failure", "compatibility matrix could not clean up all task-owned resources")
+        if diagnostic_capture_failures:
+            matrix_report["diagnosticArtifactCaptureFailures"] = diagnostic_capture_failures
+            matrix_report["status"] = "failed"
+            matrix_report.setdefault("failure", "compatibility matrix could not retain diagnostic artifacts")
+        if cleanup_failures or diagnostic_capture_failures or matrix_report.get("diagnosticArtifacts"):
             try:
                 _write_json(report_path, matrix_report)
             except OSError:
                 pass
-            if not active_error:
+            if (cleanup_failures or diagnostic_capture_failures) and not active_error:
+                if diagnostic_capture_failures:
+                    raise MatrixError("compatibility matrix could not retain required diagnostic artifacts")
                 raise MatrixError("compatibility matrix could not clean up all task-owned resources")
 
 
