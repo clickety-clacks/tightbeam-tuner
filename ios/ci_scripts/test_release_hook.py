@@ -591,6 +591,35 @@ class CompatibilityInstrumentationTests(unittest.TestCase):
 
 
 class CompatibilityMatrixWiringTests(unittest.TestCase):
+    def test_diagnostic_matrix_is_non_archive_and_needs_no_cloud_workflow(self):
+        with mock.patch.dict(os.environ, {"CI_XCODEBUILD_ACTION": "test"}, clear=True):
+            compatibility_matrix._validate_execution_mode(diagnostic=True)
+
+        with mock.patch.dict(os.environ, {"CI_XCODEBUILD_ACTION": "archive"}, clear=True):
+            with self.assertRaisesRegex(compatibility_matrix.MatrixError, "cannot run in an archive action"):
+                compatibility_matrix._validate_execution_mode(diagnostic=True)
+
+        with mock.patch.dict(
+            os.environ,
+            {"CI_WORKFLOW": "Internal Testflight", "CI_XCODEBUILD_ACTION": "archive"},
+            clear=True,
+        ):
+            compatibility_matrix._validate_execution_mode(diagnostic=False)
+
+    def test_diagnostic_matrix_never_reads_or_projects_release_confirmation(self):
+        with mock.patch.object(
+            release_hook, "latest_public_review_status", return_value={"status": "success"}
+        ) as read_status:
+            self.assertIsNone(
+                compatibility_matrix._review_confirmation(True, "a" * 40, "b" * 64)
+            )
+            read_status.assert_not_called()
+            self.assertEqual(
+                compatibility_matrix._review_confirmation(False, "a" * 40, "b" * 64),
+                {"status": "success"},
+            )
+            read_status.assert_called_once_with("a" * 40, "b" * 64)
+
     def test_candidate_attempt_is_fixed_per_unique_cloud_run(self):
         environment = {
             "CI_COMMIT": "a" * 40,

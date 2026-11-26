@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run the candidate-bound published-runtime matrix before a TestFlight archive."""
+"""Run candidate-bound published-runtime checks for diagnostics and TestFlight archives."""
 
 from __future__ import annotations
 
 import getpass
+import argparse
 import base64
 import hashlib
 import http.server
@@ -1552,26 +1553,41 @@ def _prepare_candidate(repo: Path, baseline_file: dict[str, Any], build_number: 
     }
 
 
-def run_matrix() -> None:
+def _validate_execution_mode(diagnostic: bool) -> None:
+    action = os.environ.get("CI_XCODEBUILD_ACTION", "").strip().casefold()
+    if diagnostic:
+        if action == "archive":
+            _safe_fail("diagnostic compatibility matrix cannot run in an archive action")
+        return
     if os.environ.get("CI_WORKFLOW", "").strip().casefold() != "internal testflight":
         _safe_fail("compatibility matrix is restricted to the Internal Testflight Xcode Cloud workflow")
-    if os.environ.get("CI_XCODEBUILD_ACTION", "").casefold() != "archive":
+    if action != "archive":
         _safe_fail("compatibility matrix requires the Xcode Cloud archive action")
+
+
+def _review_confirmation(diagnostic: bool, commit: str, candidate_digest: str) -> dict[str, Any] | None:
+    if diagnostic:
+        return None
+    return release_hook.latest_public_review_status(commit, candidate_digest)
+
+
+def run_matrix(*, diagnostic: bool = False) -> None:
+    _validate_execution_mode(diagnostic)
     build_number_value = os.environ.get("CI_BUILD_NUMBER", "")
     if not build_number_value.isdigit() or int(build_number_value) <= 0:
-        _safe_fail("Xcode Cloud archive has no positive numbered build")
+        _safe_fail("compatibility matrix has no positive numbered build")
     build_number = int(build_number_value)
     run_id = os.environ.get("CI_BUILD_ID", "")
     if not run_id:
-        _safe_fail("Xcode Cloud archive has no unique CI_BUILD_ID")
+        _safe_fail("compatibility matrix has no unique run ID")
     repo_value = os.environ.get("CI_PRIMARY_REPOSITORY_PATH")
     derived_value = os.environ.get("CI_DERIVED_DATA_PATH")
     if not repo_value or not derived_value:
-        _safe_fail("Xcode Cloud repository or DerivedData path is unavailable")
+        _safe_fail("compatibility matrix repository or DerivedData path is unavailable")
     repo = Path(repo_value).resolve()
     derived = Path(derived_value).resolve()
     if not repo.is_dir() or not derived.is_dir():
-        _safe_fail("Xcode Cloud repository or DerivedData path is unavailable")
+        _safe_fail("compatibility matrix repository or DerivedData path is unavailable")
     for tool in ("git", "xcodebuild", "xcrun", "ssh-keygen", "sshd", "lsof", "node"):
         _require_command(tool)
     test_root = derived / "TunerCompatibilityResults"
@@ -1584,7 +1600,12 @@ def run_matrix() -> None:
     current_note_path = repo / "ios" / "TightbeamTuner" / "CurrentBuildReleaseNote.json"
     history_path = repo / "ios" / "TightbeamTuner" / "ReleaseNotesHistory.json"
     baseline_path = SCRIPT_DIR / "ReleaseBaseline.json"
-    matrix_report: dict[str, Any] = {"schemaVersion": 1, "status": "failed", "failure": "matrix did not complete"}
+    matrix_report: dict[str, Any] = {
+        "schemaVersion": 1,
+        "runMode": "diagnostic" if diagnostic else "archive",
+        "status": "failed",
+        "failure": "matrix did not complete",
+    }
     fixture: LocalRuntimeFixture | None = None
     simulator_id: str | None = None
     worktree: Path | None = None
@@ -1593,12 +1614,13 @@ def run_matrix() -> None:
     try:
         baseline_source = _baseline_input(baseline_path)
         candidate = _prepare_candidate(repo, baseline_source, build_number)
-        release_hook.validate_release_tag_identity(
-            repo,
-            candidate["commit"],
-            os.environ.get("CI_GIT_REF", ""),
-            os.environ.get("CI_TAG", ""),
-        )
+        if not diagnostic:
+            release_hook.validate_release_tag_identity(
+                repo,
+                candidate["commit"],
+                os.environ.get("CI_GIT_REF", ""),
+                os.environ.get("CI_TAG", ""),
+            )
         matrix_report["candidate"] = candidate
         matrix_report["baseline"] = {
             "commit": baseline_source["sourceCommit"],
@@ -1808,8 +1830,22 @@ def run_matrix() -> None:
             history_data,
         )
         candidate_object_digest = release_hook.candidate_object_digest(candidate_object)
-        confirmation = release_hook.latest_public_review_status(
-            matrix_candidate["commit"], candidate_object_digest
+        if diagnostic:
+            matrix_report["runMode"] = "diagnostic"
+            matrix_report["archiveGate"] = "not-run"
+            matrix_report["releaseClaimAuthorized"] = False
+            matrix_report["candidateObject"] = candidate_object
+            matrix_report["candidateObjectSha256"] = candidate_object_digest
+            matrix_report["currentNoteSha256"] = release_hook.note_digest(updated_note_data)
+            matrix_report["status"] = "diagnostic-passed"
+            _write_json(report_path, matrix_report)
+            print("Diagnostic compatibility matrix complete; no archive status or release note was installed")
+            print(f"Observed compatibility line: {generated_line}")
+            print(f"Detector findings: {len(findings)}")
+            return
+
+        confirmation = _review_confirmation(
+            diagnostic, matrix_candidate["commit"], candidate_object_digest
         )
         pre_archive_gate = {
             "status": "passed",
@@ -1907,8 +1943,15 @@ def run_matrix() -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--diagnostic",
+        action="store_true",
+        help="run the isolated matrix without archive tag or reviewer-status gates; archive actions are refused",
+    )
+    args = parser.parse_args()
     try:
-        run_matrix()
+        run_matrix(diagnostic=args.diagnostic)
     except (MatrixError, release_hook.ReleaseHookError, release_notes.ReleaseNoteError) as error:
         print(f"release compatibility matrix: {error}", file=sys.stderr)
         return 1
