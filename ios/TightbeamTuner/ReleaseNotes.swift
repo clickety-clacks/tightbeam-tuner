@@ -4,6 +4,14 @@ import SwiftUI
 /// associated with that entry.
 enum ReleaseNotes {
     static let history: [ReleaseNote] = [
+        ReleaseNote(version: "1.0", build: 84, date: "November 26, 2026", items: [
+            .init(symbol: "person.2", title: "See agent list status beside the heading",
+                  detail: "A spinner beside Agents shows when the list is refreshing, with cached agents still visible. If the list fails to load, tap the warning icon to see and copy the error."),
+            .init(symbol: "info.circle", title: "Compatibility",
+                  detail: "Compatible with Tightbeam: none verified. This build was not verified against Tightbeam 0.1.16 (build 4304), Tightbeam 0.1.15 (build 4082), or Chat v0.1.104. No version-specific test evidence is tied to this build."),
+            .init(symbol: "exclamationmark.triangle", title: "Breaking changes",
+                  detail: "None."),
+        ]),
         ReleaseNote(version: "1.0", build: 83, date: "November 25, 2026", items: [
             .init(symbol: "hourglass", title: "Show waiting agents in Replies",
                   detail: "After you send a prompt, the agent appears in Replies with a spinner until it responds, including while its chat is open. A failed send clears the spinner; when a reply arrives, Tuner follows the existing read and unread behavior."),

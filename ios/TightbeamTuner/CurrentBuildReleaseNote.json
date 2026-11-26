@@ -1,12 +1,12 @@
 {
   "version": "1.0",
-  "build": 84,
+  "build": 85,
   "date": "November 26, 2026",
   "items": [
     {
       "symbol": "person.2",
-      "title": "See agent list status beside the heading",
-      "detail": "A spinner beside Agents shows when the list is refreshing, with cached agents still visible. If the list fails to load, tap the warning icon to see and copy the error."
+      "title": "Keep one agent list status indicator",
+      "detail": "The Agents toolbar shows a single spinner or warning while the list refreshes or when it fails, including while you scroll or filter the list."
     },
     {
       "symbol": "info.circle",
