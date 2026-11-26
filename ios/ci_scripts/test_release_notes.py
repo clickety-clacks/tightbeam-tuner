@@ -393,28 +393,6 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
 
     def test_current_note_is_selected_only_for_its_assigned_build(self):
         current, _ = release_notes.load_current_note(self.current_source)
-        self.assertEqual(
-            [item.title for item in current.items],
-            ["See which Tightbeam versions were checked", "Compatibility", "Breaking changes"],
-        )
-        compatibility_claim = next(
-            item.detail
-            for item in current.items
-            if item.title == "See which Tightbeam versions were checked"
-        )
-        self.assertIn("current and preceding published Tightbeam releases", compatibility_claim)
-        compatibility = next(
-            item.detail for item in current.items if item.title == "Compatibility"
-        )
-        self.assertEqual(
-            compatibility,
-            "Tightbeam compatibility is generated from release checks. Chat v0.1.104; Chat v0.1.101 does not work in Tuner.",
-        )
-        breaking_changes = next(
-            item.detail for item in current.items if item.title == "Breaking changes"
-        )
-        self.assertEqual(breaking_changes, "None.")
-
         if current.build == 0:
             with self.assertRaisesRegex(
                 release_notes.ReleaseNoteError,
@@ -440,6 +418,22 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             release_notes.note_for_build(
                 self.current_source, self.history_source, current.build + 1
             )
+
+    def test_feature_only_edit_to_current_note_does_not_break_selection(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "CurrentBuildReleaseNote.json"
+            data = json.loads(self.current_source.read_text(encoding="utf-8"))
+            original_detail = data["items"][0]["detail"]
+            changed_detail = original_detail + " Feature-only update."
+            data["items"][0]["detail"] = changed_detail
+            source.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+            selected = release_notes.note_for_build(
+                source, self.history_source, data["build"]
+            )
+
+        self.assertEqual(selected.build, data["build"])
+        self.assertEqual(selected.items[0].detail, changed_detail)
 
     def test_missing_historical_build_does_not_fall_back_to_latest(self):
         with self.assertRaisesRegex(release_notes.ReleaseNoteError, "build 57"):
