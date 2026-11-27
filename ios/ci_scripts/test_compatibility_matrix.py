@@ -397,6 +397,112 @@ class PiHarnessPreflightTests(unittest.TestCase):
                 )
 
 
+class ReplyCorrelationDiagnosticTests(unittest.TestCase):
+    def test_snapshot_distinguishes_acknowledged_human_and_matching_assistant_metadata(self):
+        session_key = "agent:main:fixture:main"
+        client_message_id = "c_fixture_message_id"
+        items = [
+            {
+                "sessionKey": session_key,
+                "role": "user",
+                "clientMessageId": client_message_id,
+                "seq": 4,
+            },
+            {
+                "sessionKey": session_key,
+                "role": "assistant",
+                "turnIncludesHuman": True,
+                "replyToClientMessageId": client_message_id,
+                "seq": 5,
+            },
+            {
+                "sessionKey": session_key,
+                "role": "assistant",
+                "turnIncludesHuman": False,
+                "seq": 6,
+            },
+            {
+                "sessionKey": "agent:main:other:main",
+                "role": "assistant",
+                "turnIncludesHuman": True,
+                "replyToClientMessageId": client_message_id,
+                "seq": 7,
+            },
+        ]
+
+        snapshot, reply_sequence = compatibility_matrix._reply_correlation_snapshot(
+            items, session_key, client_message_id
+        )
+
+        self.assertTrue(snapshot["humanPostPersisted"])
+        self.assertEqual(snapshot["humanSequence"], 4)
+        self.assertEqual(snapshot["assistantRowsAfterHumanCount"], 2)
+        self.assertTrue(snapshot["correlatedReplyFound"])
+        self.assertEqual(reply_sequence, 5)
+        encoded = json.dumps(snapshot)
+        self.assertNotIn(session_key, encoded)
+        self.assertNotIn(client_message_id, encoded)
+
+    def test_timeout_retains_human_persistence_reply_lookup_and_post_model_requests(self):
+        observation = {"postSubmitted": True, "postAcknowledged": True}
+        model_requests = [{
+            "method": "POST",
+            "releaseId": 449379583,
+            "stream": True,
+            "responseStatus": 200,
+            "responseCompleted": True,
+        }]
+        page = {"items": [{
+            "sessionKey": "agent:main:fixture:main",
+            "role": "user",
+            "clientMessageId": "fixture-message",
+            "seq": 4,
+        }]}
+
+        with (
+            mock.patch.object(compatibility_matrix, "_http_json", return_value=(200, page)),
+            mock.patch.object(compatibility_matrix.time, "monotonic", side_effect=[0.0, 0.0, 2.0]),
+            mock.patch.object(compatibility_matrix.time, "sleep"),
+            self.assertRaisesRegex(
+                compatibility_matrix.MatrixError,
+                "did not persist a correlated assistant reply",
+            ),
+        ):
+            compatibility_matrix._wait_for_reply(
+                "http://127.0.0.1:19450",
+                "agent:main:fixture:main",
+                "fixture-message",
+                timeout=1,
+                observation=observation,
+                model_requests=model_requests,
+            )
+
+        self.assertTrue(observation["postSubmitted"])
+        self.assertTrue(observation["postAcknowledged"])
+        self.assertEqual(observation["replyLookup"], {"httpStatus": 200, "itemCount": 1})
+        self.assertTrue(observation["replyCorrelation"]["humanPostPersisted"])
+        self.assertFalse(observation["replyCorrelation"]["correlatedReplyFound"])
+        self.assertEqual(observation["modelRequestsAfterHumanPost"]["requestCount"], 1)
+        self.assertEqual(observation["modelRequestsAfterHumanPost"]["completedResponseCount"], 1)
+
+    def test_model_request_observation_keeps_response_state_without_payloads(self):
+        snapshot = compatibility_matrix._model_request_observations([{
+            "method": "POST",
+            "releaseId": 449379583,
+            "stream": True,
+            "responseStatus": 200,
+            "responseCompleted": True,
+            "body": "must not be retained",
+        }])
+
+        self.assertEqual(snapshot["requestCount"], 1)
+        self.assertEqual(snapshot["completedResponseCount"], 1)
+        self.assertEqual(snapshot["requests"][0]["responseStatus"], 200)
+        self.assertTrue(snapshot["requests"][0]["responseCompleted"])
+        self.assertNotIn("body", json.dumps(snapshot))
+        self.assertNotIn("must not be retained", json.dumps(snapshot))
+
+
 class LocalModelStreamingTests(unittest.TestCase):
     def test_streaming_completion_emits_compact_json_sse_data_lines(self):
         fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
@@ -404,6 +510,7 @@ class LocalModelStreamingTests(unittest.TestCase):
             reserve.bind(("127.0.0.1", 0))
             fixture.model_port = reserve.getsockname()[1]
         fixture.model_requests = []
+        fixture.selected_release_id = 449379583
         fixture.model_server = None
         fixture.model_thread = None
 
@@ -437,7 +544,13 @@ class LocalModelStreamingTests(unittest.TestCase):
         self.assertEqual(decoded[1]["choices"][0]["delta"]["content"], "Tightbeam compatibility fixture reply.")
         self.assertEqual(decoded[2]["choices"][0]["finish_reason"], "stop")
         self.assertEqual(fixture.model_requests, [{
-            "method": "POST", "path": "/v1/chat/completions", "model": "tuner-fixture",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "model": "tuner-fixture",
+            "releaseId": 449379583,
+            "stream": True,
+            "responseStatus": 200,
+            "responseCompleted": True,
         }])
 
 

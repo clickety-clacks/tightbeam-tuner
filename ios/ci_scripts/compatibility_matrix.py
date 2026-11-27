@@ -308,7 +308,7 @@ def _preflight_pi_model(
     endpoint: str,
     env: dict[str, str],
     cwd: Path,
-    observed_requests: list[dict[str, str]],
+    observed_requests: list[dict[str, Any]],
     diagnostic_path: Path,
     diagnostic_redactions: set[str],
 ) -> dict[str, Any]:
@@ -414,46 +414,132 @@ def _http_json(
     return status, value
 
 
-def _wait_for_reply(gateway_url: str, session_key: str, client_message_id: str, timeout: int = 180) -> int:
+def _reply_correlation_snapshot(
+    items: list[dict[str, Any]], session_key: str, client_message_id: str
+) -> tuple[dict[str, Any], int | None]:
+    human_sequences = [
+        item.get("seq")
+        for item in items
+        if item.get("sessionKey") == session_key
+        and item.get("role") == "user"
+        and item.get("clientMessageId") == client_message_id
+        and isinstance(item.get("seq"), int)
+        and not isinstance(item.get("seq"), bool)
+    ]
+    if len(human_sequences) > 1:
+        raise MatrixError("published Tightbeam duplicated the uniquely identified fixture human post")
+
+    human_sequence = human_sequences[0] if human_sequences else None
+    assistant_rows: list[dict[str, Any]] = []
+    correlated_sequences: list[int] = []
+    if human_sequence is not None:
+        for item in items:
+            sequence = item.get("seq")
+            if (
+                item.get("sessionKey") != session_key
+                or item.get("role") != "assistant"
+                or not isinstance(sequence, int)
+                or isinstance(sequence, bool)
+                or sequence <= human_sequence
+            ):
+                continue
+            reply_to = item.get("replyToClientMessageId")
+            reply_to_matches = reply_to is None or reply_to == client_message_id
+            includes_human = item.get("turnIncludesHuman") is True
+            assistant_rows.append({
+                "sequence": sequence,
+                "turnIncludesHuman": includes_human,
+                "replyToClientMessageIdPresent": "replyToClientMessageId" in item,
+                "replyToClientMessageIdMatches": reply_to_matches,
+            })
+            if includes_human and reply_to_matches:
+                correlated_sequences.append(sequence)
+
+    return ({
+        "humanPostPersisted": human_sequence is not None,
+        "humanSequence": human_sequence,
+        "assistantRowsAfterHuman": assistant_rows[-20:],
+        "assistantRowsAfterHumanCount": len(assistant_rows),
+        "correlatedReplyFound": bool(correlated_sequences),
+    }, min(correlated_sequences) if correlated_sequences else None)
+
+
+def _model_request_observations(requests: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "requestCount": len(requests),
+        "completedResponseCount": sum(item.get("responseCompleted") is True for item in requests),
+        "requests": [
+            {
+                "method": item.get("method"),
+                "releaseId": item.get("releaseId"),
+                "stream": item.get("stream"),
+                "responseStatus": item.get("responseStatus"),
+                "responseCompleted": item.get("responseCompleted") is True,
+            }
+            for item in requests
+        ],
+    }
+
+
+def _wait_for_reply(
+    gateway_url: str,
+    session_key: str,
+    client_message_id: str,
+    timeout: int = 180,
+    *,
+    observation: dict[str, Any] | None = None,
+    model_requests: list[dict[str, Any]] | None = None,
+    model_request_start: int = 0,
+) -> int:
     encoded_key = urllib.parse.quote(session_key, safe="")
     url = f"{gateway_url}/api/sessions/{encoded_key}/messages?tail=true&limit=500"
     deadline = time.monotonic() + timeout
-    human_sequence: int | None = None
+    last_snapshot: dict[str, Any] = {
+        "humanPostPersisted": False,
+        "humanSequence": None,
+        "assistantRowsAfterHuman": [],
+        "assistantRowsAfterHumanCount": 0,
+        "correlatedReplyFound": False,
+    }
+    last_poll_status: int | None = None
+    last_item_count: int | None = None
     while time.monotonic() < deadline:
         status, page = _http_json(url, timeout=10)
+        last_poll_status = status
         if status == 200:
             items = page.get("items")
             if isinstance(items, list):
-                human_sequences: list[int] = []
-                for item in items:
-                    if not isinstance(item, dict) or item.get("sessionKey") != session_key:
-                        continue
-                    if item.get("role") == "user" and item.get("clientMessageId") == client_message_id:
-                        seq = item.get("seq")
-                        if isinstance(seq, int) and not isinstance(seq, bool):
-                            human_sequences.append(seq)
-                if len(human_sequences) > 1:
-                    raise MatrixError("published Tightbeam duplicated the uniquely identified fixture human post")
-                if human_sequences:
-                    human_sequence = human_sequences[0]
-                if human_sequence is not None:
-                    correlated = []
-                    for item in items:
-                        if not isinstance(item, dict) or item.get("sessionKey") != session_key:
-                            continue
-                        if (
-                            item.get("role") == "assistant"
-                            and item.get("turnIncludesHuman") is True
-                            and isinstance(item.get("seq"), int)
-                            and not isinstance(item.get("seq"), bool)
-                            and item["seq"] > human_sequence
-                        ):
-                            reply_to = item.get("replyToClientMessageId")
-                            if reply_to is None or reply_to == client_message_id:
-                                correlated.append(int(item["seq"]))
-                    if correlated:
-                        return min(correlated)
+                last_item_count = len(items)
+                valid_items = [item for item in items if isinstance(item, dict)]
+                last_snapshot, correlated_sequence = _reply_correlation_snapshot(
+                    valid_items, session_key, client_message_id
+                )
+                if observation is not None:
+                    observation["replyCorrelation"] = last_snapshot
+                    observation["replyLookup"] = {
+                        "httpStatus": last_poll_status,
+                        "itemCount": last_item_count,
+                    }
+                    if model_requests is not None:
+                        observation["modelRequestsAfterHumanPost"] = _model_request_observations(
+                            model_requests[model_request_start:]
+                        )
+                if correlated_sequence is not None:
+                    if observation is not None:
+                        observation["postState"] = "correlated_reply_persisted"
+                    return correlated_sequence
         time.sleep(0.25)
+    if observation is not None:
+        observation["replyCorrelation"] = last_snapshot
+        observation["replyLookup"] = {
+            "httpStatus": last_poll_status,
+            "itemCount": last_item_count,
+        }
+        observation["postState"] = "no_correlated_reply_before_timeout"
+        if model_requests is not None:
+            observation["modelRequestsAfterHumanPost"] = _model_request_observations(
+                model_requests[model_request_start:]
+            )
     raise MatrixError("published Tightbeam did not persist a correlated assistant reply to the fixture human post")
 
 
@@ -809,11 +895,19 @@ def _device_and_runtime(minimum_os: str) -> tuple[list[tuple[str, str]], str, st
 
 
 class LocalRuntimeFixture:
-    def __init__(self, root: Path, pair: tuple[release_hook.PublishedRelease, release_hook.PublishedRelease], package_paths: dict[int, Path]):
+    def __init__(
+        self,
+        root: Path,
+        pair: tuple[release_hook.PublishedRelease, release_hook.PublishedRelease],
+        package_paths: dict[int, Path],
+        *,
+        capture_turn_diagnostics: bool = False,
+    ):
         self.root = root
         self.pair = pair
         self.by_id = {item.release_id: item for item in pair}
         self.package_paths = package_paths
+        self.capture_turn_diagnostics = capture_turn_diagnostics
         self.gateway_port = _available_port()
         self.ssh_port = _available_port()
         while self.ssh_port == self.gateway_port:
@@ -832,6 +926,8 @@ class LocalRuntimeFixture:
         self.pi_bin = self.pi_package / "node_modules" / ".bin"
         self.pi_harness_version: str | None = None
         self.pi_model_preflights: list[dict[str, Any]] = []
+        self.runtime_turn_probes: list[dict[str, Any]] = []
+        self.active_turn_observation: dict[str, Any] | None = None
         self.command_log_sequence = 0
         self.model_port = _available_port()
         while self.model_port in {self.gateway_port, self.ssh_port}:
@@ -858,7 +954,7 @@ class LocalRuntimeFixture:
         self.runtime_identities: dict[int, dict[str, Any]] = {}
         self.model_server: http.server.ThreadingHTTPServer | None = None
         self.model_thread: threading.Thread | None = None
-        self.model_requests: list[dict[str, str]] = []
+        self.model_requests: list[dict[str, Any]] = []
         try:
             self._prepare_tools()
             self._prepare_sshd()
@@ -992,11 +1088,19 @@ class LocalRuntimeFixture:
                 if self.path != "/v1/models":
                     self._send(404, {"error": {"message": "not found", "type": "invalid_request_error"}})
                     return
-                fixture.model_requests.append({"method": "GET", "path": self.path})
+                request_observation = {
+                    "method": "GET",
+                    "path": self.path,
+                    "releaseId": fixture.selected_release_id,
+                    "responseStatus": None,
+                    "responseCompleted": False,
+                }
+                fixture.model_requests.append(request_observation)
                 self._send(200, {
                     "object": "list",
                     "data": [{"id": "tuner-fixture", "object": "model", "created": 1, "owned_by": "local"}],
                 })
+                request_observation.update({"responseStatus": 200, "responseCompleted": True})
 
             def do_POST(self) -> None:
                 if self.path != "/v1/chat/completions":
@@ -1010,9 +1114,16 @@ class LocalRuntimeFixture:
                 except (ValueError, json.JSONDecodeError):
                     self._send(400, {"error": {"message": "invalid fixture request", "type": "invalid_request_error"}})
                     return
-                fixture.model_requests.append({
-                    "method": "POST", "path": self.path, "model": "tuner-fixture",
-                })
+                request_observation = {
+                    "method": "POST",
+                    "path": self.path,
+                    "model": "tuner-fixture",
+                    "releaseId": fixture.selected_release_id,
+                    "stream": value.get("stream") is True,
+                    "responseStatus": None,
+                    "responseCompleted": False,
+                }
+                fixture.model_requests.append(request_observation)
                 completion_id = "chatcmpl-tuner-fixture"
                 if value.get("stream") is True:
                     chunks = [
@@ -1024,6 +1135,7 @@ class LocalRuntimeFixture:
                          "model": "tuner-fixture", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
                     ]
                     self.send_response(200)
+                    request_observation["responseStatus"] = 200
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Cache-Control", "no-cache")
                     self.send_header("Connection", "close")
@@ -1033,6 +1145,7 @@ class LocalRuntimeFixture:
                         self.wfile.flush()
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
+                    request_observation["responseCompleted"] = True
                     return
                 self._send(200, {
                     "id": completion_id,
@@ -1041,6 +1154,7 @@ class LocalRuntimeFixture:
                     "model": "tuner-fixture",
                     "choices": [{"index": 0, "message": {"role": "assistant", "content": "Tightbeam compatibility fixture reply."}, "finish_reason": "stop"}],
                 })
+                request_observation.update({"responseStatus": 200, "responseCompleted": True})
 
         self.model_server = http.server.ThreadingHTTPServer(("127.0.0.1", self.model_port), Handler)
         self.model_server.daemon_threads = True
@@ -1307,6 +1421,17 @@ class LocalRuntimeFixture:
     ) -> int:
         authenticated = False
         acknowledged = False
+        model_request_start = len(self.model_requests)
+        observation: dict[str, Any] | None = None
+        if self.capture_turn_diagnostics:
+            observation = {
+                "releaseId": self.selected_release_id,
+                "postState": "websocket_authentication",
+                "postSubmitted": False,
+                "postAcknowledged": False,
+                "modelRequestCountBeforePost": model_request_start,
+            }
+        self.active_turn_observation = observation
         with _WebSocket(gateway_url) as ws:
             ws.send_json({
                 "type": "auth",
@@ -1325,12 +1450,17 @@ class LocalRuntimeFixture:
                     authenticated = True
             if not authenticated:
                 raise MatrixError("published Tightbeam did not complete fixture chat authentication")
+            if observation is not None:
+                observation["postState"] = "authenticated"
             ws.send_json({
                 "type": "message",
                 "id": message_id,
                 "sessionKey": session_key,
                 "content": "Reply to this uniquely identified Tuner compatibility fixture message.",
             })
+            if observation is not None:
+                observation["postSubmitted"] = True
+                observation["postState"] = "post_submitted_waiting_for_ack"
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline and not acknowledged:
                 frame = ws.receive_json(timeout=max(0.1, deadline - time.monotonic()))
@@ -1341,8 +1471,66 @@ class LocalRuntimeFixture:
                 if frame.get("type") == "ack" and frame.get("id") == message_id:
                     acknowledged = True
             if not acknowledged:
+                if observation is not None:
+                    observation["postState"] = "post_not_acknowledged"
                 raise MatrixError("published Tightbeam did not acknowledge the fixture human message")
-        return _wait_for_reply(gateway_url, session_key, message_id)
+        if observation is not None:
+            observation["postAcknowledged"] = True
+            observation["postState"] = "post_acknowledged_waiting_for_reply"
+        return _wait_for_reply(
+            gateway_url,
+            session_key,
+            message_id,
+            observation=observation,
+            model_requests=self.model_requests if observation is not None else None,
+            model_request_start=model_request_start,
+        )
+
+    def preflight_runtime_reply(self, release: release_hook.PublishedRelease) -> None:
+        """Exercise the real packaged runtime's seeded human turn before simulator load."""
+        request_start = len(self.model_requests)
+        self.active_turn_observation = None
+        try:
+            if self.selected_release_id != release.release_id or self.gateway_process is None:
+                self._stop_gateway()
+                self._start_gateway(release.release_id)
+            seed = self._seed_replies(release.release_id)
+        except (MatrixError, release_hook.ReleaseHookError, release_notes.ReleaseNoteError, OSError) as error:
+            self.runtime_turn_probes.append({
+                "releaseId": release.release_id,
+                "tag": release.tag,
+                "assetId": release.asset_id,
+                "assetDigest": release.asset_digest,
+                "status": "failed",
+                "failure": _failure_message(error),
+                "piHarnessVersion": self.pi_harness_version,
+                "piModelPreflight": next(
+                    (item for item in reversed(self.pi_model_preflights) if item.get("releaseId") == release.release_id),
+                    None,
+                ),
+                "modelRequests": _model_request_observations(self.model_requests[request_start:]),
+                "ordinaryTurn": self.active_turn_observation or {"postState": "not_reached"},
+            })
+            raise MatrixError(
+                f"pre-test packaged-runtime turn probe failed for {release.tag}: {_failure_message(error)}"
+            ) from error
+
+        self.runtime_turn_probes.append({
+            "releaseId": release.release_id,
+            "tag": release.tag,
+            "assetId": release.asset_id,
+            "assetDigest": release.asset_digest,
+            "status": "passed",
+            "piHarnessVersion": self.pi_harness_version,
+            "piModelPreflight": next(
+                (item for item in reversed(self.pi_model_preflights) if item.get("releaseId") == release.release_id),
+                None,
+            ),
+            "modelRequests": _model_request_observations(self.model_requests[request_start:]),
+            "ordinaryTurn": self.active_turn_observation or {"postState": "not_reached"},
+            "assistantSequence": seed["assistantSequence"],
+            "readMarker": seed["initialReadMarker"],
+        })
 
     def _messages(self, gateway_url: str, session_key: str) -> list[dict[str, Any]]:
         encoded = urllib.parse.quote(session_key, safe="")
@@ -1443,7 +1631,10 @@ class LocalRuntimeFixture:
                 diagnostic_path=self.root / "command-logs" / f"pi-preflight-{release_id}.log",
                 diagnostic_redactions=self.diagnostic_redaction_values(),
             )
-            self.pi_model_preflights.append({"releaseId": release_id, **preflight})
+            self.pi_model_preflights.append({
+                "releaseId": release_id,
+                **preflight,
+            })
             self._cli(
                 release_id, "spawn", "--as-user", str(context["userId"]),
                 "--display", "Tuner compatibility reply", "--harness", "pi",
@@ -2451,7 +2642,21 @@ def run_matrix(
         )
         # Install and launch the pinned Pi CLI before simulator boot adds CPU
         # pressure. The fixture starts only task-owned local services here.
-        fixture = LocalRuntimeFixture(repo_root, pair, packages)
+        fixture = LocalRuntimeFixture(
+            repo_root,
+            pair,
+            packages,
+            capture_turn_diagnostics=diagnostic,
+        )
+        if diagnostic:
+            for release in pair:
+                fixture.preflight_runtime_reply(release)
+                matrix_report["runtimeTurnProbes"] = fixture.runtime_turn_probes
+                matrix_report["stage"] = f"runtime_turn_probe_completed:{release.tag}"
+                # Preserve the exact packaged-runtime result before simulator
+                # creation or Xcode can add load and obscure the failure cause.
+                _write_json(report_path, matrix_report)
+            print("Published-runtime turn probes passed before simulator creation")
         simulator_id, simulator_name, device_type_id, device_type_name = _create_simulator(
             device_type_candidates, runtime_id, build_number,
             diagnostic_directory=repo_root / "simulator-diagnostics",
@@ -2666,6 +2871,8 @@ def run_matrix(
                 "version": fixture.pi_harness_version,
                 "modelPreflights": fixture.pi_model_preflights,
             }
+            if diagnostic:
+                matrix_report["runtimeTurnProbes"] = fixture.runtime_turn_probes
         matrix_report.setdefault("detectors", {"status": "failed", "findings": [], "findingsSha256": release_hook.findings_digest([])})
         try:
             _write_json(report_path, matrix_report)
@@ -2689,6 +2896,8 @@ def run_matrix(
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         matrix_report["status"] = "failed"
         matrix_report["failure"] = _failure_message(error)
+        if fixture is not None and diagnostic:
+            matrix_report["runtimeTurnProbes"] = fixture.runtime_turn_probes
         matrix_report.setdefault("detectors", {"status": "failed", "findings": [], "findingsSha256": release_hook.findings_digest([])})
         try:
             _write_json(report_path, matrix_report)
