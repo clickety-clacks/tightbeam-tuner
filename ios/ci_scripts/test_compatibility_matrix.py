@@ -46,15 +46,14 @@ class SimulatorSelectionTests(unittest.TestCase):
         self.assertEqual(
             self._selection("iOS"),
             (
-                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
-                "iPhone 17 Pro",
+                [("com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "iPhone 17 Pro")],
                 "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
                 "iOS 27.2",
             ),
         )
 
     def test_keeps_compatibility_with_older_simulator_platform_label(self):
-        self.assertEqual(self._selection("iOS Simulator")[1], "iPhone 17 Pro")
+        self.assertEqual(self._selection("iOS Simulator")[0][0][1], "iPhone 17 Pro")
 
     def test_prefers_generic_runtime_and_newest_compatible_device_type(self):
         selected = self._selection(
@@ -100,8 +99,11 @@ class SimulatorSelectionTests(unittest.TestCase):
         self.assertEqual(
             selected,
             (
-                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
-                "iPhone 17 Pro",
+                [
+                    ("com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", "iPhone Duo"),
+                    ("com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "iPhone 17 Pro"),
+                    ("com.apple.CoreSimulator.SimDeviceType.iPhone-11", "iPhone 11"),
+                ],
                 "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
                 "iOS 27.2",
             ),
@@ -143,7 +145,7 @@ class SimulatorSelectionTests(unittest.TestCase):
         ):
             compatibility_matrix._device_and_runtime("26.0")
 
-    def test_rejects_device_type_introduced_with_the_selected_runtime(self):
+    def test_includes_device_type_introduced_with_the_selected_runtime_for_simctl_probe(self):
         devicetypes = {
             "devicetypes": [
                 {
@@ -172,12 +174,17 @@ class SimulatorSelectionTests(unittest.TestCase):
                 "_checked",
                 side_effect=[json.dumps(devicetypes), json.dumps(runtimes)],
             ),
-            self.assertRaisesRegex(
-                compatibility_matrix.MatrixError,
-                "no iPhone simulator type compatible with the selected runtime",
-            ),
         ):
-            compatibility_matrix._device_and_runtime("26.0")
+            selected = compatibility_matrix._device_and_runtime("26.0")
+
+        self.assertEqual(
+            selected,
+            (
+                [("com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", "iPhone Duo")],
+                "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+                "iOS 27.2",
+            ),
+        )
 
 
 class LoopbackListenerTests(unittest.TestCase):
@@ -485,7 +492,7 @@ class SimulatorBootRetryTests(unittest.TestCase):
         ):
             diagnostic_directory = Path(temporary) / "simulator-diagnostics"
             compatibility_matrix._create_simulator(
-                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                [("com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "iPhone 17 Pro")],
                 "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
                 86,
                 diagnostic_directory=diagnostic_directory,
@@ -498,6 +505,42 @@ class SimulatorBootRetryTests(unittest.TestCase):
                 (diagnostic_directory / "simulator-create.log").read_text(encoding="utf-8"),
                 create_error,
             )
+
+    def test_tries_next_device_type_after_simctl_reports_incompatible_pair(self):
+        udid = "12345678-1234-1234-1234-123456789012"
+        responses = [
+            compatibility_matrix.subprocess.CompletedProcess([], 1, "Incompatible device"),
+            compatibility_matrix.subprocess.CompletedProcess([], 0, udid),
+            compatibility_matrix.subprocess.CompletedProcess([], 0, "boot complete"),
+            compatibility_matrix.subprocess.CompletedProcess([], 0, "ready"),
+        ]
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(compatibility_matrix, "_require_command", return_value="xcrun"),
+            mock.patch.object(compatibility_matrix, "_run", side_effect=responses) as run,
+        ):
+            result = compatibility_matrix._create_simulator(
+                [
+                    ("com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", "iPhone Duo"),
+                    ("com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "iPhone 17 Pro"),
+                ],
+                "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+                86,
+                diagnostic_directory=Path(temporary) / "simulator-diagnostics",
+            )
+
+        self.assertEqual(
+            result,
+            (
+                udid,
+                "TunerCompatibility-86",
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                "iPhone 17 Pro",
+            ),
+        )
+        self.assertEqual(run.call_args_list[0].args[0][4], "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo")
+        self.assertEqual(run.call_args_list[1].args[0][4], "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro")
+        self.assertEqual(run.call_args_list[1].args[0][5], "com.apple.CoreSimulator.SimRuntime.iOS-27-2")
 
     def test_retries_boot_once_after_bounded_readiness_failure(self):
         udid = "12345678-1234-1234-1234-123456789012"
@@ -515,13 +558,21 @@ class SimulatorBootRetryTests(unittest.TestCase):
             mock.patch.object(compatibility_matrix.time, "sleep"),
         ):
             result = compatibility_matrix._create_simulator(
-                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                [("com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "iPhone 17 Pro")],
                 "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
                 86,
                 diagnostic_directory=Path(temporary) / "simulator-diagnostics",
             )
 
-        self.assertEqual(result, (udid, "TunerCompatibility-86"))
+        self.assertEqual(
+            result,
+            (
+                udid,
+                "TunerCompatibility-86",
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                "iPhone 17 Pro",
+            ),
+        )
         self.assertEqual(run.call_args_list[1].args[0][2:4], ["boot", udid])
         self.assertEqual(run.call_args_list[2].args[0][2:4], ["shutdown", udid])
         self.assertEqual(run.call_args_list[3].args[0][2:4], ["boot", udid])
@@ -548,7 +599,7 @@ class SimulatorBootRetryTests(unittest.TestCase):
             self.assertRaisesRegex(compatibility_matrix.MatrixError, "after one retry"),
         ):
             compatibility_matrix._create_simulator(
-                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                [("com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "iPhone 17 Pro")],
                 "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
                 86,
                 diagnostic_directory=Path(temporary) / "simulator-diagnostics",

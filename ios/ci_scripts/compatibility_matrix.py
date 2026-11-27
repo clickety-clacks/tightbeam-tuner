@@ -757,7 +757,7 @@ def _add_xctest_environment(environment: dict[str, str], values: dict[str, str])
         environment["TEST_RUNNER_" + key] = value
 
 
-def _device_and_runtime(minimum_os: str) -> tuple[str, str, str, str]:
+def _device_and_runtime(minimum_os: str) -> tuple[list[tuple[str, str]], str, str]:
     simctl = _require_command("xcrun")
     devicetypes = json.loads(_checked([simctl, "simctl", "list", "devicetypes", "--json"]))
     runtimes = json.loads(_checked([simctl, "simctl", "list", "runtimes", "--json"]))
@@ -790,23 +790,20 @@ def _device_and_runtime(minimum_os: str) -> tuple[str, str, str, str]:
     compatible_types = [
         item for item in types
         if isinstance(item.get("minRuntimeVersionString"), str)
-        # Device types introduced in the exact same iOS release can require
-        # a model-specific runtime. Prefer a device established before the
-        # generic runtime rather than guessing that such a pair is supported.
         and release_hook._os_version(item["minRuntimeVersionString"])
-        < release_hook._os_version(selected_runtime["version"])
+        <= release_hook._os_version(selected_runtime["version"])
     ]
     if not compatible_types:
         _safe_fail("Xcode has no iPhone simulator type compatible with the selected runtime")
-    selected_type = max(
-        compatible_types,
+    compatible_types.sort(
         key=lambda item: (
             release_hook._os_version(item["minRuntimeVersionString"]),
             item["name"],
         ),
+        reverse=True,
     )
     return (
-        str(selected_type["identifier"]), str(selected_type["name"]),
+        [(str(item["identifier"]), str(item["name"])) for item in compatible_types],
         str(selected_runtime["identifier"]), "iOS " + str(selected_runtime["version"]),
     )
 
@@ -1775,33 +1772,66 @@ class LocalRuntimeFixture:
 
 
 def _create_simulator(
-    device_type: str,
+    device_types: list[tuple[str, str]],
     runtime_id: str,
     build_number: int,
     *,
     diagnostic_directory: Path | None = None,
-) -> tuple[str, str]:
+) -> tuple[str, str, str, str]:
     simctl = _require_command("xcrun")
     name = f"TunerCompatibility-{build_number}"
-    create_log = (
-        diagnostic_directory / "simulator-create.log"
-        if diagnostic_directory is not None else None
-    )
-    if create_log is not None:
-        create_log.parent.mkdir(parents=True, exist_ok=True)
-    create_output = _checked(
-        [simctl, "simctl", "create", name, device_type, runtime_id],
-        timeout=60,
-        diagnostic_path=create_log,
-    )
-    udid = create_output.strip()
+    if not device_types:
+        _safe_fail("Xcode has no candidate iPhone simulator types for the selected runtime")
+    if diagnostic_directory is not None:
+        diagnostic_directory.mkdir(parents=True, exist_ok=True)
+
+    udid = ""
+    selected_device_type = ""
+    selected_device_name = ""
+    selected_create_log: Path | None = None
+    incompatible: list[str] = []
+    for index, (device_type, device_name) in enumerate(device_types, start=1):
+        create_log = None
+        if diagnostic_directory is not None:
+            filename = "simulator-create.log" if index == 1 else f"simulator-create-attempt-{index}.log"
+            create_log = diagnostic_directory / filename
+        created = _run(
+            [simctl, "simctl", "create", name, device_type, runtime_id],
+            timeout=60,
+            diagnostic_path=create_log,
+        )
+        if created.returncode != 0:
+            if "Incompatible device" in created.stdout:
+                incompatible.append(device_name)
+                continue
+            message = "compatibility-matrix command failed: xcrun"
+            if create_log is not None:
+                message += f"; diagnostic retained as {create_log.name}"
+            _safe_fail(message)
+        udid = created.stdout.strip()
+        selected_device_type = device_type
+        selected_device_name = device_name
+        selected_create_log = create_log
+        break
+
+    if not udid:
+        details = ", ".join(incompatible)
+        message = "Xcode rejected every eligible iPhone simulator type for the selected runtime"
+        if details:
+            message += f" ({details})"
+        if diagnostic_directory is not None:
+            message += f"; inspect simulator diagnostics in {diagnostic_directory.name}"
+        _safe_fail(message)
+
     if not re.fullmatch(r"[0-9A-Fa-f-]{36}", udid):
         _safe_fail("Xcode did not return an exact owned simulator identifier")
-    if create_log is not None:
+    if selected_create_log is not None:
         # A successful create returns the simulator UDID. Keep the success
         # marker, not the identifier, in the CI artifact.
-        create_log.write_text("simulator create succeeded; identifier redacted\n", encoding="utf-8")
-        create_log.chmod(0o600)
+        selected_create_log.write_text(
+            "simulator create succeeded; identifier redacted\n", encoding="utf-8"
+        )
+        selected_create_log.chmod(0o600)
     redactions = {udid}
     failures: list[str] = []
     for attempt in (1, 2):
@@ -1828,7 +1858,7 @@ def _create_simulator(
             if readiness.returncode != 0:
                 failures.append(f"readiness attempt {attempt} exited unsuccessfully")
                 raise MatrixError("simulator readiness command failed")
-            return udid, name
+            return udid, name, selected_device_type, selected_device_name
         except MatrixError:
             if not failures or not failures[-1].endswith(str(attempt)):
                 failures.append(f"boot/readiness attempt {attempt} timed out or failed")
@@ -2416,17 +2446,21 @@ def run_matrix(
         candidate.update(candidate_settings)
         matrix_report["baseline"] = baseline_identity
         matrix_report["candidate"] = candidate
-        device_type_id, device_type_name, runtime_id, runtime_name = _device_and_runtime(
+        device_type_candidates, runtime_id, runtime_name = _device_and_runtime(
             candidate["minimumOS"]
         )
         # Install and launch the pinned Pi CLI before simulator boot adds CPU
         # pressure. The fixture starts only task-owned local services here.
         fixture = LocalRuntimeFixture(repo_root, pair, packages)
-        simulator_id, simulator_name = _create_simulator(
-            device_type_id, runtime_id, build_number,
+        simulator_id, simulator_name, device_type_id, device_type_name = _create_simulator(
+            device_type_candidates, runtime_id, build_number,
             diagnostic_directory=repo_root / "simulator-diagnostics",
         )
         print(f"Created isolated simulator {simulator_name} ({device_type_name}, {runtime_name})")
+        matrix_report["simulator"] = {
+            "deviceType": device_type_name,
+            "runtime": runtime_name,
+        }
         candidate["runId"] = run_id
         candidate["attempt"] = release_notes.XCODE_CLOUD_ATTEMPT_NUMBER
         matrix_candidate = dict(candidate)
