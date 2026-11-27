@@ -61,10 +61,18 @@ final class ReleaseNotesTests: XCTestCase {
         XCTAssertEqual(
             shipped.items.map { ($0.title, $0.detail) }.map { "\($0.0)|\($0.1)" },
             [
-                "Compatibility|Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Not yet verified with Chat v0.1.101.",
+                "Compatibility|Tightbeam compatibility was not verified for this build. Chat v0.1.100. Not yet verified with Chat v0.1.101.",
                 "Breaking changes|None.",
             ]
         )
+    }
+
+    func testBundledBuild83HistoryDoesNotClaimUntestedTightbeamCompatibility() throws {
+        let shipped = try XCTUnwrap(ReleaseNotes.history.first(where: { $0.build == 83 }))
+        let compatibility = try XCTUnwrap(shipped.items.first(where: { $0.title == "Compatibility" }))
+
+        XCTAssertTrue(compatibility.detail.contains("Tightbeam compatibility was not verified for this build"))
+        XCTAssertFalse(compatibility.detail.contains("Tightbeam 0.1."))
     }
 
     func testFirstLaunchAfterUpdateShowsTheExactCurrentBuildNote() {

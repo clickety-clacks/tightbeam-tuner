@@ -495,6 +495,10 @@ struct RepliedShownChat {
 
     private(set) var state = RepliedState()
     private(set) var shownSessionKey: String?
+    private(set) var subscriptionReadyCount = 0
+    private(set) var snapshotCompletedCount = 0
+    private(set) var messageCreatedSequenceBySession: [String: Int] = [:]
+    private(set) var readMarkerEventBySession: [String: Int] = [:]
     private static let localReadMarkersKey = "repliedLocalReadMarkers"
     private static let stateSnapshotKey = "repliedStateSnapshot.v1"
     private static let stateSnapshotSchemaVersion = 1
@@ -624,6 +628,7 @@ struct RepliedShownChat {
                         case .subscriptionReady:
                             guard !ready else { continue }
                             ready = true
+                            subscriptionReadyCount += 1
                             retry = 1
                             let isReconnect = subscriptionState.subscriptionReadyNeedsCatchUp()
                             if isReconnect { await onReconnect() }
@@ -640,6 +645,7 @@ struct RepliedShownChat {
                                     recentSessionKeys: currentRecentSessionKeys,
                                     mode: mode
                                 )
+                                self.snapshotCompletedCount += 1
                             }
                         case .serverError:
                             dropDiagnostic = RepliedSocketDiagnostic.serverError(
@@ -649,6 +655,21 @@ struct RepliedShownChat {
                             )
                             break receiveLoop
                         default:
+                            switch frame {
+                            case .message(let message) where message.role == "assistant" && message.turnIncludesHuman:
+                                messageCreatedSequenceBySession[message.sessionKey] = max(
+                                    messageCreatedSequenceBySession[message.sessionKey] ?? Int.min,
+                                    message.seq
+                                )
+                            case .readMarker(let marker):
+                                let suffix = ":session-read-position"
+                                if let value = marker.marker, marker.scopeKey.hasSuffix(suffix) {
+                                    let sessionKey = String(marker.scopeKey.dropLast(suffix.count))
+                                    readMarkerEventBySession[sessionKey] = value
+                                }
+                            default:
+                                break
+                            }
                             apply(frame, userID: user)
                             if frame.changesRoster { onRosterEvent(frame) }
                         }

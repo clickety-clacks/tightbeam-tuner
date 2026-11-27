@@ -1,17 +1,17 @@
 {
   "version": "1.0",
-  "build": 85,
+  "build": 86,
   "date": "November 26, 2026",
   "items": [
     {
-      "symbol": "person.2",
-      "title": "Keep one agent list status indicator",
-      "detail": "The Agents toolbar shows a single spinner or warning while the list refreshes or when it fails, including while you scroll or filter the list."
+      "symbol": "checkmark.seal",
+      "title": "See which Tightbeam versions were checked",
+      "detail": "Tuner reports the current and preceding published Tightbeam releases checked for this update."
     },
     {
       "symbol": "info.circle",
       "title": "Compatibility",
-      "detail": "Compatible with Tightbeam: none verified. This build was not verified against Tightbeam 0.1.16 (build 4304), Tightbeam 0.1.15 (build 4082), or Chat v0.1.104. No version-specific test evidence is tied to this build."
+      "detail": "Tightbeam compatibility is generated from release checks. Chat v0.1.104; Chat v0.1.101 does not work in Tuner."
     },
     {
       "symbol": "exclamationmark.triangle",

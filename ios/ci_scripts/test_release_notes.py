@@ -233,7 +233,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             [
                 (
                     "Compatibility",
-                    "Compatible with Tightbeam CLI 0.1.16 and Gateway 0.1.16 (build 4283), plus Chat v0.1.100, for the tested paths: the CLI roster returned the required fields, and Tuner opened a conversation, sent one prompt, and showed the reply. Tuner's in-app SSH roster fetch was not exercised.",
+                    "Tightbeam compatibility was not verified for this build. Historical CLI roster output returned the required fields, and Tuner opened a conversation, sent one prompt, and showed the reply with Chat v0.1.100. Tuner's in-app SSH roster fetch was not exercised.",
                 ),
                 ("Breaking changes", "None."),
             ],
@@ -251,7 +251,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 ),
                 (
                     "Compatibility",
-                    "Compatible with Tightbeam CLI 0.1.16 and Gateway 0.1.16 (build 4283), plus Chat v0.1.100, for the tested paths: the CLI roster returned the required fields, and Tuner opened a conversation, sent one prompt, and showed the reply. Tuner's in-app SSH roster fetch was not exercised.",
+                    "Tightbeam compatibility was not verified for this build. Historical CLI roster output returned the required fields, and Tuner opened a conversation, sent one prompt, and showed the reply with Chat v0.1.100. Tuner's in-app SSH roster fetch was not exercised.",
                 ),
                 ("Breaking changes", "None."),
             ],
@@ -265,7 +265,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             [
                 (
                     "Compatibility",
-                    "Known compatibility evidence is limited to these checks: Tightbeam CLI 0.1.16 and Gateway 0.1.16 (build 4283) roster output contained the required string fields; a pre-recovery Tuner Debug build opened a conversation, sent one prompt, and displayed the reply with Chat v0.1.100. That conversation check predates the recovery change. The recovery change has not been exercised with Chat v0.1.101, and Tuner's in-app SSH roster fetch was not exercised.",
+                    "Tightbeam compatibility was not verified for this build. Historical roster output contained the required string fields, and a pre-recovery Tuner Debug build opened a conversation, sent one prompt, and displayed the reply with Chat v0.1.100. That conversation check predates the recovery change. The recovery change has not been exercised with Chat v0.1.101, and Tuner's in-app SSH roster fetch was not exercised.",
                 ),
                 ("Breaking changes", "None."),
             ],
@@ -275,7 +275,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
         expected_items = [
             (
                 "Compatibility",
-                "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Not yet verified with Chat v0.1.101.",
+                "Tightbeam compatibility was not verified for this build. Chat v0.1.100. Not yet verified with Chat v0.1.101.",
             ),
             ("Breaking changes", "None."),
         ]
@@ -302,7 +302,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 ),
                 (
                     "Compatibility",
-                    "Compatible with: Tightbeam 0.1.16 (build 4283) and Chat v0.1.100. Chat v0.1.101 does not work in Tuner.",
+                    "Tightbeam compatibility was not verified for this build. Chat v0.1.100. Chat v0.1.101 does not work in Tuner.",
                 ),
                 (
                     "Breaking changes",
@@ -318,11 +318,11 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             [
                 (
                     "Catch up older Replies after reconnecting",
-                    "When the Gateway provides message-sequence summaries, Tuner checks older conversations that changed while disconnected without reloading every conversation. With Tightbeam 0.1.16, it continues checking pending prompts, changed read positions and recent conversations; older Replies may wait for a live update.",
+                    "When the Gateway provides message-sequence summaries, Tuner checks older conversations that changed while disconnected without reloading every conversation. It continues checking pending prompts, changed read positions and recent conversations; older Replies may wait for a live update.",
                 ),
                 (
                     "Compatibility",
-                    "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
+                    "Tightbeam compatibility was not verified for this build. Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
                 ),
                 (
                     "Breaking changes",
@@ -342,7 +342,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 ),
                 (
                     "Compatibility",
-                    "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
+                    "Tightbeam compatibility was not verified for this build. Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
                 ),
                 (
                     "Breaking changes",
@@ -362,7 +362,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 ),
                 (
                     "Compatibility",
-                    "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
+                    "Tightbeam compatibility was not verified for this build. Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
                 ),
                 (
                     "Breaking changes",
@@ -382,7 +382,7 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 ),
                 (
                     "Compatibility",
-                    "Compatible with: Tightbeam 0.1.16 (build 4304) and Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
+                    "Tightbeam compatibility was not verified for this build. Chat v0.1.104. Chat v0.1.101 does not work in Tuner.",
                 ),
                 (
                     "Breaking changes",
@@ -403,6 +403,9 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 )
             return
 
+        self.assertGreater(current.build, max(note.build for note in self.history))
+        self.assertNotIn(current.build, {note.build for note in self.history})
+
         selected = release_notes.note_for_build(
             self.current_source, self.history_source, current.build
         )
@@ -415,6 +418,22 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             release_notes.note_for_build(
                 self.current_source, self.history_source, current.build + 1
             )
+
+    def test_feature_only_edit_to_current_note_does_not_break_selection(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "CurrentBuildReleaseNote.json"
+            data = json.loads(self.current_source.read_text(encoding="utf-8"))
+            original_detail = data["items"][0]["detail"]
+            changed_detail = original_detail + " Feature-only update."
+            data["items"][0]["detail"] = changed_detail
+            source.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+            selected = release_notes.note_for_build(
+                source, self.history_source, data["build"]
+            )
+
+        self.assertEqual(selected.build, data["build"])
+        self.assertEqual(selected.items[0].detail, changed_detail)
 
     def test_missing_historical_build_does_not_fall_back_to_latest(self):
         with self.assertRaisesRegex(release_notes.ReleaseNoteError, "build 57"):
@@ -536,10 +555,11 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             root = Path(temporary_directory)
             current_note = self._numbered_note_copy(root, 12)
             base_note = self._premerge_base_copy(root, 11)
-
             latest_history_build = max(note.build for note in self.history)
+
             with self.assertRaisesRegex(
-                release_notes.ReleaseNoteError, f"greater than latest historical note {latest_history_build}"
+                release_notes.ReleaseNoteError,
+                f"greater than latest historical note {latest_history_build}",
             ):
                 release_notes.validate_premerge_note(
                     current_note, self.history_source, base_note
@@ -658,16 +678,16 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
                 "detail": "Versions not specified yet.",
             })
             current_note.write_text(json.dumps(data), encoding="utf-8")
-            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "Tightbeam semantic version"):
+            with self.assertRaisesRegex(release_notes.ReleaseNoteError, "Chat semantic version"):
                 release_notes.validate_premerge_note(current_note, self.history_source, base_note)
 
             compatibility = next(item for item in data["items"] if item["title"] == "Compatibility")
-            compatibility["detail"] = "Tightbeam CLI 0.0.0 (test fixture)."
+            compatibility["detail"] = "Tightbeam compatibility will be generated from checks."
             current_note.write_text(json.dumps(data), encoding="utf-8")
             with self.assertRaisesRegex(release_notes.ReleaseNoteError, "Chat semantic version"):
                 release_notes.validate_premerge_note(current_note, self.history_source, base_note)
 
-            compatibility["detail"] = "Tightbeam CLI 0.0.0 and Chat v0.0.0 (test fixture)."
+            compatibility["detail"] = "Tightbeam compatibility will be generated from checks. Chat v0.0.0 (test fixture)."
             data["items"] = [item for item in data["items"] if item["title"] != "Breaking changes"]
             current_note.write_text(json.dumps(data), encoding="utf-8")
             with self.assertRaisesRegex(release_notes.ReleaseNoteError, "exactly one `Breaking changes` item"):
@@ -844,23 +864,19 @@ class ExactReleaseNoteSelectionTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_duplicate_historical_build_numbers_fail_closed(self):
-        source = self.history_source.read_text(encoding="utf-8")
-        marker = "static let history: [ReleaseNote] = ["
-        start = source.index(marker) + len(marker)
-        open_index = start - 1
-        close_index = release_notes._balanced_end(source, open_index, "[", "]")
-        array_content = source[open_index + 1 : close_index]
-        first_entry = next(release_notes._code_occurrences(array_content, "ReleaseNote"))
-        call_open = array_content.find("(", first_entry + len("ReleaseNote"))
-        call_close = release_notes._balanced_end(array_content, call_open, "(", ")")
-        duplicate = array_content[first_entry : call_close + 1]
-        changed = source[:close_index] + ",\n" + duplicate + source[close_index:]
-
+        history = json.loads(self.history_source.read_text(encoding="utf-8"))
+        history.append(history[0])
         with tempfile.TemporaryDirectory() as temporary_directory:
-            temporary_source = Path(temporary_directory) / "ReleaseNotes.swift"
-            temporary_source.write_text(changed, encoding="utf-8")
+            temporary_source = Path(temporary_directory) / "ReleaseNotesHistory.json"
+            temporary_source.write_text(json.dumps(history), encoding="utf-8")
             with self.assertRaisesRegex(release_notes.ReleaseNoteError, "duplicate build numbers"):
                 release_notes.load_notes(temporary_source)
+
+    def test_release_note_history_remains_sorted_and_unambiguous(self):
+        history = release_notes.load_notes(self.history_source)
+        builds = [note.build for note in history]
+        self.assertEqual(builds, sorted(set(builds), reverse=True))
+        self.assertTrue(all(note.items for note in history))
 
 
 if __name__ == "__main__":
