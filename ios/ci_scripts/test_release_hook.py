@@ -1071,8 +1071,10 @@ class XcodeCloudArchiveScriptTests(unittest.TestCase):
     def test_pre_archive_gates_case_variant_and_rejects_other_archive_workflows(self):
         result, calls = self.run_script("ci_pre_xcodebuild.sh", "Internal TestFlight")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("compatibility_matrix.py", calls[0])
-        self.assertIn("release_notes.py validate", calls[1])
+        self.assertIn("configure_bundle_identifier.py", calls[0])
+        self.assertIn("TightbeamTuner.xcodeproj/project.pbxproj", calls[0])
+        self.assertIn("compatibility_matrix.py", calls[1])
+        self.assertIn("release_notes.py validate", calls[2])
 
         result, calls = self.run_script("ci_pre_xcodebuild.sh", "Unrecognized Upload Workflow")
         self.assertNotEqual(result.returncode, 0)
