@@ -1,4 +1,5 @@
 import json
+import re
 import socket
 import tempfile
 import urllib.error
@@ -664,26 +665,36 @@ class LocalModelStreamingTests(unittest.TestCase):
         with mock.patch.object(compatibility_matrix, "_require_loopback_listener"):
             fixture._start_model_server()
         try:
-            request = urllib.request.Request(
-                f"http://127.0.0.1:{fixture.model_port}/v1/chat/completions",
-                data=json.dumps({
-                    "model": "qwen3.5-35b", "stream": True,
-                    "messages": [{"role": "system", "content": prompt}], "tools": tools,
-                }).encode("utf-8"),
-                headers={"Content-Type": "application/json"}, method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=5) as response:
-                events = [item for item in response.read().decode("utf-8").split("\n\n") if item]
-            tool_chunks = [
-                json.loads(event.removeprefix("data: "))
-                for event in events if event.startswith("data: ") and event != "data: [DONE]"
-            ]
-            tool_call = tool_chunks[1]["choices"][0]["delta"]["tool_calls"][0]
+            def read_tool_call() -> dict:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{fixture.model_port}/v1/chat/completions",
+                    data=json.dumps({
+                        "model": "qwen3.5-35b", "stream": True,
+                        "messages": [{"role": "system", "content": prompt}], "tools": tools,
+                    }).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    events = [item for item in response.read().decode("utf-8").split("\n\n") if item]
+                tool_chunks = [
+                    json.loads(event.removeprefix("data: "))
+                    for event in events if event.startswith("data: ") and event != "data: [DONE]"
+                ]
+                call = tool_chunks[1]["choices"][0]["delta"]["tool_calls"][0]
+                self.assertEqual(tool_chunks[2]["choices"][0]["finish_reason"], "tool_calls")
+                return call
+
+            with mock.patch.object(compatibility_matrix.secrets, "token_hex", side_effect=["1" * 32, "2" * 32]):
+                tool_call = read_tool_call()
+                second_tool_call = read_tool_call()
             self.assertEqual(tool_call["function"]["name"], "bash")
-            self.assertEqual(tool_call["id"], compatibility_matrix.GATE_PROBE_TOOL_CALL_ID)
+            self.assertRegex(
+                tool_call["id"],
+                re.escape(compatibility_matrix.GATE_PROBE_TOOL_CALL_PREFIX) + r"[0-9a-f]{32}",
+            )
+            self.assertNotEqual(tool_call["id"], second_tool_call["id"])
             self.assertEqual(json.loads(tool_call["function"]["arguments"])["command"],
                              compatibility_matrix.GATE_PROBE_COMMAND)
-            self.assertEqual(tool_chunks[2]["choices"][0]["finish_reason"], "tool_calls")
 
             followup = urllib.request.Request(
                 f"http://127.0.0.1:{fixture.model_port}/v1/chat/completions",
@@ -695,7 +706,9 @@ class LocalModelStreamingTests(unittest.TestCase):
                             "id": tool_call["id"], "type": "function", "function": tool_call["function"],
                         }]},
                         {"role": "tool", "tool_call_id": tool_call["id"],
-                         "content": compatibility_matrix.GATE_PROBE_MARKER + "\nactual probe output"},
+                         "content": {"terminal_output": {
+                             "data": compatibility_matrix.GATE_PROBE_MARKER + "\nactual probe output",
+                         }}},
                     ], "tools": tools,
                 }).encode("utf-8"),
                 headers={"Content-Type": "application/json"}, method="POST",
@@ -714,15 +727,16 @@ class LocalModelStreamingTests(unittest.TestCase):
         observations = compatibility_matrix._model_request_observations(fixture.model_requests)
         self.assertEqual(
             [item["fixtureInteraction"] for item in observations["requests"]],
-            ["gate-probe-tool-call", "gate-probe-marker-returned"],
+            ["gate-probe-tool-call", "gate-probe-tool-call", "gate-probe-marker-returned"],
         )
         self.assertNotIn(compatibility_matrix.GATE_PROBE_COMMAND, json.dumps(observations))
         self.assertNotIn(compatibility_matrix.GATE_PROBE_MARKER, json.dumps(observations))
 
     def test_gate_probe_does_not_retry_when_its_tool_result_is_missing_or_mismatched(self):
         prompt = "Use your shell tool to run " + compatibility_matrix.GATE_PROBE_COMMAND
+        call_id = compatibility_matrix.GATE_PROBE_TOOL_CALL_PREFIX + ("0" * 32)
         call = {
-            "id": compatibility_matrix.GATE_PROBE_TOOL_CALL_ID,
+            "id": call_id,
             "type": "function",
             "function": {
                 "name": "bash",
@@ -760,6 +774,30 @@ class LocalModelStreamingTests(unittest.TestCase):
             compatibility_matrix._gate_probe_action({
                 "messages": [{"role": "system", "content": prompt}], "tools": [],
             })
+
+    def test_gate_probe_relays_the_failed_tool_update_verbatim(self):
+        prompt = "Use your shell tool to run " + compatibility_matrix.GATE_PROBE_COMMAND
+        call_id = compatibility_matrix.GATE_PROBE_TOOL_CALL_PREFIX + ("a" * 32)
+        call = {
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "arguments": json.dumps({"command": compatibility_matrix.GATE_PROBE_COMMAND}),
+            },
+        }
+        refusal = "actual blocked command result"
+        result = compatibility_matrix._gate_probe_action({
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "assistant", "content": None, "tool_calls": [call]},
+                {"role": "tool", "tool_call_id": call_id,
+                 "content": {"terminal_output": {"data": refusal}}},
+            ],
+        })
+
+        self.assertEqual(result["content"], refusal)
+        self.assertFalse(result["observedMarker"])
 
     def test_runtime_catalog_model_is_discovered_and_served_by_the_loopback_fixture(self):
         with tempfile.TemporaryDirectory() as temporary:

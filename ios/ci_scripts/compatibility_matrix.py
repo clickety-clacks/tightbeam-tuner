@@ -50,7 +50,7 @@ RUNTIME_LOCAL_MODEL_ROUTE = f"{RUNTIME_LOCAL_PROVIDER}/{RUNTIME_LOCAL_MODEL}"
 FIXTURE_MODEL_IDS = frozenset({"tuner-fixture", RUNTIME_LOCAL_MODEL})
 GATE_PROBE_COMMAND = "tightbeam-gate-probe"
 GATE_PROBE_MARKER = "[gate: tightbeam-probe]"
-GATE_PROBE_TOOL_CALL_ID = "call-tuner-gate-probe"
+GATE_PROBE_TOOL_CALL_PREFIX = "call-tuner-gate-probe-"
 
 
 class _WebSocket:
@@ -507,15 +507,25 @@ def _gate_probe_action(payload: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     def message_text(message: dict[str, Any]) -> str:
+        def content_text(value: Any) -> str:
+            if isinstance(value, str):
+                return value
+            if isinstance(value, list):
+                return "\n".join(filter(None, (content_text(part) for part in value)))
+            if not isinstance(value, dict):
+                return ""
+            text = value.get("text")
+            if isinstance(text, str):
+                return text
+            if value.get("type") == "terminal_output" and isinstance(value.get("data"), str):
+                return value["data"]
+            terminal_output = value.get("terminal_output")
+            if isinstance(terminal_output, dict) and isinstance(terminal_output.get("data"), str):
+                return terminal_output["data"]
+            return ""
+
         content = message.get("content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            return "\n".join(
-                str(part.get("text", ""))
-                for part in content if isinstance(part, dict) and isinstance(part.get("text"), str)
-            )
-        return ""
+        return content_text(content)
 
     probe_prompt_index = next((
         index for index in range(len(messages) - 1, -1, -1)
@@ -552,7 +562,8 @@ def _gate_probe_action(payload: dict[str, Any]) -> dict[str, Any] | None:
             raise MatrixError("local model fixture received malformed runtime shell-tool arguments") from error
         call_id = call.get("id") if isinstance(call, dict) else None
         if (
-            call_id != GATE_PROBE_TOOL_CALL_ID
+            not isinstance(call_id, str)
+            or not re.fullmatch(re.escape(GATE_PROBE_TOOL_CALL_PREFIX) + r"[0-9a-f]{32}", call_id)
             or not isinstance(function, dict) or function.get("name") != "bash"
             or arguments != {"command": GATE_PROBE_COMMAND}
         ):
@@ -588,7 +599,6 @@ def _gate_probe_action(payload: dict[str, Any]) -> dict[str, Any] | None:
                 return {
                     "kind": "tool-call",
                     "name": "bash",
-                    "toolCallId": GATE_PROBE_TOOL_CALL_ID,
                     "arguments": {"command": GATE_PROBE_COMMAND},
                 }
 
@@ -1429,8 +1439,9 @@ class LocalRuntimeFixture:
                     return
 
                 tool_call_id = (
-                    gate_action["toolCallId"] if gate_action is not None
-                    and gate_action["kind"] == "tool-call" else GATE_PROBE_TOOL_CALL_ID
+                    GATE_PROBE_TOOL_CALL_PREFIX + secrets.token_hex(16)
+                    if gate_action is not None and gate_action["kind"] == "tool-call"
+                    else None
                 )
                 if gate_action is not None and gate_action["kind"] == "tool-call":
                     if request_observation is not None:
