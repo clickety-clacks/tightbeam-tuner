@@ -474,6 +474,7 @@ def _model_request_observations(requests: list[dict[str, Any]]) -> dict[str, Any
                 "path": item.get("path"),
                 "origin": item.get("origin"),
                 "releaseId": item.get("releaseId"),
+                **({"model": "tuner-fixture"} if item.get("model") == "tuner-fixture" else {}),
                 "stream": item.get("stream"),
                 "responseStatus": item.get("responseStatus"),
                 "responseCompleted": item.get("responseCompleted") is True,
@@ -1297,6 +1298,8 @@ class LocalRuntimeFixture:
                     return
                 request_observation = self.request_observation
                 if request_observation is not None:
+                    # Store only the validated fixture label, never the request body.
+                    request_observation["model"] = "tuner-fixture"
                     request_observation["stream"] = value.get("stream") is True
                 completion_id = "chatcmpl-tuner-fixture"
                 if value.get("stream") is True:

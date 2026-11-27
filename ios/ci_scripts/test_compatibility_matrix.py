@@ -494,6 +494,7 @@ class ReplyCorrelationDiagnosticTests(unittest.TestCase):
             "path": "/v1/chat/completions",
             "origin": {"scheme": "http", "host": "127.0.0.1", "port": 19450, "basePath": "/v1"},
             "releaseId": 449379583,
+            "model": "tuner-fixture",
             "stream": True,
             "responseStatus": 200,
             "responseCompleted": True,
@@ -505,6 +506,7 @@ class ReplyCorrelationDiagnosticTests(unittest.TestCase):
         self.assertEqual(snapshot["completedResponseCount"], 1)
         self.assertEqual(snapshot["requests"][0]["responseStatus"], 200)
         self.assertEqual(snapshot["requests"][0]["path"], "/v1/chat/completions")
+        self.assertEqual(snapshot["requests"][0]["model"], "tuner-fixture")
         self.assertEqual(snapshot["requests"][0]["origin"]["port"], 19450)
         self.assertEqual(snapshot["requests"][0]["elapsedMsAfterHumanPost"], 25)
         self.assertTrue(snapshot["requests"][0]["responseCompleted"])
@@ -605,6 +607,63 @@ class ReplyCorrelationDiagnosticTests(unittest.TestCase):
 
 
 class LocalModelStreamingTests(unittest.TestCase):
+    def test_model_preflight_matches_valid_completion_recorded_by_fixture_server(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
+            with socket.socket() as reserve:
+                reserve.bind(("127.0.0.1", 0))
+                fixture.model_port = reserve.getsockname()[1]
+            fixture.model_requests = []
+            fixture.selected_release_id = 449379583
+            fixture.model_origin = {
+                "scheme": "http", "host": "127.0.0.1", "port": fixture.model_port, "basePath": "/v1",
+            }
+            fixture.active_turn_started_at = None
+            fixture.model_server = None
+            fixture.model_thread = None
+
+            with mock.patch.object(compatibility_matrix, "_require_loopback_listener"):
+                fixture._start_model_server()
+            try:
+                def run_pi(args, **kwargs):
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{fixture.model_port}/v1/chat/completions",
+                        data=json.dumps({"model": "tuner-fixture", "stream": False}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertIn("Tightbeam compatibility fixture reply.", response.read().decode("utf-8"))
+                    return compatibility_matrix.subprocess.CompletedProcess(
+                        args, 0, "Tightbeam compatibility fixture reply.\n"
+                    )
+
+                with mock.patch.object(compatibility_matrix.subprocess, "run", side_effect=run_pi):
+                    result = compatibility_matrix._preflight_pi_model(
+                        root / "pi",
+                        home=root / "home",
+                        endpoint=f"http://127.0.0.1:{fixture.model_port}/v1",
+                        env={"HOME": str(root / "home")},
+                        cwd=root,
+                        observed_requests=fixture.model_requests,
+                        diagnostic_path=root / "pi-preflight.log",
+                        diagnostic_redactions=set(),
+                    )
+            finally:
+                fixture.model_server.shutdown()
+                fixture.model_server.server_close()
+                fixture.model_thread.join(timeout=5)
+
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["requestObserved"])
+        self.assertEqual(fixture.model_requests[0]["model"], "tuner-fixture")
+        observation = compatibility_matrix._model_request_observations(fixture.model_requests)
+        self.assertEqual(observation["requests"][0]["model"], "tuner-fixture")
+        self.assertEqual(observation["requests"][0]["responseStatus"], 200)
+        self.assertNotIn("body", json.dumps(observation))
+
     def test_model_server_records_unmatched_methods_and_paths_without_query_or_body(self):
         fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
         with socket.socket() as reserve:
@@ -714,6 +773,7 @@ class LocalModelStreamingTests(unittest.TestCase):
             "path": "/v1/chat/completions",
             "origin": fixture.model_origin,
             "releaseId": 449379583,
+            "model": "tuner-fixture",
             "stream": True,
             "responseStatus": 200,
             "responseCompleted": True,
