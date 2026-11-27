@@ -57,6 +57,8 @@ jobs:
     name: compatibility-diagnostic
     runs-on: xcode-27
     timeout-minutes: 120
+    outputs:
+      planned_build_number: ${{ steps.planned_build.outputs.build_number }}
     env:
       CI_BUILD_ID: ${{ github.run_id }}
       CI_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -74,6 +76,7 @@ jobs:
           xcodebuild -version
 
       - name: Read the planned release build number
+        id: planned_build
         run: |
           build_number="$(python3 -c 'import json; print(json.load(open("ios/TightbeamTuner/CurrentBuildReleaseNote.json", encoding="utf-8"))["build"])')"
           case "$build_number" in
@@ -84,6 +87,7 @@ jobs:
             exit 1
           fi
           echo "PLANNED_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
 
       - name: Run focused published-runtime native probe
         env:
@@ -107,5 +111,53 @@ jobs:
           path: |
             ${{ runner.temp }}/ReleaseCompatibilityReport.json
             ${{ runner.temp }}/TunerCompatibilityDiagnostics/
+          if-no-files-found: error
+          retention-days: 30
+
+  client-compatibility-matrix:
+    name: client-compatibility-matrix
+    needs:
+      - release-note-gate
+      - compatibility-diagnostic
+    if: ${{ needs.release-note-gate.result == 'success' && needs.compatibility-diagnostic.result == 'success' }}
+    runs-on: xcode-27
+    timeout-minutes: 120
+    env:
+      CI_BUILD_ID: ${{ github.run_id }}
+      CI_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      CI_XCODE_SCHEME: TightbeamTuner
+      CI_XCODEBUILD_ACTION: test
+      CI_PRIMARY_REPOSITORY_PATH: ${{ github.workspace }}
+      PLANNED_BUILD_NUMBER: ${{ needs.compatibility-diagnostic.outputs.planned_build_number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Record CI toolchain
+        run: xcodebuild -version
+
+      - name: Run non-distributing client compatibility matrix
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          export CI_DERIVED_DATA_PATH="$RUNNER_TEMP/TunerCompatibilityMatrixDerivedData"
+          export CI_DIAGNOSTIC_ARTIFACTS_PATH="$RUNNER_TEMP/TunerCompatibilityMatrixDiagnostics"
+          export REPORT_PATH="$RUNNER_TEMP/ReleaseCompatibilityMatrixReport.json"
+          mkdir -p "$CI_DERIVED_DATA_PATH" "$CI_DIAGNOSTIC_ARTIFACTS_PATH"
+          python3 ios/ci_scripts/compatibility_matrix.py \
+            --diagnostic \
+            --build-number "$PLANNED_BUILD_NUMBER" \
+            --output "$REPORT_PATH"
+
+      - name: Retain client matrix evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuner-client-matrix-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/ReleaseCompatibilityMatrixReport.json
+            ${{ runner.temp }}/TunerCompatibilityMatrixDiagnostics/
           if-no-files-found: error
           retention-days: 30

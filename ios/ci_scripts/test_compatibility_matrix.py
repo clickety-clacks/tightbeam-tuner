@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import socket
 import tempfile
@@ -1256,77 +1257,83 @@ class DiagnosticArgumentsTests(unittest.TestCase):
             ])
         self.assertEqual(error.exception.code, 2)
 
-    def test_pi_recorder_logs_timing_and_safe_argument_shape(self):
+    def test_native_probe_path_resolves_pinned_pi_without_process_wrapper(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            shim_dir = root / "shim"
-            shim_dir.mkdir()
-            fake_pi = root / "pi"
-            fake_pi.write_text("#!/bin/sh\nprintf 'pi 0.73.1\\n'\n", encoding="utf-8")
-            fake_pi.chmod(0o700)
+            package = root / "runtime"
+            package_bin = package / "bin"
+            package_bin.mkdir(parents=True)
+            for name in ("tightbeam", "tightbeam-gateway"):
+                executable = package_bin / name
+                executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                executable.chmod(0o700)
+
+            pi_bin = root / "pi-fixture" / "node_modules" / ".bin"
+            pi_bin.mkdir(parents=True)
+            pi_cli = pi_bin / "pi"
+            pi_cli.write_text("#!/bin/sh\nprintf 'pi 0.73.1\\n'\n", encoding="utf-8")
+            pi_cli.chmod(0o700)
+
             fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
             fixture.root = root
-            fixture.shim_dir = shim_dir
-            command = fixture._install_pi_invocation_recorder(fake_pi)
-            log = root / "pi-process.log"
-            env = {
-                **compatibility_matrix.os.environ,
-                "TUNER_NATIVE_PROBE_LOG": str(log),
-                "TUNER_NATIVE_PROBE_PHASE": "4082-standalone-version",
-            }
-            result = compatibility_matrix.subprocess.run(
-                [str(command), "--version"], env=env, text=True, capture_output=True, check=False
-            )
+            fixture.native_probe = True
+            fixture.cli_link_dir = root / "runner-bin"
+            fixture.cli_link = fixture.cli_link_dir / "tightbeam"
+            fixture.shim_dir = root / "harness-shim"
+            fixture.pi_package = root / "pi-fixture"
+            fixture.pi_bin = pi_bin
+            fixture.base_environment = {"PATH": "/usr/bin:/bin"}
+            fixture.authorized_keys = root / "authorized_keys"
+            fixture.host_key = root / "ssh-host-key"
+            fixture.current_runtime_env = root / "current-runtime-env.sh"
+            fixture.state_root = root / "runtime-state"
+            fixture.gateway_port = 32145
+            fixture.package_paths = {7: package}
+            fixture.runtime_base = {7: root / "runtime-state" / "7"}
 
-            self.assertEqual(result.returncode, 0)
-            self.assertIn("0.73.1", result.stdout)
-            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-            self.assertEqual([item["event"] for item in records], ["start", "finish"])
-            self.assertEqual(records[0]["argvShape"], ["--version"])
-            self.assertEqual(records[1]["exitCode"], 0)
-            self.assertGreaterEqual(records[1]["elapsedMs"], 0)
+            def checked(args, **_kwargs):
+                if args[0] == "ssh-keygen":
+                    Path(args[-1]).with_suffix(".pub").write_text("ssh-ed25519 fixture\n", encoding="utf-8")
+                return ""
 
-    def test_native_probe_pairs_gateway_and_standalone_pi_timing_without_raw_args(self):
-        records = [
-            {
-                "event": "start", "invocationId": "one", "argvShape": ["--version"],
-                "argumentCount": 1, "startedMonotonicNs": 1,
-            },
-            {
-                "event": "finish", "invocationId": "one", "elapsedMs": 12,
-                "result": "exited", "exitCode": 0,
-            },
-        ]
+            with (
+                mock.patch.object(compatibility_matrix.shutil, "copytree"),
+                mock.patch.object(compatibility_matrix, "_require_command", side_effect=lambda name: name),
+                mock.patch.object(compatibility_matrix, "_checked", side_effect=checked),
+                mock.patch.object(compatibility_matrix, "_pi_locked_version", return_value="0.73.1"),
+            ):
+                fixture._prepare_tools()
 
-        summary = compatibility_matrix._first_pi_invocation_summary(records)
+            self.assertEqual(fixture.pi_command, pi_cli)
+            self.assertFalse((fixture.shim_dir / "pi").exists())
+            env = fixture._runtime_env(7)
+            first_pi = next(Path(entry) / "pi" for entry in env["PATH"].split(os.pathsep) if (Path(entry) / "pi").is_file())
+            self.assertEqual(first_pi, pi_cli)
+            self.assertNotIn("TUNER_NATIVE_PROBE_LOG", env)
+            self.assertNotIn("TUNER_NATIVE_PROBE_PHASE", env)
 
-        self.assertEqual(summary, {
-            "argvShape": ["--version"],
-            "argumentCount": 1,
-            "finished": True,
-            "elapsedMs": 12,
-            "result": "exited",
-            "exitCode": 0,
-        })
-        self.assertNotIn("startedMonotonicNs", summary)
-        self.assertNotIn("invocationId", summary)
-
-    def test_native_probe_requires_observed_successful_gateway_pi_process(self):
-        self.assertTrue(compatibility_matrix._gateway_readiness_has_completed_pi({
-            "gatewayReadiness": {
-                "status": "ready",
-                "piReadinessInvocation": {"finished": True, "exitCode": 0},
-            },
+    def test_readiness_uses_native_gateway_status_without_process_interposition(self):
+        self.assertTrue(compatibility_matrix._gateway_reported_ready({
+            "gatewayReadiness": {"status": "ready"},
         }))
-        self.assertFalse(compatibility_matrix._gateway_readiness_has_completed_pi({
-            "gatewayReadiness": {"status": "ready", "piReadinessInvocation": None},
+        self.assertFalse(compatibility_matrix._gateway_reported_ready({
+            "gatewayReadiness": {"status": "not_ready"},
         }))
-        self.assertFalse(compatibility_matrix._gateway_readiness_has_completed_pi({
-            "gatewayReadiness": {
-                "status": "ready",
-                "piReadinessInvocation": {"finished": False, "exitCode": None},
-            },
-        }))
+
+    def test_diagnostic_turn_waits_past_published_adapter_deadline(self):
+        native_timeout = compatibility_matrix._reply_wait_timeout_seconds(
+            native_probe=True, capture_turn_diagnostics=False
+        )
+        matrix_timeout = compatibility_matrix._reply_wait_timeout_seconds(
+            native_probe=False, capture_turn_diagnostics=True
+        )
+        archive_timeout = compatibility_matrix._reply_wait_timeout_seconds(
+            native_probe=False, capture_turn_diagnostics=False
+        )
+        self.assertGreater(native_timeout, 185)
+        self.assertEqual(native_timeout, 210)
+        self.assertEqual(matrix_timeout, 210)
+        self.assertEqual(archive_timeout, 180)
 
     def test_native_probe_report_failure_sets_a_failing_ci_exit(self):
         with self.assertRaises(compatibility_matrix.MatrixError):
@@ -1342,6 +1349,9 @@ class DiagnosticArgumentsTests(unittest.TestCase):
         )
         self.assertIn("runs-on: xcode-27", workflow)
         self.assertIn("--native-probe", workflow)
+        self.assertIn("client-compatibility-matrix:", workflow)
+        self.assertIn("needs.compatibility-diagnostic.result == 'success'", workflow)
+        self.assertIn("--diagnostic", workflow)
         self.assertNotIn("simctl", workflow)
 
     def test_diagnostic_passes_explicit_plan_and_output_to_matrix(self):
@@ -1369,9 +1379,10 @@ class DiagnosticArgumentsTests(unittest.TestCase):
             encoding="utf-8"
         )
         expression = "${{ github.event.pull_request.head.sha || github.sha }}"
-        self.assertEqual(workflow.count(expression), 3)
+        self.assertEqual(workflow.count(expression), 6)
         self.assertIn(f"CI_COMMIT: {expression}", workflow)
         self.assertIn(f"ref: {expression}", workflow)
+        self.assertIn("steps.planned_build.outputs.build_number", workflow)
 
     def test_xcode_failure_summary_keeps_locations_but_not_sensitive_output(self):
         with tempfile.TemporaryDirectory() as temporary:
