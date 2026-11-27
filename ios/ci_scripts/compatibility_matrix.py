@@ -165,6 +165,12 @@ def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
+def _sse_data_event(value: Any) -> bytes:
+    """Encode one JSON value as a single-line Server-Sent Events data event."""
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"data: {payload}\n\n".encode("utf-8")
+
+
 def _write_json(path: Path, value: Any) -> None:
     path.write_bytes(_json_bytes(value))
 
@@ -1010,7 +1016,7 @@ class LocalRuntimeFixture:
                     self.send_header("Connection", "close")
                     self.end_headers()
                     for chunk in chunks:
-                        self.wfile.write(b"data: " + _json_bytes(chunk).strip() + b"\n\n")
+                        self.wfile.write(_sse_data_event(chunk))
                         self.wfile.flush()
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()

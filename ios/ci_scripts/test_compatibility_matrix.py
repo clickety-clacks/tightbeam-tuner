@@ -1,5 +1,7 @@
 import json
+import socket
 import tempfile
+import urllib.request
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -263,6 +265,50 @@ class PiHarnessPreflightTests(unittest.TestCase):
                 compatibility_matrix._preflight_pi_harness(
                     root / "pi", lock, env={}, cwd=root
                 )
+
+
+class LocalModelStreamingTests(unittest.TestCase):
+    def test_streaming_completion_emits_compact_json_sse_data_lines(self):
+        fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
+        with socket.socket() as reserve:
+            reserve.bind(("127.0.0.1", 0))
+            fixture.model_port = reserve.getsockname()[1]
+        fixture.model_requests = []
+        fixture.model_server = None
+        fixture.model_thread = None
+
+        with mock.patch.object(compatibility_matrix, "_require_loopback_listener"):
+            fixture._start_model_server()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{fixture.model_port}/v1/chat/completions",
+                data=json.dumps({"model": "tuner-fixture", "stream": True}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+                body = response.read().decode("utf-8")
+        finally:
+            fixture.model_server.shutdown()
+            fixture.model_server.server_close()
+            fixture.model_thread.join(timeout=5)
+
+        events = [event for event in body.split("\n\n") if event]
+        self.assertEqual(len(events), 4)
+        decoded = []
+        for event in events[:-1]:
+            self.assertTrue(event.startswith("data: "))
+            payload = event.removeprefix("data: ")
+            self.assertNotIn("\n", payload)
+            decoded.append(json.loads(payload))
+        self.assertEqual(events[-1], "data: [DONE]")
+        self.assertEqual(decoded[0]["choices"][0]["delta"]["role"], "assistant")
+        self.assertEqual(decoded[1]["choices"][0]["delta"]["content"], "Tightbeam compatibility fixture reply.")
+        self.assertEqual(decoded[2]["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(fixture.model_requests, [{
+            "method": "POST", "path": "/v1/chat/completions", "model": "tuner-fixture",
+        }])
 
 
 class SimulatorCleanupTests(unittest.TestCase):
