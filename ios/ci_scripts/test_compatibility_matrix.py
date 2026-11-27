@@ -1,6 +1,7 @@
 import json
 import socket
 import tempfile
+import urllib.error
 import urllib.request
 import unittest
 from pathlib import Path
@@ -463,7 +464,7 @@ class ReplyCorrelationDiagnosticTests(unittest.TestCase):
 
         with (
             mock.patch.object(compatibility_matrix, "_http_json", return_value=(200, page)),
-            mock.patch.object(compatibility_matrix.time, "monotonic", side_effect=[0.0, 0.0, 2.0]),
+            mock.patch.object(compatibility_matrix.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 2.0]),
             mock.patch.object(compatibility_matrix.time, "sleep"),
             self.assertRaisesRegex(
                 compatibility_matrix.MatrixError,
@@ -490,22 +491,181 @@ class ReplyCorrelationDiagnosticTests(unittest.TestCase):
     def test_model_request_observation_keeps_response_state_without_payloads(self):
         snapshot = compatibility_matrix._model_request_observations([{
             "method": "POST",
+            "path": "/v1/chat/completions",
+            "origin": {"scheme": "http", "host": "127.0.0.1", "port": 19450, "basePath": "/v1"},
             "releaseId": 449379583,
             "stream": True,
             "responseStatus": 200,
             "responseCompleted": True,
+            "elapsedMsAfterHumanPost": 25,
             "body": "must not be retained",
         }])
 
         self.assertEqual(snapshot["requestCount"], 1)
         self.assertEqual(snapshot["completedResponseCount"], 1)
         self.assertEqual(snapshot["requests"][0]["responseStatus"], 200)
+        self.assertEqual(snapshot["requests"][0]["path"], "/v1/chat/completions")
+        self.assertEqual(snapshot["requests"][0]["origin"]["port"], 19450)
+        self.assertEqual(snapshot["requests"][0]["elapsedMsAfterHumanPost"], 25)
         self.assertTrue(snapshot["requests"][0]["responseCompleted"])
         self.assertNotIn("body", json.dumps(snapshot))
         self.assertNotIn("must not be retained", json.dumps(snapshot))
 
+    def test_dispatch_frame_summary_keeps_lifecycle_labels_without_ids_or_payload(self):
+        summary = compatibility_matrix._dispatch_frame_observation({
+            "type": "turn_state",
+            "state": "running",
+            "status": "started",
+            "phase": "dispatch",
+            "role": "assistant",
+            "seq": 12,
+            "turnIncludesHuman": True,
+            "id": "fixture-message",
+            "replyToClientMessageId": "fixture-message",
+            "sessionKey": "private-session-key",
+            "content": "private model content",
+            "token": "private-secret",
+        }, "fixture-message")
+
+        self.assertEqual(summary["frameType"], "turn_state")
+        self.assertEqual(summary["state"], "running")
+        self.assertEqual(summary["status"], "started")
+        self.assertEqual(summary["sequence"], 12)
+        self.assertTrue(summary["idMatches"])
+        self.assertTrue(summary["replyToClientMessageIdMatches"])
+        encoded = json.dumps(summary)
+        for private in ("fixture-message", "private-session-key", "private model content", "private-secret"):
+            self.assertNotIn(private, encoded)
+
+    def test_wait_for_reply_records_dispatch_lifecycle_through_correlated_persistence(self):
+        message_id = "fixture-message"
+        page = {"items": [
+            {
+                "sessionKey": "agent:main:fixture:main",
+                "role": "user",
+                "clientMessageId": message_id,
+                "seq": 4,
+            },
+            {
+                "sessionKey": "agent:main:fixture:main",
+                "role": "assistant",
+                "turnIncludesHuman": True,
+                "replyToClientMessageId": message_id,
+                "seq": 5,
+            },
+        ]}
+
+        class WebSocket:
+            def __init__(self):
+                self.frames = iter([
+                    {
+                        "type": "turn_state",
+                        "state": "running",
+                        "sessionKey": "private-session-key",
+                        "id": message_id,
+                        "content": "private content",
+                    },
+                    {
+                        "type": "assistant_message",
+                        "role": "assistant",
+                        "turnIncludesHuman": True,
+                        "replyToClientMessageId": message_id,
+                        "seq": 5,
+                    },
+                ])
+
+            def receive_json(self, timeout=15):
+                try:
+                    return next(self.frames)
+                except StopIteration:
+                    raise socket.timeout
+
+        observation = {"postSubmitted": True, "postAcknowledged": True, "dispatchLifecycle": []}
+        with mock.patch.object(compatibility_matrix, "_http_json", return_value=(200, page)):
+            sequence = compatibility_matrix._wait_for_reply(
+                "http://127.0.0.1:19450",
+                "agent:main:fixture:main",
+                message_id,
+                timeout=1,
+                observation=observation,
+                websocket=WebSocket(),
+            )
+
+        self.assertEqual(sequence, 5)
+        events = observation["dispatchLifecycle"]
+        self.assertEqual([item["frameType"] for item in events if item["event"] == "websocket_frame"], [
+            "turn_state", "assistant_message",
+        ])
+        self.assertEqual(events[-1]["event"], "correlated_assistant_persisted")
+        self.assertEqual(events[-1]["sequence"], 5)
+        encoded = json.dumps(observation)
+        self.assertNotIn(message_id, encoded)
+        self.assertNotIn("private-session-key", encoded)
+        self.assertNotIn("private content", encoded)
+
 
 class LocalModelStreamingTests(unittest.TestCase):
+    def test_model_server_records_unmatched_methods_and_paths_without_query_or_body(self):
+        fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
+        with socket.socket() as reserve:
+            reserve.bind(("127.0.0.1", 0))
+            fixture.model_port = reserve.getsockname()[1]
+        fixture.model_origin = {
+            "scheme": "http", "host": "127.0.0.1", "port": fixture.model_port, "basePath": "/v1",
+        }
+        fixture.model_requests = []
+        fixture.selected_release_id = 449379583
+        fixture.active_turn_started_at = None
+        fixture.model_server = None
+        fixture.model_thread = None
+
+        with mock.patch.object(compatibility_matrix, "_require_loopback_listener"):
+            fixture._start_model_server()
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as get_error:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{fixture.model_port}/v1/unknown?token=private-query-secret",
+                    timeout=5,
+                )
+            self.assertEqual(get_error.exception.code, 404)
+
+            put = urllib.request.Request(
+                f"http://127.0.0.1:{fixture.model_port}/v1/unsupported",
+                data=b"private request body",
+                method="PUT",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as put_error:
+                urllib.request.urlopen(put, timeout=5)
+            self.assertEqual(put_error.exception.code, 501)
+
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{fixture.model_port}/v1/models", timeout=5
+            ) as response:
+                self.assertEqual(response.status, 200)
+        finally:
+            fixture.model_server.shutdown()
+            fixture.model_server.server_close()
+            fixture.model_thread.join(timeout=5)
+
+        observed = compatibility_matrix._model_request_observations(fixture.model_requests)
+        self.assertEqual(
+            [(item["method"], item["path"], item["responseStatus"]) for item in observed["requests"]],
+            [
+                ("GET", "/v1/unknown", 404),
+                ("PUT", "/v1/unsupported", 501),
+                ("GET", "/v1/models", 200),
+            ],
+        )
+        self.assertTrue(all(
+            item["origin"] == {
+                "scheme": "http", "host": "127.0.0.1", "port": fixture.model_port, "basePath": "/v1",
+            }
+            for item in observed["requests"]
+        ))
+        encoded = json.dumps(observed)
+        self.assertNotIn("private-query-secret", encoded)
+        self.assertNotIn("private request body", encoded)
+
     def test_streaming_completion_emits_compact_json_sse_data_lines(self):
         fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
         with socket.socket() as reserve:
@@ -513,6 +673,10 @@ class LocalModelStreamingTests(unittest.TestCase):
             fixture.model_port = reserve.getsockname()[1]
         fixture.model_requests = []
         fixture.selected_release_id = 449379583
+        fixture.model_origin = {
+            "scheme": "http", "host": "127.0.0.1", "port": fixture.model_port, "basePath": "/v1",
+        }
+        fixture.active_turn_started_at = None
         fixture.model_server = None
         fixture.model_thread = None
 
@@ -548,11 +712,12 @@ class LocalModelStreamingTests(unittest.TestCase):
         self.assertEqual(fixture.model_requests, [{
             "method": "POST",
             "path": "/v1/chat/completions",
-            "model": "tuner-fixture",
+            "origin": fixture.model_origin,
             "releaseId": 449379583,
             "stream": True,
             "responseStatus": 200,
             "responseCompleted": True,
+            "elapsedMsAfterHumanPost": None,
         }])
 
 

@@ -471,14 +471,117 @@ def _model_request_observations(requests: list[dict[str, Any]]) -> dict[str, Any
         "requests": [
             {
                 "method": item.get("method"),
+                "path": item.get("path"),
+                "origin": item.get("origin"),
                 "releaseId": item.get("releaseId"),
                 "stream": item.get("stream"),
                 "responseStatus": item.get("responseStatus"),
                 "responseCompleted": item.get("responseCompleted") is True,
+                "elapsedMsAfterHumanPost": item.get("elapsedMsAfterHumanPost"),
             }
             for item in requests
         ],
     }
+
+
+def _safe_lifecycle_label(value: Any) -> str | None:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,47}", value):
+        return None
+    return value
+
+
+def _dispatch_frame_observation(frame: dict[str, Any], client_message_id: str) -> dict[str, Any]:
+    """Keep only protocol labels and correlations; never persist frame payloads or identifiers."""
+    result: dict[str, Any] = {"event": "websocket_frame"}
+    frame_type = _safe_lifecycle_label(frame.get("type"))
+    if frame_type is not None:
+        result["frameType"] = frame_type
+    for name in ("state", "status", "phase"):
+        label = _safe_lifecycle_label(frame.get(name))
+        if label is not None:
+            result[name] = label
+    role = frame.get("role")
+    if role in {"user", "assistant", "system", "tool"}:
+        result["role"] = role
+    sequence = frame.get("seq")
+    if isinstance(sequence, int) and not isinstance(sequence, bool) and sequence >= 0:
+        result["sequence"] = sequence
+    includes_human = frame.get("turnIncludesHuman")
+    if isinstance(includes_human, bool):
+        result["turnIncludesHuman"] = includes_human
+    for name in ("id", "clientMessageId", "replyToClientMessageId"):
+        if name in frame:
+            result[f"{name}Matches"] = frame.get(name) == client_message_id
+    return result
+
+
+def _append_dispatch_frame(
+    observation: dict[str, Any] | None,
+    frame: dict[str, Any],
+    client_message_id: str,
+    started_at: float | None,
+) -> None:
+    if observation is None:
+        return
+    safe_frame = _dispatch_frame_observation(frame, client_message_id)
+    elapsed = int((time.monotonic() - started_at) * 1000) if started_at is not None else None
+    _append_turn_lifecycle(
+        observation,
+        str(safe_frame.pop("event")),
+        elapsed_ms=elapsed,
+        **safe_frame,
+    )
+
+
+def _append_turn_lifecycle(
+    observation: dict[str, Any] | None,
+    event: str,
+    *,
+    elapsed_ms: int | None = None,
+    **fields: Any,
+) -> None:
+    if observation is None:
+        return
+    lifecycle = observation.setdefault("dispatchLifecycle", [])
+    item: dict[str, Any] = {"event": event}
+    if elapsed_ms is not None and elapsed_ms >= 0:
+        item["elapsedMsAfterHumanPost"] = elapsed_ms
+    for name, value in fields.items():
+        if name in {"sequence", "httpStatus", "frameType", "state", "status", "phase", "role"}:
+            if name in {"sequence", "httpStatus"}:
+                if isinstance(value, int) and not isinstance(value, bool):
+                    item[name] = value
+            else:
+                label = _safe_lifecycle_label(value)
+                if label is not None:
+                    item[name] = label
+        elif name.endswith("Matches") or name == "turnIncludesHuman":
+            if isinstance(value, bool):
+                item[name] = value
+    lifecycle.append(item)
+
+
+def _drain_dispatch_frames(
+    websocket: _WebSocket | None,
+    observation: dict[str, Any] | None,
+    client_message_id: str,
+    started_at: float | None,
+) -> bool:
+    if websocket is None:
+        return False
+    connected = True
+    while True:
+        try:
+            frame = websocket.receive_json(timeout=0.01)
+        except (socket.timeout, TimeoutError):
+            return connected
+        except MatrixError:
+            _append_turn_lifecycle(observation, "websocket_disconnected")
+            return False
+        if frame is None:
+            _append_turn_lifecycle(observation, "websocket_closed")
+            return False
+        _append_dispatch_frame(observation, frame, client_message_id, started_at)
 
 
 def _wait_for_reply(
@@ -490,7 +593,11 @@ def _wait_for_reply(
     observation: dict[str, Any] | None = None,
     model_requests: list[dict[str, Any]] | None = None,
     model_request_start: int = 0,
+    websocket: _WebSocket | None = None,
+    human_post_started_at: float | None = None,
 ) -> int:
+    if observation is None:
+        websocket = None
     encoded_key = urllib.parse.quote(session_key, safe="")
     url = f"{gateway_url}/api/sessions/{encoded_key}/messages?tail=true&limit=500"
     deadline = time.monotonic() + timeout
@@ -506,6 +613,11 @@ def _wait_for_reply(
     while time.monotonic() < deadline:
         status, page = _http_json(url, timeout=10)
         last_poll_status = status
+        websocket_connected = _drain_dispatch_frames(
+            websocket, observation, client_message_id, human_post_started_at
+        )
+        if not websocket_connected:
+            websocket = None
         if status == 200:
             items = page.get("items")
             if isinstance(items, list):
@@ -520,22 +632,54 @@ def _wait_for_reply(
                         "httpStatus": last_poll_status,
                         "itemCount": last_item_count,
                     }
+                    if last_snapshot["humanPostPersisted"] and not any(
+                        event.get("event") == "human_message_persisted"
+                        for event in observation.get("dispatchLifecycle", [])
+                    ):
+                        _append_turn_lifecycle(
+                            observation,
+                            "human_message_persisted",
+                            elapsed_ms=(
+                                int((time.monotonic() - human_post_started_at) * 1000)
+                                if human_post_started_at is not None else None
+                            ),
+                            sequence=last_snapshot.get("humanSequence"),
+                        )
                     if model_requests is not None:
                         observation["modelRequestsAfterHumanPost"] = _model_request_observations(
                             model_requests[model_request_start:]
                         )
                 if correlated_sequence is not None:
                     if observation is not None:
+                        _append_turn_lifecycle(
+                            observation,
+                            "correlated_assistant_persisted",
+                            elapsed_ms=(
+                                int((time.monotonic() - human_post_started_at) * 1000)
+                                if human_post_started_at is not None else None
+                            ),
+                            sequence=correlated_sequence,
+                        )
                         observation["postState"] = "correlated_reply_persisted"
                     return correlated_sequence
         time.sleep(0.25)
     if observation is not None:
+        _drain_dispatch_frames(websocket, observation, client_message_id, human_post_started_at)
         observation["replyCorrelation"] = last_snapshot
         observation["replyLookup"] = {
             "httpStatus": last_poll_status,
             "itemCount": last_item_count,
         }
         observation["postState"] = "no_correlated_reply_before_timeout"
+        _append_turn_lifecycle(
+            observation,
+            "reply_wait_timed_out",
+            elapsed_ms=(
+                int((time.monotonic() - human_post_started_at) * 1000)
+                if human_post_started_at is not None else None
+            ),
+            httpStatus=last_poll_status,
+        )
         if model_requests is not None:
             observation["modelRequestsAfterHumanPost"] = _model_request_observations(
                 model_requests[model_request_start:]
@@ -932,6 +1076,13 @@ class LocalRuntimeFixture:
         self.model_port = _available_port()
         while self.model_port in {self.gateway_port, self.ssh_port}:
             self.model_port = _available_port()
+        self.model_origin = {
+            "scheme": "http",
+            "host": "127.0.0.1",
+            "port": self.model_port,
+            "basePath": "/v1",
+        }
+        self.active_turn_started_at: float | None = None
         self.state_root = root / "runtime-state"
         self.state_root.mkdir(parents=True, exist_ok=True)
         self.runtime_base: dict[int, Path] = {}
@@ -1073,8 +1224,45 @@ class LocalRuntimeFixture:
         fixture = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
+            request_observation: dict[str, Any] | None = None
+
             def log_message(self, _format: str, *args: Any) -> None:
                 return
+
+            def parse_request(self) -> bool:
+                parsed = super().parse_request()
+                if parsed:
+                    request_path = urllib.parse.urlsplit(self.path).path or "/"
+                    started_at = fixture.active_turn_started_at
+                    self.request_observation = {
+                        "method": self.command,
+                        "path": request_path,
+                        "origin": dict(fixture.model_origin),
+                        "releaseId": fixture.selected_release_id,
+                        "responseStatus": None,
+                        "responseCompleted": False,
+                        "elapsedMsAfterHumanPost": (
+                            int((time.monotonic() - started_at) * 1000)
+                            if started_at is not None else None
+                        ),
+                    }
+                    fixture.model_requests.append(self.request_observation)
+                return parsed
+
+            def send_response(self, code: int, message: str | None = None) -> None:
+                super().send_response(code, message)
+                if self.request_observation is not None:
+                    self.request_observation["responseStatus"] = int(code)
+
+            def send_error(
+                self,
+                code: int,
+                message: str | None = None,
+                explain: str | None = None,
+            ) -> None:
+                super().send_error(code, message, explain)
+                if self.request_observation is not None:
+                    self.request_observation["responseCompleted"] = True
 
             def _send(self, status: int, payload: dict[str, Any]) -> None:
                 body = _json_bytes(payload)
@@ -1083,27 +1271,20 @@ class LocalRuntimeFixture:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                if self.request_observation is not None:
+                    self.request_observation["responseCompleted"] = True
 
             def do_GET(self) -> None:
-                if self.path != "/v1/models":
+                if urllib.parse.urlsplit(self.path).path != "/v1/models":
                     self._send(404, {"error": {"message": "not found", "type": "invalid_request_error"}})
                     return
-                request_observation = {
-                    "method": "GET",
-                    "path": self.path,
-                    "releaseId": fixture.selected_release_id,
-                    "responseStatus": None,
-                    "responseCompleted": False,
-                }
-                fixture.model_requests.append(request_observation)
                 self._send(200, {
                     "object": "list",
                     "data": [{"id": "tuner-fixture", "object": "model", "created": 1, "owned_by": "local"}],
                 })
-                request_observation.update({"responseStatus": 200, "responseCompleted": True})
 
             def do_POST(self) -> None:
-                if self.path != "/v1/chat/completions":
+                if urllib.parse.urlsplit(self.path).path != "/v1/chat/completions":
                     self._send(404, {"error": {"message": "not found", "type": "invalid_request_error"}})
                     return
                 try:
@@ -1114,16 +1295,9 @@ class LocalRuntimeFixture:
                 except (ValueError, json.JSONDecodeError):
                     self._send(400, {"error": {"message": "invalid fixture request", "type": "invalid_request_error"}})
                     return
-                request_observation = {
-                    "method": "POST",
-                    "path": self.path,
-                    "model": "tuner-fixture",
-                    "releaseId": fixture.selected_release_id,
-                    "stream": value.get("stream") is True,
-                    "responseStatus": None,
-                    "responseCompleted": False,
-                }
-                fixture.model_requests.append(request_observation)
+                request_observation = self.request_observation
+                if request_observation is not None:
+                    request_observation["stream"] = value.get("stream") is True
                 completion_id = "chatcmpl-tuner-fixture"
                 if value.get("stream") is True:
                     chunks = [
@@ -1135,7 +1309,6 @@ class LocalRuntimeFixture:
                          "model": "tuner-fixture", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
                     ]
                     self.send_response(200)
-                    request_observation["responseStatus"] = 200
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Cache-Control", "no-cache")
                     self.send_header("Connection", "close")
@@ -1145,7 +1318,8 @@ class LocalRuntimeFixture:
                         self.wfile.flush()
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
-                    request_observation["responseCompleted"] = True
+                    if request_observation is not None:
+                        request_observation["responseCompleted"] = True
                     return
                 self._send(200, {
                     "id": completion_id,
@@ -1154,7 +1328,6 @@ class LocalRuntimeFixture:
                     "model": "tuner-fixture",
                     "choices": [{"index": 0, "message": {"role": "assistant", "content": "Tightbeam compatibility fixture reply."}, "finish_reason": "stop"}],
                 })
-                request_observation.update({"responseStatus": 200, "responseCompleted": True})
 
         self.model_server = http.server.ThreadingHTTPServer(("127.0.0.1", self.model_port), Handler)
         self.model_server.daemon_threads = True
@@ -1422,6 +1595,7 @@ class LocalRuntimeFixture:
         authenticated = False
         acknowledged = False
         model_request_start = len(self.model_requests)
+        human_post_started_at: float | None = None
         observation: dict[str, Any] | None = None
         if self.capture_turn_diagnostics:
             observation = {
@@ -1430,6 +1604,7 @@ class LocalRuntimeFixture:
                 "postSubmitted": False,
                 "postAcknowledged": False,
                 "modelRequestCountBeforePost": model_request_start,
+                "dispatchLifecycle": [],
             }
         self.active_turn_observation = observation
         with _WebSocket(gateway_url) as ws:
@@ -1452,6 +1627,9 @@ class LocalRuntimeFixture:
                 raise MatrixError("published Tightbeam did not complete fixture chat authentication")
             if observation is not None:
                 observation["postState"] = "authenticated"
+                _append_turn_lifecycle(observation, "websocket_authenticated")
+            human_post_started_at = time.monotonic()
+            self.active_turn_started_at = human_post_started_at
             ws.send_json({
                 "type": "message",
                 "id": message_id,
@@ -1461,11 +1639,13 @@ class LocalRuntimeFixture:
             if observation is not None:
                 observation["postSubmitted"] = True
                 observation["postState"] = "post_submitted_waiting_for_ack"
+                _append_turn_lifecycle(observation, "human_post_submitted")
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline and not acknowledged:
                 frame = ws.receive_json(timeout=max(0.1, deadline - time.monotonic()))
                 if frame is None:
                     break
+                _append_dispatch_frame(observation, frame, message_id, human_post_started_at)
                 if frame.get("type") == "error" and frame.get("id") == message_id:
                     raise MatrixError("published Tightbeam rejected the fixture human message")
                 if frame.get("type") == "ack" and frame.get("id") == message_id:
@@ -1474,17 +1654,28 @@ class LocalRuntimeFixture:
                 if observation is not None:
                     observation["postState"] = "post_not_acknowledged"
                 raise MatrixError("published Tightbeam did not acknowledge the fixture human message")
-        if observation is not None:
-            observation["postAcknowledged"] = True
-            observation["postState"] = "post_acknowledged_waiting_for_reply"
-        return _wait_for_reply(
-            gateway_url,
-            session_key,
-            message_id,
-            observation=observation,
-            model_requests=self.model_requests if observation is not None else None,
-            model_request_start=model_request_start,
-        )
+            if observation is not None:
+                observation["postAcknowledged"] = True
+                observation["postState"] = "post_acknowledged_waiting_for_reply"
+                _append_turn_lifecycle(
+                    observation,
+                    "human_post_acknowledged",
+                    elapsed_ms=int((time.monotonic() - human_post_started_at) * 1000)
+                    if human_post_started_at is not None else None,
+                )
+            try:
+                return _wait_for_reply(
+                    gateway_url,
+                    session_key,
+                    message_id,
+                    observation=observation,
+                    model_requests=self.model_requests if observation is not None else None,
+                    model_request_start=model_request_start,
+                    websocket=ws if observation is not None else None,
+                    human_post_started_at=human_post_started_at,
+                )
+            finally:
+                self.active_turn_started_at = None
 
     def preflight_runtime_reply(self, release: release_hook.PublishedRelease) -> bool:
         """Exercise the real packaged runtime's seeded human turn before simulator load."""
@@ -1501,6 +1692,7 @@ class LocalRuntimeFixture:
                 "tag": release.tag,
                 "assetId": release.asset_id,
                 "assetDigest": release.asset_digest,
+                "modelOrigin": dict(self.model_origin),
                 "status": "failed",
                 "failure": _failure_message(error),
                 "piHarnessVersion": self.pi_harness_version,
@@ -1518,6 +1710,7 @@ class LocalRuntimeFixture:
             "tag": release.tag,
             "assetId": release.asset_id,
             "assetDigest": release.asset_digest,
+            "modelOrigin": dict(self.model_origin),
             "status": "passed",
             "piHarnessVersion": self.pi_harness_version,
             "piModelPreflight": next(
@@ -1614,7 +1807,10 @@ class LocalRuntimeFixture:
             self.runtime_identities[release_id] = context
             self._write_current_runtime_env(release_id, str(context["userId"]))
             self._connect_device(str(context["deviceToken"]), str(context["deviceId"]))
-            endpoint = f"http://127.0.0.1:{self.model_port}/v1"
+            endpoint = (
+                f"{self.model_origin['scheme']}://{self.model_origin['host']}:{self.model_origin['port']}"
+                f"{self.model_origin['basePath']}"
+            )
             self._cli(
                 release_id, "onboard", "local-openai", "--name", "tunerci",
                 "--endpoint", endpoint, "--as-user", str(context["userId"]),
