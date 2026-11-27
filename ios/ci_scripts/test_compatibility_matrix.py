@@ -113,6 +113,28 @@ class LoopbackListenerTests(unittest.TestCase):
         ):
             compatibility_matrix._run(["/usr/sbin/lsof", "-nP"], timeout=30)
 
+    def test_command_timeout_retains_sanitized_partial_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            diagnostic = Path(temporary) / "pi-preflight.log"
+            with (
+                mock.patch.object(
+                    compatibility_matrix.subprocess,
+                    "run",
+                    side_effect=compatibility_matrix.subprocess.TimeoutExpired(
+                        "pi", 180, output="startup failed bearer secret-value\n"
+                    ),
+                ),
+                self.assertRaisesRegex(compatibility_matrix.MatrixError, "diagnostic retained as pi-preflight.log"),
+            ):
+                compatibility_matrix._run(
+                    ["pi", "--print"], timeout=180, diagnostic_path=diagnostic,
+                    diagnostic_redactions={"secret-value"},
+                )
+
+            retained = diagnostic.read_text(encoding="utf-8")
+            self.assertIn("startup failed", retained)
+            self.assertNotIn("secret-value", retained)
+
 
 class PiHarnessPreflightTests(unittest.TestCase):
     def test_preflights_the_locked_pi_executable_before_simulator_work(self):
@@ -126,18 +148,104 @@ class PiHarnessPreflightTests(unittest.TestCase):
             }), encoding="utf-8")
             pi_cli = root / "node_modules" / ".bin" / "pi"
             environment = {"HOME": str(root / "home")}
+            diagnostic = root / "pi-version.log"
 
             with mock.patch.object(
                 compatibility_matrix, "_checked", return_value="pi v0.73.1\n"
             ) as checked:
                 version = compatibility_matrix._preflight_pi_harness(
-                    pi_cli, lock, env=environment, cwd=root
+                    pi_cli, lock, env=environment, cwd=root, diagnostic_path=diagnostic,
                 )
 
         self.assertEqual(version, "0.73.1")
         self.assertEqual(checked.call_args.args[0], [str(pi_cli), "--version"])
         self.assertEqual(checked.call_args.kwargs["env"], environment)
-        self.assertEqual(checked.call_args.kwargs["timeout"], 30)
+        self.assertEqual(checked.call_args.kwargs["timeout"], 120)
+        self.assertEqual(checked.call_args.kwargs["diagnostic_path"], diagnostic)
+
+    def test_runs_the_locked_pi_against_the_loopback_completion_endpoint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model_requests = []
+            diagnostic = root / "diagnostics" / "pi-preflight.log"
+            endpoint = "http://127.0.0.1:19451/v1"
+
+            def run_pi(args, **kwargs):
+                model_requests.append({
+                    "method": "POST", "path": "/v1/chat/completions", "model": "tuner-fixture",
+                })
+                return compatibility_matrix.subprocess.CompletedProcess(
+                    args, 0, "Tightbeam compatibility fixture reply.\n"
+                )
+
+            with mock.patch.object(
+                compatibility_matrix.subprocess, "run", side_effect=run_pi
+            ) as run:
+                result = compatibility_matrix._preflight_pi_model(
+                    root / "pi",
+                    home=root / "home",
+                    endpoint=endpoint,
+                    env={"HOME": str(root / "home")},
+                    cwd=root,
+                    observed_requests=model_requests,
+                    diagnostic_path=diagnostic,
+                    diagnostic_redactions={"private-fixture-value"},
+                )
+
+            self.assertEqual(result["status"], "passed")
+            self.assertTrue(result["requestObserved"])
+            self.assertEqual(run.call_args.args[0][1:7], [
+                "--model", "tunerci/tuner-fixture", "--print", "--no-session",
+                "--no-tools",
+                "Reply with a short greeting for the Tuner compatibility fixture.",
+            ])
+            self.assertEqual(run.call_args.kwargs["timeout"], 180)
+            self.assertTrue(diagnostic.is_file())
+            configured = json.loads((root / "home/.pi/agent/models.json").read_text(encoding="utf-8"))
+            provider = configured["providers"]["tunerci"]
+            self.assertEqual(provider["baseUrl"], endpoint)
+            self.assertEqual(provider["api"], "openai-completions")
+            self.assertEqual(diagnostic.read_text(encoding="utf-8").strip(), "Tightbeam compatibility fixture reply.")
+
+    def test_rejects_preflight_without_a_local_completion_request(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            diagnostic = root / "pi-preflight.log"
+            with (
+                mock.patch.object(
+                    compatibility_matrix.subprocess,
+                    "run",
+                    return_value=compatibility_matrix.subprocess.CompletedProcess(
+                        ["pi"], 0, "Tightbeam compatibility fixture reply.\n"
+                    ),
+                ),
+                self.assertRaisesRegex(compatibility_matrix.MatrixError, "made no request to the local completion endpoint"),
+            ):
+                compatibility_matrix._preflight_pi_model(
+                    root / "pi",
+                    home=root / "home",
+                    endpoint="http://127.0.0.1:19451/v1",
+                    env={"HOME": str(root / "home")},
+                    cwd=root,
+                    observed_requests=[],
+                    diagnostic_path=diagnostic,
+                    diagnostic_redactions=set(),
+                )
+
+    def test_rejects_non_loopback_model_endpoint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(compatibility_matrix.MatrixError, "endpoint must be the local compatibility model"):
+                compatibility_matrix._preflight_pi_model(
+                    root / "pi",
+                    home=root / "home",
+                    endpoint="https://model.example/v1",
+                    env={"HOME": str(root / "home")},
+                    cwd=root,
+                    observed_requests=[],
+                    diagnostic_path=root / "pi-preflight.log",
+                    diagnostic_redactions=set(),
+                )
 
     def test_rejects_a_pi_executable_that_disagrees_with_the_lock(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -189,6 +297,65 @@ class SimulatorCleanupTests(unittest.TestCase):
         ):
             compatibility_matrix._delete_simulator("task-device")
 
+
+class SimulatorBootRetryTests(unittest.TestCase):
+    def test_retries_boot_once_after_bounded_readiness_failure(self):
+        udid = "12345678-1234-1234-1234-123456789012"
+        responses = [
+            compatibility_matrix.subprocess.CompletedProcess([], 0, udid),
+            compatibility_matrix.subprocess.CompletedProcess([], 1, "first boot failed"),
+            compatibility_matrix.subprocess.CompletedProcess([], 0, "shutdown complete"),
+            compatibility_matrix.subprocess.CompletedProcess([], 0, "boot complete"),
+            compatibility_matrix.subprocess.CompletedProcess([], 0, "ready"),
+        ]
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(compatibility_matrix, "_require_command", return_value="xcrun"),
+            mock.patch.object(compatibility_matrix, "_run", side_effect=responses) as run,
+            mock.patch.object(compatibility_matrix.time, "sleep"),
+        ):
+            result = compatibility_matrix._create_simulator(
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                86,
+                diagnostic_directory=Path(temporary) / "simulator-diagnostics",
+            )
+
+        self.assertEqual(result, (udid, "TunerCompatibility-86"))
+        self.assertEqual(run.call_args_list[1].args[0][2:4], ["boot", udid])
+        self.assertEqual(run.call_args_list[2].args[0][2:4], ["shutdown", udid])
+        self.assertEqual(run.call_args_list[3].args[0][2:4], ["boot", udid])
+        self.assertEqual(run.call_args_list[4].args[0][2:5], ["bootstatus", udid, "-b"])
+        self.assertEqual(run.call_args_list[1].kwargs["timeout"], 90)
+        self.assertEqual(run.call_args_list[4].kwargs["timeout"], 300)
+
+    def test_boot_failure_retains_diagnostics_and_deletes_only_owned_simulator(self):
+        udid = "12345678-1234-1234-1234-123456789012"
+        responses = [
+            compatibility_matrix.subprocess.CompletedProcess([], 0, udid),
+            compatibility_matrix.subprocess.CompletedProcess([], 1, "boot one failed"),
+            compatibility_matrix.subprocess.CompletedProcess([], 0, "shutdown"),
+            compatibility_matrix.subprocess.CompletedProcess([], 1, "boot two failed"),
+            compatibility_matrix.subprocess.CompletedProcess([], 0, "shutdown"),
+            compatibility_matrix.subprocess.CompletedProcess([], 0, "deleted"),
+            compatibility_matrix.subprocess.CompletedProcess([], 0, json.dumps({"devices": {"runtime": []}})),
+        ]
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(compatibility_matrix, "_require_command", return_value="xcrun"),
+            mock.patch.object(compatibility_matrix, "_run", side_effect=responses) as run,
+            mock.patch.object(compatibility_matrix.time, "sleep"),
+            self.assertRaisesRegex(compatibility_matrix.MatrixError, "after one retry"),
+        ):
+            compatibility_matrix._create_simulator(
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                86,
+                diagnostic_directory=Path(temporary) / "simulator-diagnostics",
+            )
+
+        self.assertEqual(run.call_args_list[-2].args[0][2:4], ["delete", udid])
+
     def test_fixture_constructor_releases_local_servers_when_listener_gate_fails(self):
         server = mock.Mock(server_port=19450)
         thread = mock.Mock()
@@ -213,6 +380,26 @@ class SimulatorCleanupTests(unittest.TestCase):
 
 
 class DiagnosticArgumentsTests(unittest.TestCase):
+    def test_fixture_startup_logs_are_retained_with_task_paths_redacted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "command-logs" / "pi-version.log"
+            source.parent.mkdir(parents=True)
+            source.write_text(f"pi v0.73.1 from {root}\n", encoding="utf-8")
+            destination = root / "artifacts"
+
+            with mock.patch.dict(
+                compatibility_matrix.os.environ,
+                {"CI_DIAGNOSTIC_ARTIFACTS_PATH": str(destination)},
+                clear=False,
+            ):
+                retained = compatibility_matrix._retain_fixture_startup_diagnostics(root)
+
+            self.assertEqual(retained, ["command-logs__pi-version.log"])
+            safe_log = (destination / "fixture-startup" / retained[0]).read_text(encoding="utf-8")
+            self.assertIn("pi v0.73.1", safe_log)
+            self.assertNotIn(str(root), safe_log)
+
     def test_diagnostic_requires_build_number_and_captured_report_path(self):
         with self.assertRaises(SystemExit) as error:
             compatibility_matrix.main(["--diagnostic"])

@@ -193,9 +193,26 @@ def _run(
     cwd: Path | None = None,
     timeout: int = 60,
     input_text: str | None = None,
+    diagnostic_path: Path | None = None,
+    diagnostic_redactions: set[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    def retain(contents: str | bytes | None) -> None:
+        if diagnostic_path is None:
+            return
+        if isinstance(contents, bytes):
+            text = contents.decode("utf-8", "replace")
+        else:
+            text = contents or ""
+        safe = _safe_diagnostic_text(text, diagnostic_redactions or set())
+        try:
+            diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+            diagnostic_path.write_text(safe, encoding="utf-8")
+            diagnostic_path.chmod(0o600)
+        except OSError as error:
+            raise MatrixError("compatibility-matrix command diagnostics could not be retained") from error
+
     try:
-        return subprocess.run(
+        result = subprocess.run(
             args,
             cwd=cwd,
             env=env,
@@ -206,13 +223,19 @@ def _run(
             timeout=timeout,
             check=False,
         )
+        retain(result.stdout)
+        return result
     except subprocess.TimeoutExpired as error:
+        retain(error.output or error.stdout or error.stderr)
         raise MatrixError(
             f"required compatibility-matrix command timed out: {Path(args[0]).name}"
+            + (f"; diagnostic retained as {diagnostic_path.name}" if diagnostic_path is not None else "")
         ) from error
     except OSError as error:
+        retain(str(error))
         raise MatrixError(
             f"required compatibility-matrix command could not start: {Path(args[0]).name}"
+            + (f"; diagnostic retained as {diagnostic_path.name}" if diagnostic_path is not None else "")
         ) from error
 
 
@@ -223,15 +246,36 @@ def _require_command(name: str) -> str:
     return path
 
 
-def _checked(args: list[str], *, env: dict[str, str] | None = None, cwd: Path | None = None, timeout: int = 60) -> str:
-    result = _run(args, env=env, cwd=cwd, timeout=timeout)
+def _checked(
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    timeout: int = 60,
+    diagnostic_path: Path | None = None,
+    diagnostic_redactions: set[str] | None = None,
+) -> str:
+    result = _run(
+        args, env=env, cwd=cwd, timeout=timeout,
+        diagnostic_path=diagnostic_path,
+        diagnostic_redactions=diagnostic_redactions,
+    )
     if result.returncode != 0:
-        _safe_fail(f"compatibility-matrix command failed: {Path(args[0]).name}")
+        message = f"compatibility-matrix command failed: {Path(args[0]).name}"
+        if diagnostic_path is not None:
+            message += f"; diagnostic retained as {diagnostic_path.name}"
+        _safe_fail(message)
     return result.stdout
 
 
 def _preflight_pi_harness(
-    pi_cli: Path, package_lock: Path, *, env: dict[str, str], cwd: Path
+    pi_cli: Path,
+    package_lock: Path,
+    *,
+    env: dict[str, str],
+    cwd: Path,
+    diagnostic_path: Path | None = None,
+    diagnostic_redactions: set[str] | None = None,
 ) -> str:
     try:
         lock = json.loads(package_lock.read_text(encoding="utf-8"))
@@ -241,10 +285,96 @@ def _preflight_pi_harness(
         raise MatrixError("pinned Pi harness package lock is unavailable") from error
     if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
         _safe_fail("pinned Pi harness package version is invalid")
-    version_output = _checked([str(pi_cli), "--version"], env=env, cwd=cwd, timeout=30)
+    version_output = _checked(
+        [str(pi_cli), "--version"], env=env, cwd=cwd, timeout=120,
+        diagnostic_path=diagnostic_path,
+        diagnostic_redactions=diagnostic_redactions,
+    )
     if not re.search(rf"(?<![0-9]){re.escape(version)}(?![0-9])", version_output):
         _safe_fail("pinned Pi harness executable did not report its locked version")
     return version
+
+
+def _preflight_pi_model(
+    pi_cli: Path,
+    *,
+    home: Path,
+    endpoint: str,
+    env: dict[str, str],
+    cwd: Path,
+    observed_requests: list[dict[str, str]],
+    diagnostic_path: Path,
+    diagnostic_redactions: set[str],
+) -> dict[str, Any]:
+    parsed = urllib.parse.urlsplit(endpoint)
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.port is None or parsed.path != "/v1":
+        _safe_fail("Pi preflight endpoint must be the local compatibility model")
+
+    agent_dir = home / ".pi" / "agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    model_configuration = {
+        "providers": {
+            "tunerci": {
+                "baseUrl": endpoint,
+                "api": "openai-completions",
+                "apiKey": "local",
+                "authHeader": True,
+                "models": [{
+                    "id": "tuner-fixture",
+                    "name": "Tuner compatibility fixture",
+                    "reasoning": False,
+                    "input": ["text"],
+                    "contextWindow": 4096,
+                    "maxTokens": 256,
+                    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                }],
+            }
+        }
+    }
+    models_path = agent_dir / "models.json"
+    models_path.write_bytes(_json_bytes(model_configuration))
+    models_path.chmod(0o600)
+
+    before = sum(
+        request.get("path") == "/v1/chat/completions"
+        and request.get("model") == "tuner-fixture"
+        for request in observed_requests
+    )
+    prompt = "Reply with a short greeting for the Tuner compatibility fixture."
+    try:
+        result = _run(
+            [
+                str(pi_cli), "--model", "tunerci/tuner-fixture", "--print", "--no-session", "--no-tools", prompt,
+            ],
+            env=env,
+            cwd=cwd,
+            timeout=180,
+            diagnostic_path=diagnostic_path,
+            diagnostic_redactions=diagnostic_redactions,
+        )
+    except MatrixError as error:
+        raise MatrixError(
+            "Pi local-model preflight did not complete; inspect the retained Pi preflight log"
+        ) from error
+    if result.returncode != 0:
+        raise MatrixError("Pi local-model preflight failed; inspect the retained Pi preflight log")
+    if "Tightbeam compatibility fixture reply." not in result.stdout:
+        raise MatrixError("Pi local-model preflight returned no deterministic fixture reply")
+    after = sum(
+        request.get("path") == "/v1/chat/completions"
+        and request.get("model") == "tuner-fixture"
+        for request in observed_requests
+    )
+    if after <= before:
+        raise MatrixError("Pi local-model preflight made no request to the local completion endpoint")
+    return {
+        "status": "passed",
+        "provider": "tunerci",
+        "model": "tuner-fixture",
+        "endpointScope": "loopback",
+        "requestObserved": True,
+        "diagnosticLog": diagnostic_path.name,
+    }
 
 
 def _http_json(
@@ -278,7 +408,7 @@ def _http_json(
     return status, value
 
 
-def _wait_for_reply(gateway_url: str, session_key: str, client_message_id: str, timeout: int = 90) -> int:
+def _wait_for_reply(gateway_url: str, session_key: str, client_message_id: str, timeout: int = 180) -> int:
     encoded_key = urllib.parse.quote(session_key, safe="")
     url = f"{gateway_url}/api/sessions/{encoded_key}/messages?tail=true&limit=500"
     deadline = time.monotonic() + timeout
@@ -682,6 +812,8 @@ class LocalRuntimeFixture:
         self.pi_package = root / "pi-fixture"
         self.pi_bin = self.pi_package / "node_modules" / ".bin"
         self.pi_harness_version: str | None = None
+        self.pi_model_preflights: list[dict[str, Any]] = []
+        self.command_log_sequence = 0
         self.model_port = _available_port()
         while self.model_port in {self.gateway_port, self.ssh_port}:
             self.model_port = _available_port()
@@ -707,6 +839,7 @@ class LocalRuntimeFixture:
         self.runtime_identities: dict[int, dict[str, Any]] = {}
         self.model_server: http.server.ThreadingHTTPServer | None = None
         self.model_thread: threading.Thread | None = None
+        self.model_requests: list[dict[str, str]] = []
         try:
             self._prepare_tools()
             self._prepare_sshd()
@@ -767,6 +900,8 @@ class LocalRuntimeFixture:
             self.pi_package / "package-lock.json",
             env=self.base_environment,
             cwd=self.root,
+            diagnostic_path=self.root / "command-logs" / "pi-version.log",
+            diagnostic_redactions={str(self.root), str(self.home_root)},
         )
         self.authorized_keys.write_text("", encoding="utf-8")
         self.authorized_keys.chmod(0o600)
@@ -820,6 +955,8 @@ class LocalRuntimeFixture:
         self._sshd_binary = sshd
 
     def _start_model_server(self) -> None:
+        fixture = self
+
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, _format: str, *args: Any) -> None:
                 return
@@ -836,6 +973,7 @@ class LocalRuntimeFixture:
                 if self.path != "/v1/models":
                     self._send(404, {"error": {"message": "not found", "type": "invalid_request_error"}})
                     return
+                fixture.model_requests.append({"method": "GET", "path": self.path})
                 self._send(200, {
                     "object": "list",
                     "data": [{"id": "tuner-fixture", "object": "model", "created": 1, "owned_by": "local"}],
@@ -853,6 +991,9 @@ class LocalRuntimeFixture:
                 except (ValueError, json.JSONDecodeError):
                     self._send(400, {"error": {"message": "invalid fixture request", "type": "invalid_request_error"}})
                     return
+                fixture.model_requests.append({
+                    "method": "POST", "path": self.path, "model": "tuner-fixture",
+                })
                 completion_id = "chatcmpl-tuner-fixture"
                 if value.get("stream") is True:
                     chunks = [
@@ -1061,15 +1202,25 @@ class LocalRuntimeFixture:
             self.gateway_log.close()
             self.gateway_log = None
 
-    def _cli(self, release_id: int, *arguments: str, timeout: int = 180) -> str:
+    def _cli(self, release_id: int, *arguments: str, timeout: int = 300) -> str:
+        self.command_log_sequence += 1
+        command_name = re.sub(r"[^A-Za-z0-9_.-]", "_", arguments[0] if arguments else "command")
+        diagnostic_path = self.root / "command-logs" / (
+            f"runtime-{release_id}-{self.command_log_sequence:03d}-{command_name}.log"
+        )
         result = _run(
             [str(self.cli_link), *arguments],
             env=self._runtime_env(release_id),
             cwd=self.root,
             timeout=timeout,
+            diagnostic_path=diagnostic_path,
+            diagnostic_redactions=self.diagnostic_redaction_values(),
         )
         if result.returncode != 0:
-            raise MatrixError(f"published Tightbeam CLI operation failed: {arguments[0] if arguments else 'command'}")
+            raise MatrixError(
+                f"published Tightbeam CLI operation failed: {arguments[0] if arguments else 'command'}; "
+                f"diagnostic retained as {diagnostic_path.name}"
+            )
         return result.stdout
 
     @staticmethod
@@ -1261,13 +1412,24 @@ class LocalRuntimeFixture:
             self._cli(
                 release_id, "onboard", "local-openai", "--name", "tunerci",
                 "--endpoint", endpoint, "--as-user", str(context["userId"]),
-                timeout=180,
+                timeout=300,
             )
+            preflight = _preflight_pi_model(
+                self.pi_bin / "pi",
+                home=self.home_root,
+                endpoint=endpoint,
+                env=self._runtime_env(release_id),
+                cwd=self.root,
+                observed_requests=self.model_requests,
+                diagnostic_path=self.root / "command-logs" / f"pi-preflight-{release_id}.log",
+                diagnostic_redactions=self.diagnostic_redaction_values(),
+            )
+            self.pi_model_preflights.append({"releaseId": release_id, **preflight})
             self._cli(
                 release_id, "spawn", "--as-user", str(context["userId"]),
                 "--display", "Tuner compatibility reply", "--harness", "pi",
                 "--model", "tunerci/tuner-fixture", "--key", "tuner-ci-" + secrets.token_hex(12),
-                timeout=180,
+                timeout=300,
             )
             work_item = self._parse_cli_json(self._cli(
                 release_id, "work-item-create", "--as-user", str(context["userId"]),
@@ -1590,20 +1752,74 @@ class LocalRuntimeFixture:
         return retained
 
 
-def _create_simulator(device_type: str, runtime_id: str, build_number: int) -> tuple[str, str]:
+def _create_simulator(
+    device_type: str,
+    runtime_id: str,
+    build_number: int,
+    *,
+    diagnostic_directory: Path | None = None,
+) -> tuple[str, str]:
     simctl = _require_command("xcrun")
     name = f"TunerCompatibility-{build_number}"
     udid = _checked([simctl, "simctl", "create", name, device_type, runtime_id], timeout=60).strip()
     if not re.fullmatch(r"[0-9A-Fa-f-]{36}", udid):
         _safe_fail("Xcode did not return an exact owned simulator identifier")
+    redactions = {udid}
+    failures: list[str] = []
+    for attempt in (1, 2):
+        boot_log = (
+            diagnostic_directory / f"simulator-boot-attempt-{attempt}.log"
+            if diagnostic_directory is not None else None
+        )
+        ready_log = (
+            diagnostic_directory / f"simulator-readiness-attempt-{attempt}.log"
+            if diagnostic_directory is not None else None
+        )
+        try:
+            boot = _run(
+                [simctl, "simctl", "boot", udid], timeout=90,
+                diagnostic_path=boot_log, diagnostic_redactions=redactions,
+            )
+            if boot.returncode != 0:
+                failures.append(f"boot attempt {attempt} exited unsuccessfully")
+                raise MatrixError("simulator boot command failed")
+            readiness = _run(
+                [simctl, "simctl", "bootstatus", udid, "-b"], timeout=300,
+                diagnostic_path=ready_log, diagnostic_redactions=redactions,
+            )
+            if readiness.returncode != 0:
+                failures.append(f"readiness attempt {attempt} exited unsuccessfully")
+                raise MatrixError("simulator readiness command failed")
+            return udid, name
+        except MatrixError:
+            if not failures or not failures[-1].endswith(str(attempt)):
+                failures.append(f"boot/readiness attempt {attempt} timed out or failed")
+            if attempt == 1:
+                shutdown_log = (
+                    diagnostic_directory / "simulator-retry-shutdown.log"
+                    if diagnostic_directory is not None else None
+                )
+                try:
+                    _run(
+                        [simctl, "simctl", "shutdown", udid], timeout=60,
+                        diagnostic_path=shutdown_log, diagnostic_redactions=redactions,
+                    )
+                except MatrixError:
+                    failures.append("simulator shutdown before retry failed")
+                time.sleep(1)
     try:
-        _checked([simctl, "simctl", "boot", udid], timeout=60)
-        _checked([simctl, "simctl", "bootstatus", udid, "-b"], timeout=180)
+        _delete_simulator(udid)
     except MatrixError:
-        _run([simctl, "simctl", "shutdown", udid], timeout=30)
-        _run([simctl, "simctl", "delete", udid], timeout=30)
-        raise
-    return udid, name
+        failures.append("owned simulator cleanup did not verify")
+    diagnostic_note = (
+        f"; inspect simulator diagnostics in {diagnostic_directory.name}"
+        if diagnostic_directory is not None else ""
+    )
+    raise MatrixError(
+        "Xcode simulator did not become ready after one retry"
+        + (f" ({'; '.join(failures)})" if failures else "")
+        + diagnostic_note
+    )
 
 
 def _delete_simulator(udid: str) -> None:
@@ -1891,6 +2107,34 @@ def _retain_runtime_diagnostics(fixture: LocalRuntimeFixture | None) -> list[str
     return fixture.export_safe_runtime_logs(Path(destination_value).expanduser().resolve() / "runtime")
 
 
+def _retain_fixture_startup_diagnostics(root: Path) -> list[str]:
+    """Preserve safe command output when fixture construction fails before assignment."""
+    destination_value = os.environ.get("CI_DIAGNOSTIC_ARTIFACTS_PATH")
+    if not destination_value:
+        return []
+    destination = Path(destination_value).expanduser().resolve() / "fixture-startup"
+    destination.mkdir(parents=True, exist_ok=True)
+    redactions = {str(root.resolve())}
+    retained: list[str] = []
+    for source in sorted(root.rglob("*.log")):
+        if not source.is_file():
+            continue
+        safe_name = re.sub(
+            r"[^A-Za-z0-9_.-]", "_",
+            _safe_diagnostic_text(source.relative_to(root).as_posix(), redactions).replace("/", "__"),
+        )
+        contents = source.read_text(encoding="utf-8", errors="replace")
+        output = destination / safe_name
+        output.write_text(_safe_diagnostic_text(contents, redactions), encoding="utf-8")
+        output.chmod(0o600)
+        retained.append(safe_name)
+    if not retained:
+        marker = "no-fixture-startup-logs-generated.txt"
+        (destination / marker).write_text("No fixture startup command logs were generated.\n", encoding="utf-8")
+        retained.append(marker)
+    return retained
+
+
 def _combine_results(
     phase_results: list[dict[str, Any]],
     candidate: dict[str, Any],
@@ -2140,7 +2384,10 @@ def run_matrix(
         # Install and launch the pinned Pi CLI before simulator boot adds CPU
         # pressure. The fixture starts only task-owned local services here.
         fixture = LocalRuntimeFixture(repo_root, pair, packages)
-        simulator_id, simulator_name = _create_simulator(device_type_id, runtime_id, build_number)
+        simulator_id, simulator_name = _create_simulator(
+            device_type_id, runtime_id, build_number,
+            diagnostic_directory=repo_root / "simulator-diagnostics",
+        )
         print(f"Created isolated simulator {simulator_name} ({device_type_name}, {runtime_name})")
         candidate["runId"] = run_id
         candidate["attempt"] = release_notes.XCODE_CLOUD_ATTEMPT_NUMBER
@@ -2157,6 +2404,7 @@ def run_matrix(
             "execution": "ios-simulator",
             "runtimeSource": "published-release-asset",
             "piHarnessVersion": fixture.pi_harness_version,
+            "piModelPreflights": fixture.pi_model_preflights,
             "networkScope": "disposable-per-release-base-and-state",
             "modelEndpointNetworkScope": "loopback-only",
             "runtimeClientAddress": "loopback-advertised-url",
@@ -2342,6 +2590,10 @@ def run_matrix(
             matrix_report["observedPhaseResults"] = fixture.phase_results
         if fixture is not None:
             matrix_report["runtimeGatewayListeners"] = fixture.gateway_listener_report()
+            matrix_report["piHarness"] = {
+                "version": fixture.pi_harness_version,
+                "modelPreflights": fixture.pi_model_preflights,
+            }
         matrix_report.setdefault("detectors", {"status": "failed", "findings": [], "findingsSha256": release_hook.findings_digest([])})
         try:
             _write_json(report_path, matrix_report)
@@ -2391,6 +2643,17 @@ def run_matrix(
                     matrix_report.setdefault("diagnosticArtifacts", {})[
                         "runtimeLogs"
                     ] = []
+        elif os.environ.get("CI_DIAGNOSTIC_ARTIFACTS_PATH"):
+            try:
+                retained_logs = _retain_fixture_startup_diagnostics(repo_root)
+                matrix_report.setdefault("diagnosticArtifacts", {})[
+                    "fixtureStartupLogs"
+                ] = retained_logs
+            except Exception:
+                diagnostic_capture_failures.append("fixture startup logs")
+                matrix_report.setdefault("diagnosticArtifacts", {})[
+                    "fixtureStartupLogs"
+                ] = []
         if simulator_id is not None:
             try:
                 _delete_simulator(simulator_id)

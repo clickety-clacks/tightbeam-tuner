@@ -117,7 +117,8 @@ final class ReleaseCompatibilityTests: XCTestCase {
                 fixtureBase + "/seed-replies",
                 token: token,
                 body: ["releaseId": release.id],
-                as: ReplySeed.self
+                as: ReplySeed.self,
+                timeoutInterval: 300
             )
             let user = seed.userId
             XCTAssertFalse(user.isEmpty)
@@ -430,11 +431,13 @@ final class ReleaseCompatibilityTests: XCTestCase {
         _ urlString: String,
         token: String,
         body: [String: Any],
-        as type: T.Type
+        as type: T.Type,
+        timeoutInterval: TimeInterval = 60
     ) async throws -> T {
         let url = try XCTUnwrap(URL(string: urlString))
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = timeoutInterval
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(token, forHTTPHeaderField: "X-Test-Fixture-Token")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
