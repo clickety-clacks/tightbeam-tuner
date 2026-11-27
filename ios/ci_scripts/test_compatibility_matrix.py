@@ -4,6 +4,7 @@ import tempfile
 import urllib.request
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import compatibility_matrix
@@ -108,6 +109,7 @@ class SimulatorSelectionTests(unittest.TestCase):
                 "iOS 27.2",
             ),
         )
+
 
     def test_rejects_only_device_specific_runtime_variants(self):
         runtimes = {
@@ -908,6 +910,41 @@ class DiagnosticArgumentsTests(unittest.TestCase):
         self.assertIn("${{ runner.temp }}/ReleaseCompatibilityReport.json", workflow)
         self.assertIn("${{ runner.temp }}/TunerCompatibilityDiagnostics/", workflow)
         self.assertIn("if-no-files-found: error", workflow)
+
+
+class PublishedRuntimeProbeTests(unittest.TestCase):
+    def test_first_probe_failure_does_not_skip_second_published_runtime(self):
+        class Fixture:
+            def __init__(self):
+                self.calls = []
+                self.runtime_turn_probes = []
+
+            def preflight_runtime_reply(self, release):
+                self.calls.append(release.tag)
+                status = "failed" if release.tag == "v0.1.16+4304" else "passed"
+                self.runtime_turn_probes.append({"tag": release.tag, "status": status})
+                return status == "passed"
+
+        fixture = Fixture()
+        releases = (
+            SimpleNamespace(tag="v0.1.16+4304"),
+            SimpleNamespace(tag="v0.1.15+4082"),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            report_path = Path(temporary) / "report.json"
+            report = {}
+            failures = compatibility_matrix._probe_published_runtime_turns(
+                fixture, releases, report, report_path
+            )
+            retained = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(fixture.calls, ["v0.1.16+4304", "v0.1.15+4082"])
+        self.assertEqual(failures, ["v0.1.16+4304"])
+        self.assertEqual(
+            [probe["status"] for probe in retained["runtimeTurnProbes"]],
+            ["failed", "passed"],
+        )
+        self.assertEqual(retained["stage"], "runtime_turn_probe_completed:v0.1.15+4082")
 
 
 if __name__ == "__main__":

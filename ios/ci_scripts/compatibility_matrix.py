@@ -1486,7 +1486,7 @@ class LocalRuntimeFixture:
             model_request_start=model_request_start,
         )
 
-    def preflight_runtime_reply(self, release: release_hook.PublishedRelease) -> None:
+    def preflight_runtime_reply(self, release: release_hook.PublishedRelease) -> bool:
         """Exercise the real packaged runtime's seeded human turn before simulator load."""
         request_start = len(self.model_requests)
         self.active_turn_observation = None
@@ -1511,9 +1511,7 @@ class LocalRuntimeFixture:
                 "modelRequests": _model_request_observations(self.model_requests[request_start:]),
                 "ordinaryTurn": self.active_turn_observation or {"postState": "not_reached"},
             })
-            raise MatrixError(
-                f"pre-test packaged-runtime turn probe failed for {release.tag}: {_failure_message(error)}"
-            ) from error
+            return False
 
         self.runtime_turn_probes.append({
             "releaseId": release.release_id,
@@ -1531,6 +1529,7 @@ class LocalRuntimeFixture:
             "assistantSequence": seed["assistantSequence"],
             "readMarker": seed["initialReadMarker"],
         })
+        return True
 
     def _messages(self, gateway_url: str, session_key: str) -> list[dict[str, Any]]:
         encoded = urllib.parse.quote(session_key, safe="")
@@ -2508,6 +2507,24 @@ def _review_confirmation(diagnostic: bool, commit: str, candidate_digest: str) -
     return release_hook.latest_public_review_status(commit, candidate_digest)
 
 
+def _probe_published_runtime_turns(
+    fixture: LocalRuntimeFixture,
+    pair: tuple[release_hook.PublishedRelease, release_hook.PublishedRelease],
+    matrix_report: dict[str, Any],
+    report_path: Path,
+) -> list[str]:
+    """Capture both real-package turn probes before deciding whether to continue."""
+    failures: list[str] = []
+    for release in pair:
+        if not fixture.preflight_runtime_reply(release):
+            failures.append(release.tag)
+        matrix_report["runtimeTurnProbes"] = fixture.runtime_turn_probes
+        matrix_report["stage"] = f"runtime_turn_probe_completed:{release.tag}"
+        # Checkpoint each package before simulator creation or Xcode adds load.
+        _write_json(report_path, matrix_report)
+    return failures
+
+
 def run_matrix(
     *, diagnostic: bool = False,
     planned_build_number: int | None = None,
@@ -2649,13 +2666,14 @@ def run_matrix(
             capture_turn_diagnostics=diagnostic,
         )
         if diagnostic:
-            for release in pair:
-                fixture.preflight_runtime_reply(release)
-                matrix_report["runtimeTurnProbes"] = fixture.runtime_turn_probes
-                matrix_report["stage"] = f"runtime_turn_probe_completed:{release.tag}"
-                # Preserve the exact packaged-runtime result before simulator
-                # creation or Xcode can add load and obscure the failure cause.
-                _write_json(report_path, matrix_report)
+            probe_failures = _probe_published_runtime_turns(
+                fixture, pair, matrix_report, report_path
+            )
+            if probe_failures:
+                raise MatrixError(
+                    "pre-test packaged-runtime turn probe failed for: "
+                    + ", ".join(probe_failures)
+                )
             print("Published-runtime turn probes passed before simulator creation")
         simulator_id, simulator_name, device_type_id, device_type_name = _create_simulator(
             device_type_candidates, runtime_id, build_number,
