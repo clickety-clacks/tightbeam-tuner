@@ -58,6 +58,8 @@ To build the compatible binary without replacing your desktop's Quickshell insta
 
 `scripts/roster.py` is the small CLI adapter. It reads active sessions, names, archetypes and parent keys, then constructs Chat URLs. The Quickshell interface is in `shell.qml` and `TunerWindow.qml`.
 
+If a roster includes unreadable rows or malformed optional parent or archetype values, Tuner keeps the usable active agents and shows an incomplete-roster count in the picker and sidebar. Inactive agents do not contribute to that count.
+
 ## iPhone and iPad
 
 When Chat accepts images, choose **+**, then **Paste** to add a photo from the system clipboard to the message field. Text paste continues to work in the field, and Photo Library remains available from the same menu.
