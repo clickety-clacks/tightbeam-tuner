@@ -27,8 +27,8 @@ class SimulatorSelectionTests(unittest.TestCase):
                 {
                     "isAvailable": True,
                     "platform": runtime_platform,
-                    "version": "27.0",
-                    "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                    "version": "27.2",
+                    "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
                 }
             ]
         }
@@ -48,8 +48,8 @@ class SimulatorSelectionTests(unittest.TestCase):
             (
                 "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
                 "iPhone 17 Pro",
-                "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
-                "iOS 27.0",
+                "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+                "iOS 27.2",
             ),
         )
 
@@ -87,6 +87,13 @@ class SimulatorSelectionTests(unittest.TestCase):
                     "name": "iPhone 17 Pro",
                     "minRuntimeVersion": 1769472,
                     "minRuntimeVersionString": "27.0.0",
+                },
+                {
+                    "productFamily": "iPhone",
+                    "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
+                    "name": "iPhone Duo",
+                    "minRuntimeVersion": 1835008,
+                    "minRuntimeVersionString": "27.2.0",
                 },
             ],
         )
@@ -132,6 +139,42 @@ class SimulatorSelectionTests(unittest.TestCase):
             self.assertRaisesRegex(
                 compatibility_matrix.MatrixError,
                 "no available iPhone simulator runtime at the Tuner deployment target",
+            ),
+        ):
+            compatibility_matrix._device_and_runtime("26.0")
+
+    def test_rejects_device_type_introduced_with_the_selected_runtime(self):
+        devicetypes = {
+            "devicetypes": [
+                {
+                    "productFamily": "iPhone",
+                    "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
+                    "name": "iPhone Duo",
+                    "minRuntimeVersion": 1835008,
+                    "minRuntimeVersionString": "27.2.0",
+                }
+            ]
+        }
+        runtimes = {
+            "runtimes": [
+                {
+                    "isAvailable": True,
+                    "platform": "iOS",
+                    "version": "27.2",
+                    "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+                }
+            ]
+        }
+        with (
+            mock.patch.object(compatibility_matrix, "_require_command", return_value="xcrun"),
+            mock.patch.object(
+                compatibility_matrix,
+                "_checked",
+                side_effect=[json.dumps(devicetypes), json.dumps(runtimes)],
+            ),
+            self.assertRaisesRegex(
+                compatibility_matrix.MatrixError,
+                "no iPhone simulator type compatible with the selected runtime",
             ),
         ):
             compatibility_matrix._device_and_runtime("26.0")

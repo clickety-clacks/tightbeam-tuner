@@ -790,8 +790,11 @@ def _device_and_runtime(minimum_os: str) -> tuple[str, str, str, str]:
     compatible_types = [
         item for item in types
         if isinstance(item.get("minRuntimeVersionString"), str)
+        # Device types introduced in the exact same iOS release can require
+        # a model-specific runtime. Prefer a device established before the
+        # generic runtime rather than guessing that such a pair is supported.
         and release_hook._os_version(item["minRuntimeVersionString"])
-        <= release_hook._os_version(selected_runtime["version"])
+        < release_hook._os_version(selected_runtime["version"])
     ]
     if not compatible_types:
         _safe_fail("Xcode has no iPhone simulator type compatible with the selected runtime")
