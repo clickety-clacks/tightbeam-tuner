@@ -3,6 +3,147 @@ import XCTest
 @testable import TightbeamTuner
 
 final class RepliedTests: XCTestCase {
+    func testReadMarkerPagesAcceptAdditiveFieldsAndFollowOpaqueCursor() async {
+        let pages = PageFixture([
+            #"{"items":[{"userId":"reader","scopeKey":"one","marker":1,"updatedAt":1}],"page":{"hasMoreAfter":true,"newestCursor":"cursor /+?&%"}}"#,
+            #"{"future":true,"items":[{"userId":"reader","scopeKey":"two","marker":"2","updatedAt":2,"future":{}}],"page":{"hasMoreAfter":false,"future":[]}}"#
+        ])
+        let result = await RepliedAPI.fetchMarkers(gateway: "https://gateway.example.test", user: "reader",
+                                                  fetchData: { await pages.fetch($0) })
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(result.items.compactMap(\.marker), [1, 2])
+        let urls = await pages.urls
+        XCTAssertEqual(urls.count, 2)
+        XCTAssertEqual(queryValue("after", in: urls.last), "cursor /+?&%")
+        XCTAssertEqual(queryValue("limit", in: urls.last), "500")
+    }
+
+    func testReadMarkerPagesPreserveEarlierRowsWhenIncomplete() async {
+        let row = #"{"userId":"reader","scopeKey":"one","marker":1,"updatedAt":1}"#
+        let first = """
+        {"items":[\(row)],"page":{"hasMoreAfter":true,"newestCursor":"first"}}
+        """
+        let cases: [([String?], Int, [Int])] = [
+            ([nil], 1, []),
+            ([first, nil], 2, [1]),
+            ([first, #"{"items":[{"userId":"reader","scopeKey":"two","updatedAt":"bad"}],"page":{"hasMoreAfter":false}}"#], 2, [1]),
+            ([first, #"{"items":[],"page":{"hasMoreAfter":true}}"#], 2, [1]),
+            ([first, #"{"items":[],"page":{"hasMoreAfter":true,"newestCursor":"first"}}"#], 2, [1])
+        ]
+        for (responses, requestCount, expected) in cases {
+            let pages = PageFixture(responses)
+            let result = await RepliedAPI.fetchMarkers(gateway: "https://gateway.example.test", user: "reader",
+                                                      fetchData: { await pages.fetch($0) })
+            XCTAssertFalse(result.isComplete)
+            XCTAssertEqual(result.items.compactMap(\.marker), expected)
+            let urls = await pages.urls
+            XCTAssertEqual(urls.count, requestCount)
+        }
+    }
+
+    func testPendingHistoryAcceptsLegacyAndAdditivePages() async {
+        let oldPage = #"{"items":[{"seq":1,"sessionKey":"older","role":"user","clientMessageId":"prompt"}]}"#
+        let legacy = PageFixture([oldPage])
+        let legacyResult = await RepliedAPI.fetchPendingMessages(
+            gateway: "https://gateway.example.test", sessionKey: "older", promptIDs: ["prompt"],
+            fetchData: { await legacy.fetch($0) })
+        XCTAssertTrue(legacyResult.isComplete)
+        XCTAssertEqual(legacyResult.items.map(\.seq), [1])
+
+        let modern = PageFixture([
+            #"{"items":[{"seq":2,"sessionKey":"older","role":"assistant","future":true}],"future":{},"page":{"hasMoreBefore":true,"oldestCursor":"opaque /+?&%","future":[]}}"#,
+            #"{"items":[{"seq":1,"sessionKey":"older","role":"user","clientMessageId":"prompt"}],"page":{"hasMoreBefore":true}}"#
+        ])
+        let result = await RepliedAPI.fetchPendingMessages(
+            gateway: "https://gateway.example.test", sessionKey: "older", promptIDs: ["prompt"],
+            fetchData: { await modern.fetch($0) })
+        XCTAssertTrue(result.isComplete, "Finding every prompt completes the search without further pages")
+        XCTAssertEqual(result.items.map(\.seq), [1, 2])
+        let urls = await modern.urls
+        XCTAssertEqual(urls.count, 2)
+        XCTAssertEqual(queryValue("before", in: urls.last), "opaque /+?&%")
+        XCTAssertEqual(queryValue("limit", in: urls.last), "500")
+    }
+
+    func testPendingHistoryPreservesEarlierRowsWhenIncomplete() async {
+        let first = #"{"items":[{"seq":2,"sessionKey":"older","role":"assistant"}],"page":{"hasMoreBefore":true,"oldestCursor":"first"}}"#
+        let cases: [String?] = [
+            nil,
+            #"{"items":[]}"#,
+            #"{"items":[{"seq":"bad","sessionKey":"older","role":"user"}],"page":{"hasMoreBefore":false}}"#,
+            #"{"items":[],"page":{"hasMoreBefore":true,"oldestCursor":""}}"#,
+            #"{"items":[],"page":{"hasMoreBefore":true,"oldestCursor":"first"}}"#,
+            #"{"items":[{"seq":1,"sessionKey":"different","role":"user","clientMessageId":"prompt"}],"page":{"hasMoreBefore":true}}"#
+        ]
+        for response in cases {
+            let pages = PageFixture([first, response])
+            let result = await RepliedAPI.fetchPendingMessages(
+                gateway: "https://gateway.example.test", sessionKey: "older", promptIDs: ["prompt"],
+                fetchData: { await pages.fetch($0) })
+            XCTAssertFalse(result.isComplete)
+            XCTAssertEqual(result.items.map(\.seq), [2])
+            let urls = await pages.urls
+            XCTAssertEqual(urls.count, 2)
+        }
+    }
+
+    @MainActor func testIncompletePendingHistoryDoesNotAdvanceWatermark() async throws {
+        let (defaults, suiteName) = try testDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let connection = makeConnection()
+        let feed = RepliedFeed(defaults: defaults)
+        feed.activateConnection(connection)
+        let baseline = [RepliedSessionMessageSequence(sessionKey: "older", latestMessageSeq: 10)]
+        let newer = [RepliedSessionMessageSequence(sessionKey: "older", latestMessageSeq: 20)]
+        await feed.loadSnapshot(gateway: connection.gateway, user: "reader", sessionKeys: ["older"], limit: 500,
+            mode: .initial, fetchSequences: { _, _ in baseline }, fetchMarkers: { _, _ in .complete([]) })
+
+        feed.observePromptStatus(.accepted, sessionKey: "older", correlationID: "found")
+        feed.observePromptStatus(.accepted, sessionKey: "older", correlationID: "missing")
+        let prompt = try message(#"{"seq":19,"sessionKey":"older","role":"user","clientMessageId":"found"}"#)
+        let reply = try message(#"{"seq":20,"sessionKey":"older","role":"assistant","turnIncludesHuman":true}"#)
+        let marker = try JSONDecoder().decode(RepliedReadMarker.self, from:
+            Data(#"{"userId":"reader","scopeKey":"older:session-read-position","marker":10,"updatedAt":2}"#.utf8))
+        await feed.loadSnapshot(gateway: connection.gateway, user: "reader", sessionKeys: ["older"], limit: 100,
+            fetchSequences: { _, _ in newer }, fetchMarkers: { _, _ in .incomplete([marker]) },
+            fetchPendingMessages: { _, _, _ in .incomplete([prompt, reply]) })
+        XCTAssertEqual(feed.state.readMarkerBySession["older"]?.marker, 10)
+        XCTAssertEqual(feed.state.pendingPromptIDs(for: "older"), ["missing"])
+
+        let restored = RepliedFeed(defaults: defaults)
+        restored.activateConnection(connection)
+        restored.observePromptStatus(.failed("fixture"), sessionKey: "older", correlationID: "missing")
+        XCTAssertEqual(restored.state.rowIndicator(for: "older"), .reply)
+        let fetched = FetchKeyRecorder()
+        for _ in 0..<2 {
+            await restored.loadSnapshot(gateway: connection.gateway, user: "reader", sessionKeys: ["older"],
+                limit: 100, fetchSequences: { _, _ in newer }, fetchMarkers: { _, _ in .complete([]) },
+                fetchMessages: { _, key, _ in await fetched.record(key); return [] })
+        }
+        let calls = await fetched.values
+        XCTAssertEqual(calls, ["older"], "Incomplete search must retry after relaunch; completed retry should acknowledge the sequence")
+    }
+
+    private func queryValue(_ name: String, in url: URL?) -> String? {
+        url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
+            .queryItems?.first { $0.name == name }?.value
+    }
+
+    private actor PageFixture {
+        private var responses: [String?]
+        private(set) var urls: [URL] = []
+
+        init(_ responses: [String?]) {
+            self.responses = responses
+        }
+
+        func fetch(_ url: URL) -> Data? {
+            urls.append(url)
+            guard !responses.isEmpty, let response = responses.removeFirst() else { return nil }
+            return Data(response.utf8)
+        }
+    }
+
     func testSequenceEndpointAndEnvelopeUseRosterVisibility() throws {
         let url = try XCTUnwrap(RepliedAPI.sequencesURL(gateway: "https://gateway.example.test", user: "reader + one"))
         let parts = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
@@ -23,18 +164,18 @@ final class RepliedTests: XCTestCase {
         let newer = [RepliedSessionMessageSequence(sessionKey: "older", latestMessageSeq: 20)]
         let calls = FetchKeyRecorder()
         await first.loadSnapshot(gateway: connection.gateway, user: "reader", sessionKeys: ["older"], limit: 500,
-            mode: .initial, fetchSequences: { _, _ in baseline }, fetchMarkers: { _, _ in [] },
+            mode: .initial, fetchSequences: { _, _ in baseline }, fetchMarkers: { _, _ in .complete([]) },
             fetchMessages: { _, key, _ in await calls.record(key); return [] })
         let initialCalls = await calls.values
         XCTAssertTrue(initialCalls.isEmpty, "A bulk baseline must not sweep old histories on first load")
         let restored = RepliedFeed(defaults: defaults)
         restored.activateConnection(connection)
         await restored.loadSnapshot(gateway: connection.gateway, user: "reader", sessionKeys: ["older"], limit: 100,
-            fetchSequences: { _, _ in newer }, fetchMarkers: { _, _ in [] },
+            fetchSequences: { _, _ in newer }, fetchMarkers: { _, _ in .complete([]) },
             fetchMessages: { _, key, _ in await calls.record(key); return nil })
         let reply = try message(#"{"seq":20,"sessionKey":"older","role":"assistant","turnIncludesHuman":true}"#)
         await restored.loadSnapshot(gateway: connection.gateway, user: "reader", sessionKeys: ["older"], limit: 100,
-            fetchSequences: { _, _ in newer }, fetchMarkers: { _, _ in [] },
+            fetchSequences: { _, _ in newer }, fetchMarkers: { _, _ in .complete([]) },
             fetchMessages: { _, key, limit in
                 XCTAssertEqual(limit, 100)
                 await calls.record(key)
@@ -42,7 +183,7 @@ final class RepliedTests: XCTestCase {
             })
         XCTAssertEqual(restored.state.rowIndicator(for: "older"), .reply)
         await restored.loadSnapshot(gateway: connection.gateway, user: "reader", sessionKeys: ["older"], limit: 100,
-            fetchSequences: { _, _ in newer }, fetchMarkers: { _, _ in [] },
+            fetchSequences: { _, _ in newer }, fetchMarkers: { _, _ in .complete([]) },
             fetchMessages: { _, key, _ in await calls.record(key); return [] })
         let fetched = await calls.values
         XCTAssertEqual(fetched, ["older", "older"], "Only changed histories retry; successful catch-up advances the baseline")
@@ -54,23 +195,23 @@ final class RepliedTests: XCTestCase {
         let feed = RepliedFeed(defaults: defaults)
         let baseline = [RepliedSessionMessageSequence(sessionKey: "older", latestMessageSeq: 10)]
         await feed.loadSnapshot(gateway: "https://gateway.example.test", user: "reader", sessionKeys: ["older"], limit: 500,
-            mode: .initial, fetchSequences: { _, _ in baseline }, fetchMarkers: { _, _ in [] })
+            mode: .initial, fetchSequences: { _, _ in baseline }, fetchMarkers: { _, _ in .complete([]) })
         feed.observePromptStatus(.accepted, sessionKey: "pending", correlationID: "prompt")
         let fetched = FetchKeyRecorder()
         await feed.loadSnapshot(gateway: "https://gateway.example.test", user: "reader", sessionKeys: ["older", "pending", "recent"], limit: 100,
-            recentSessionKeys: ["recent"], fetchSequences: { _, _ in nil }, fetchMarkers: { _, _ in [] },
+            recentSessionKeys: ["recent"], fetchSequences: { _, _ in nil }, fetchMarkers: { _, _ in .complete([]) },
             fetchMessages: { _, key, _ in await fetched.record(key); return [] },
             fetchPendingMessages: { _, key, ids in
                 XCTAssertEqual(ids, ["prompt"])
                 await fetched.record(key)
-                return []
+                return .complete([])
             })
         XCTAssertEqual(feed.state.rowIndicator(for: "pending"), .waiting)
         let fallbackCalls = await fetched.values
         XCTAssertEqual(Set(fallbackCalls), ["pending", "recent"])
         let newer = [RepliedSessionMessageSequence(sessionKey: "older", latestMessageSeq: 11)]
         await feed.loadSnapshot(gateway: "https://gateway.example.test", user: "reader", sessionKeys: ["older"], limit: 100,
-            fetchSequences: { _, _ in newer }, fetchMarkers: { _, _ in [] },
+            fetchSequences: { _, _ in newer }, fetchMarkers: { _, _ in .complete([]) },
             fetchMessages: { _, key, _ in await fetched.record(key); return [] })
         let recoveredCalls = await fetched.values
         XCTAssertTrue(recoveredCalls.contains("older"))
@@ -83,13 +224,13 @@ final class RepliedTests: XCTestCase {
         let keys = (1...20).map { "older:\($0)" }
         let initial = keys.map { RepliedSessionMessageSequence(sessionKey: $0, latestMessageSeq: 5) }
         await feed.loadSnapshot(gateway: "https://gateway.example.test", user: "reader", sessionKeys: keys, limit: 500,
-            mode: .initial, fetchSequences: { _, _ in initial }, fetchMarkers: { _, _ in [] })
+            mode: .initial, fetchSequences: { _, _ in initial }, fetchMarkers: { _, _ in .complete([]) })
         let changed = keys.map { RepliedSessionMessageSequence(sessionKey: $0, latestMessageSeq: 6) }
             + [RepliedSessionMessageSequence(sessionKey: "empty", latestMessageSeq: 0)]
         let concurrency = FetchConcurrencyProbe()
         let fetched = FetchKeyRecorder()
         await feed.loadSnapshot(gateway: "https://gateway.example.test", user: "reader", sessionKeys: keys + ["empty"], limit: 100,
-            fetchSequences: { _, _ in changed }, fetchMarkers: { _, _ in [] },
+            fetchSequences: { _, _ in changed }, fetchMarkers: { _, _ in .complete([]) },
             fetchMessages: { _, key, _ in
                 await concurrency.begin()
                 await fetched.record(key)
@@ -103,7 +244,7 @@ final class RepliedTests: XCTestCase {
         XCTAssertEqual(maximum, 2)
         let unchangedCalls = FetchKeyRecorder()
         await feed.loadSnapshot(gateway: "https://gateway.example.test", user: "reader", sessionKeys: keys + ["empty"], limit: 100,
-            fetchSequences: { _, _ in changed }, fetchMarkers: { _, _ in [] },
+            fetchSequences: { _, _ in changed }, fetchMarkers: { _, _ in .complete([]) },
             fetchMessages: { _, key, _ in await unchangedCalls.record(key); return [] })
         let remaining = await unchangedCalls.values
         XCTAssertTrue(remaining.isEmpty)
@@ -220,7 +361,7 @@ final class RepliedTests: XCTestCase {
             sessionKeys: ["agent:alpha"],
             limit: nil,
             fetchSequences: { _, _ in nil },
-            fetchMarkers: { _, _ in [] },
+            fetchMarkers: { _, _ in .complete([]) },
             fetchMessages: { _, _, _ in
                 await reads.recordMessageFetch()
                 return []
@@ -873,10 +1014,10 @@ final class RepliedTests: XCTestCase {
             sessionKeys: ["agent:alpha"],
             limit: 100,
             fetchSequences: { _, _ in nil },
-            fetchMarkers: { _, _ in [marker] },
+            fetchMarkers: { _, _ in .complete([marker]) },
             fetchPendingMessages: { _, _, promptIDs in
                 await requestedPromptIDs.record(promptIDs)
-                return [priorReply, prompt]
+                return .complete([priorReply, prompt])
             }
         )
 
@@ -918,10 +1059,10 @@ final class RepliedTests: XCTestCase {
             sessionKeys: ["agent:alpha"],
             limit: 100,
             fetchSequences: { _, _ in nil },
-            fetchMarkers: { _, _ in [] },
+            fetchMarkers: { _, _ in .complete([]) },
             fetchPendingMessages: { _, _, promptIDs in
                 await requestedPromptIDs.record(promptIDs)
-                return [priorReply, prompt]
+                return .complete([priorReply, prompt])
             }
         )
 
@@ -962,10 +1103,10 @@ final class RepliedTests: XCTestCase {
             sessionKeys: ["agent:alpha"],
             limit: 100,
             fetchSequences: { _, _ in nil },
-            fetchMarkers: { _, _ in [] },
+            fetchMarkers: { _, _ in .complete([]) },
             fetchPendingMessages: { _, _, promptIDs in
                 await requestedPromptIDs.record(promptIDs)
-                return [prompt, reply]
+                return .complete([prompt, reply])
             }
         )
 
@@ -1136,7 +1277,7 @@ final class RepliedTests: XCTestCase {
             sessionKeys: ["agent:alpha", "agent:beta"],
             limit: 100,
             fetchSequences: { _, _ in nil },
-            fetchMarkers: { _, _ in markers },
+            fetchMarkers: { _, _ in .complete(markers) },
             fetchMessages: { _, key, _ in
                 await reads.recordMessageFetch()
                 return history.filter { $0.sessionKey == key }
@@ -1172,14 +1313,14 @@ final class RepliedTests: XCTestCase {
             recentSessionKeys: rosterKeys,
             mode: .initial,
             fetchSequences: { _, _ in nil },
-            fetchMarkers: { _, _ in markers },
+            fetchMarkers: { _, _ in .complete(markers) },
             fetchMessages: { _, key, _ in
                 await fetched.record(key)
                 return []
             },
             fetchPendingMessages: { _, key, _ in
                 await fetched.record(key)
-                return []
+                return .complete([])
             }
         )
 
@@ -1203,7 +1344,7 @@ final class RepliedTests: XCTestCase {
             recentSessionKeys: recentKeys,
             mode: .initial,
             fetchSequences: { _, _ in nil },
-            fetchMarkers: { _, _ in [] },
+            fetchMarkers: { _, _ in .complete([]) },
             fetchMessages: { _, _, _ in
                 await concurrency.begin()
                 try? await Task.sleep(nanoseconds: 20_000_000)
@@ -1296,7 +1437,7 @@ final class RepliedTests: XCTestCase {
             sessionKeys: ["agent:alpha"],
             limit: 100,
             fetchSequences: { _, _ in nil },
-            fetchMarkers: { _, _ in markers },
+            fetchMarkers: { _, _ in .complete(markers) },
             fetchMessages: { _, _, _ in
                 await feed.updateShownSessionKey("agent:alpha")
                 return [reply]
@@ -1316,7 +1457,7 @@ final class RepliedTests: XCTestCase {
             recentSessionKeys: ["agent:alpha"],
             mode: .initial,
             fetchSequences: { _, _ in nil },
-            fetchMarkers: { _, _ in markers },
+            fetchMarkers: { _, _ in .complete(markers) },
             fetchMessages: { _, _, _ in [reply] }
         )
         XCTAssertTrue(relaunched.state.agents(from: roster).isEmpty)
@@ -1372,12 +1513,12 @@ final class RepliedTests: XCTestCase {
             recentSessionKeys: ["agent:replied"],
             mode: .initial,
             fetchSequences: { _, _ in nil },
-            fetchMarkers: { _, _ in [readMarker] },
+            fetchMarkers: { _, _ in .complete([readMarker]) },
             fetchMessages: { _, key, _ in
                 key == "agent:replied" ? repliedMessages : []
             },
             fetchPendingMessages: { _, key, _ in
-                key == "agent:pending" ? pendingMessages : []
+                .complete(key == "agent:pending" ? pendingMessages : [])
             }
         )
 

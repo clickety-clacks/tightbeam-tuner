@@ -56,6 +56,14 @@ struct RepliedMarkersPage: Decodable, Sendable {
     let page: Page
 }
 
+struct RepliedPageResult<Item: Sendable>: Sendable {
+    let items: [Item]
+    let isComplete: Bool
+
+    static func complete(_ items: [Item]) -> Self { Self(items: items, isComplete: true) }
+    static func incomplete(_ items: [Item]) -> Self { Self(items: items, isComplete: false) }
+}
+
 enum RepliedFrame: Sendable, Equatable {
     case subscriptionReady, message(RepliedMessage), readMarker(RepliedReadMarker)
     case sessionSpawned(Agent), sessionUpdated(Agent), sessionHarnessChanged(Agent)
@@ -684,9 +692,13 @@ struct RepliedShownChat {
         recentSessionKeys: [String] = [],
         mode: RepliedSnapshotMode = .reconnect,
         fetchSequences: @escaping @Sendable (String, String) async -> [RepliedSessionMessageSequence]? = RepliedAPI.fetchSequences,
-        fetchMarkers: @escaping @Sendable (String, String) async -> [RepliedReadMarker] = RepliedAPI.fetchMarkers,
+        fetchMarkers: @escaping @Sendable (String, String) async -> RepliedPageResult<RepliedReadMarker> = {
+            await RepliedAPI.fetchMarkers(gateway: $0, user: $1)
+        },
         fetchMessages: @escaping @Sendable (String, String, Int?) async -> [RepliedMessage]? = RepliedAPI.fetchMessages,
-        fetchPendingMessages: @escaping @Sendable (String, String, Set<String>) async -> [RepliedMessage]? = RepliedAPI.fetchPendingMessages
+        fetchPendingMessages: @escaping @Sendable (String, String, Set<String>) async -> RepliedPageResult<RepliedMessage> = {
+            await RepliedAPI.fetchPendingMessages(gateway: $0, sessionKey: $1, promptIDs: $2)
+        }
     ) async {
         let markers = await fetchMarkers(gateway, user)
         guard !Task.isCancelled else { return }
@@ -709,7 +721,10 @@ struct RepliedShownChat {
             messageSequenceWatermarks = observedSequences
         }
         var changedReadMarkerSessionKeys: Set<String> = []
-        for marker in markers {
+        if !markers.isComplete {
+            logger.notice("Replies read-marker snapshot was incomplete")
+        }
+        for marker in markers.items {
             if let sessionKey = state.applyReadMarker(marker, userID: user) {
                 changedReadMarkerSessionKeys.insert(sessionKey)
             }
@@ -739,38 +754,36 @@ struct RepliedShownChat {
             let promptIDs = state.pendingPromptIDs(for: key)
             return (key, promptIDs, promptIDs.isEmpty ? (limit ?? 500) : nil)
         }
-        await withTaskGroup(of: (String, [RepliedMessage]?).self) { group in
+        let fetchHistory: @Sendable ((String, Set<String>, Int?)) async -> (String, RepliedPageResult<RepliedMessage>) = { request in
+            let (key, promptIDs, limit) = request
+            if !promptIDs.isEmpty {
+                return (key, await fetchPendingMessages(gateway, key, promptIDs))
+            }
+            guard let messages = await fetchMessages(gateway, key, limit) else {
+                return (key, .incomplete([]))
+            }
+            return (key, .complete(messages))
+        }
+        await withTaskGroup(of: (String, RepliedPageResult<RepliedMessage>).self) { group in
             var next = min(RepliedSnapshotSelection.maximumConcurrentFetches, requests.count)
             for request in requests.prefix(RepliedSnapshotSelection.maximumConcurrentFetches) {
-                group.addTask {
-                    if request.1.isEmpty {
-                        return (request.0, await fetchMessages(gateway, request.0, request.2))
-                    }
-                    return (request.0, await fetchPendingMessages(gateway, request.0, request.1))
-                }
+                group.addTask { await fetchHistory(request) }
             }
-            while let (key, messages) = await group.next() {
+            while let (key, history) = await group.next() {
                 guard !Task.isCancelled else { group.cancelAll(); return }
-                if let messages {
-                    // Acknowledge only the sequence observed BEFORE this history read.
-                    // Failure/cancellation leaves the older watermark for the next catch-up.
-                    if let seq = observedSequences[key] {
-                        messageSequenceWatermarks?[key] = seq
-                    }
-                    for message in messages where message.sessionKey == key {
-                        apply(.message(message), userID: user, shownSessionKey: shownSessionKey,
-                              persistSnapshot: false)
-                    }
+                // Partial rows can update Replies, but only a completed search can
+                // acknowledge the sequence observed before the history read.
+                if history.isComplete, let seq = observedSequences[key] {
+                    messageSequenceWatermarks?[key] = seq
+                }
+                for message in history.items where message.sessionKey == key {
+                    apply(.message(message), userID: user, shownSessionKey: shownSessionKey,
+                          persistSnapshot: false)
                 }
                 if next < requests.count {
                     let request = requests[next]
                     next += 1
-                    group.addTask {
-                        if request.1.isEmpty {
-                            return (request.0, await fetchMessages(gateway, request.0, request.2))
-                        }
-                        return (request.0, await fetchPendingMessages(gateway, request.0, request.1))
-                    }
+                    group.addTask { await fetchHistory(request) }
                 }
             }
         }
@@ -833,9 +846,10 @@ enum RepliedAPI {
     static func fetchPendingMessages(
         gateway: String,
         sessionKey: String,
-        promptIDs: Set<String>
-    ) async -> [RepliedMessage]? {
-        guard !promptIDs.isEmpty else { return [] }
+        promptIDs: Set<String>,
+        fetchData: @Sendable (URL) async -> Data? = { await get($0) }
+    ) async -> RepliedPageResult<RepliedMessage> {
+        guard !promptIDs.isEmpty else { return .complete([]) }
         var unmatchedPromptIDs = promptIDs
         var messages: [RepliedMessage] = []
         var before: String?
@@ -843,37 +857,49 @@ enum RepliedAPI {
 
         while true {
             guard let url = messagesURL(gateway: gateway, sessionKey: sessionKey, limit: 500, before: before),
-                  let data = await get(url),
-                  let page = try? JSONDecoder().decode(RepliedMessagesPage.self, from: data) else { return nil }
-            messages.append(contentsOf: page.items)
-            for message in page.items where message.role == "user" {
-                if let clientMessageId = message.clientMessageId {
+                  let data = await fetchData(url),
+                  let page = try? JSONDecoder().decode(RepliedMessagesPage.self, from: data) else {
+                return .incomplete(messages.sorted { $0.seq < $1.seq })
+            }
+            for message in page.items where message.sessionKey == sessionKey {
+                messages.append(message)
+                if message.role == "user", let clientMessageId = message.clientMessageId {
                     unmatchedPromptIDs.remove(clientMessageId)
                 }
             }
 
-            guard !unmatchedPromptIDs.isEmpty,
-                  page.page?.hasMoreBefore == true,
-                  let oldestCursor = page.page?.oldestCursor else {
-                return messages.sorted { $0.seq < $1.seq }
+            let hasMore = page.page?.hasMoreBefore
+            if unmatchedPromptIDs.isEmpty || hasMore == false || (hasMore == nil && before == nil) {
+                return .complete(messages.sorted { $0.seq < $1.seq })
             }
-            guard visitedCursors.insert(oldestCursor).inserted else {
-                return messages.sorted { $0.seq < $1.seq }
+            guard hasMore == true, let cursor = page.page?.oldestCursor, !cursor.isEmpty,
+                  visitedCursors.insert(cursor).inserted else {
+                return .incomplete(messages.sorted { $0.seq < $1.seq })
             }
-            before = oldestCursor
+            before = cursor
         }
     }
-    static func fetchMarkers(gateway: String, user: String) async -> [RepliedReadMarker] {
+
+    static func fetchMarkers(
+        gateway: String,
+        user: String,
+        fetchData: @Sendable (URL) async -> Data? = { await get($0) }
+    ) async -> RepliedPageResult<RepliedReadMarker> {
         var markers: [RepliedReadMarker] = []
         var after: String?
-        while let url = markersURL(gateway: gateway, user: user, after: after),
-              let data = await get(url),
-              let page = try? JSONDecoder().decode(RepliedMarkersPage.self, from: data) {
+        var visitedCursors: Set<String> = []
+        while true {
+            guard let url = markersURL(gateway: gateway, user: user, after: after),
+                  let data = await fetchData(url),
+                  let page = try? JSONDecoder().decode(RepliedMarkersPage.self, from: data) else {
+                return .incomplete(markers)
+            }
             markers.append(contentsOf: page.items)
-            guard page.page.hasMoreAfter, let cursor = page.page.newestCursor else { break }
+            guard page.page.hasMoreAfter else { return .complete(markers) }
+            guard let cursor = page.page.newestCursor, !cursor.isEmpty,
+                  visitedCursors.insert(cursor).inserted else { return .incomplete(markers) }
             after = cursor
         }
-        return markers
     }
 
     private static func get(_ url: URL) async -> Data? {
