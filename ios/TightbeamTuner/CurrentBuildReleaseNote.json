@@ -1,12 +1,12 @@
 {
   "version": "1.0",
-  "build": 85,
-  "date": "November 26, 2026",
+  "build": 86,
+  "date": "November 27, 2026",
   "items": [
     {
-      "symbol": "person.2",
-      "title": "Keep one agent list status indicator",
-      "detail": "The Agents toolbar shows a single spinner or warning while the list refreshes or when it fails, including while you scroll or filter the list."
+      "symbol": "arrow.clockwise",
+      "title": "Keep Replies catch-up retryable",
+      "detail": "If a later page fails while Tuner checks read positions or searches for replies, it keeps the results it can use. An unfinished reply search stays eligible for catch-up on the next reconnect."
     },
     {
       "symbol": "info.circle",
