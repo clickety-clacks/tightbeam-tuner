@@ -298,6 +298,7 @@ class PiHarnessPreflightTests(unittest.TestCase):
         self.assertEqual(checked.call_args.kwargs["timeout"], 120)
         self.assertEqual(checked.call_args.kwargs["diagnostic_path"], diagnostic)
 
+
     def test_runs_the_locked_pi_against_the_loopback_completion_endpoint(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -398,6 +399,33 @@ class PiHarnessPreflightTests(unittest.TestCase):
                 compatibility_matrix._preflight_pi_harness(
                     root / "pi", lock, env={}, cwd=root
                 )
+
+
+class RuntimeLocalModelConfigurationTests(unittest.TestCase):
+    def test_onboards_and_spawns_the_supported_keyless_runtime_model(self):
+        fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
+        fixture.model_origin = {
+            "scheme": "http", "host": "127.0.0.1", "port": 19451, "basePath": "/v1",
+        }
+        fixture._cli = mock.Mock(return_value="")
+
+        fixture._onboard_runtime_local_model(449379583, "scratch-admin")
+        onboard_call = fixture._cli.call_args
+        self.assertEqual(onboard_call.args, (
+            449379583, "onboard", "local-openai", "--name", "spark",
+            "--endpoint", "http://127.0.0.1:19451/v1", "--as-user", "scratch-admin",
+        ))
+        self.assertEqual(onboard_call.kwargs["timeout"], 300)
+        self.assertNotIn("--api-key", onboard_call.args)
+
+        fixture._spawn_runtime_pi_child(449379583, "scratch-admin")
+        spawn_call = fixture._cli.call_args
+        self.assertEqual(spawn_call.args[:8], (
+            449379583, "spawn", "--as-user", "scratch-admin",
+            "--display", "Tuner compatibility reply", "--harness", "pi",
+        ))
+        self.assertEqual(spawn_call.args[8:10], ("--model", "spark/qwen3.5-35b"))
+        self.assertEqual(spawn_call.kwargs["timeout"], 300)
 
 
 class ReplyCorrelationDiagnosticTests(unittest.TestCase):
@@ -607,6 +635,177 @@ class ReplyCorrelationDiagnosticTests(unittest.TestCase):
 
 
 class LocalModelStreamingTests(unittest.TestCase):
+    def test_gate_probe_runs_through_bash_and_relays_the_observed_tool_result(self):
+        fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
+        with socket.socket() as reserve:
+            reserve.bind(("127.0.0.1", 0))
+            fixture.model_port = reserve.getsockname()[1]
+        fixture.model_requests = []
+        fixture.selected_release_id = 449379583
+        fixture.model_origin = {
+            "scheme": "http", "host": "127.0.0.1", "port": fixture.model_port, "basePath": "/v1",
+        }
+        fixture.active_turn_started_at = None
+        fixture.model_server = None
+        fixture.model_thread = None
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        }]
+        prompt = "Use your shell tool to run " + compatibility_matrix.GATE_PROBE_COMMAND
+
+        with mock.patch.object(compatibility_matrix, "_require_loopback_listener"):
+            fixture._start_model_server()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{fixture.model_port}/v1/chat/completions",
+                data=json.dumps({
+                    "model": "qwen3.5-35b", "stream": True,
+                    "messages": [{"role": "system", "content": prompt}], "tools": tools,
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                events = [item for item in response.read().decode("utf-8").split("\n\n") if item]
+            tool_chunks = [
+                json.loads(event.removeprefix("data: "))
+                for event in events if event.startswith("data: ") and event != "data: [DONE]"
+            ]
+            tool_call = tool_chunks[1]["choices"][0]["delta"]["tool_calls"][0]
+            self.assertEqual(tool_call["function"]["name"], "bash")
+            self.assertEqual(tool_call["id"], compatibility_matrix.GATE_PROBE_TOOL_CALL_ID)
+            self.assertEqual(json.loads(tool_call["function"]["arguments"])["command"],
+                             compatibility_matrix.GATE_PROBE_COMMAND)
+            self.assertEqual(tool_chunks[2]["choices"][0]["finish_reason"], "tool_calls")
+
+            followup = urllib.request.Request(
+                f"http://127.0.0.1:{fixture.model_port}/v1/chat/completions",
+                data=json.dumps({
+                    "model": "qwen3.5-35b", "stream": False,
+                    "messages": [
+                        {"role": "system", "content": prompt},
+                        {"role": "assistant", "content": None, "tool_calls": [{
+                            "id": tool_call["id"], "type": "function", "function": tool_call["function"],
+                        }]},
+                        {"role": "tool", "tool_call_id": tool_call["id"],
+                         "content": compatibility_matrix.GATE_PROBE_MARKER + "\nactual probe output"},
+                    ], "tools": tools,
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(followup, timeout=5) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(
+                result["choices"][0]["message"]["content"],
+                compatibility_matrix.GATE_PROBE_MARKER + "\nactual probe output",
+            )
+        finally:
+            fixture.model_server.shutdown()
+            fixture.model_server.server_close()
+            fixture.model_thread.join(timeout=5)
+
+        observations = compatibility_matrix._model_request_observations(fixture.model_requests)
+        self.assertEqual(
+            [item["fixtureInteraction"] for item in observations["requests"]],
+            ["gate-probe-tool-call", "gate-probe-marker-returned"],
+        )
+        self.assertNotIn(compatibility_matrix.GATE_PROBE_COMMAND, json.dumps(observations))
+        self.assertNotIn(compatibility_matrix.GATE_PROBE_MARKER, json.dumps(observations))
+
+    def test_gate_probe_does_not_retry_when_its_tool_result_is_missing_or_mismatched(self):
+        prompt = "Use your shell tool to run " + compatibility_matrix.GATE_PROBE_COMMAND
+        call = {
+            "id": compatibility_matrix.GATE_PROBE_TOOL_CALL_ID,
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "arguments": json.dumps({"command": compatibility_matrix.GATE_PROBE_COMMAND}),
+            },
+        }
+        base = {
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "assistant", "content": None, "tool_calls": [call]},
+            ],
+            "tools": [],
+        }
+
+        with self.assertRaisesRegex(
+            compatibility_matrix.MatrixError, "did not receive one correlated runtime shell-tool result",
+        ):
+            compatibility_matrix._gate_probe_action(base)
+
+        mismatched = {
+            **base,
+            "messages": [
+                *base["messages"],
+                {"role": "tool", "tool_call_id": "different-call", "content": "actual refusal"},
+            ],
+        }
+        with self.assertRaisesRegex(
+            compatibility_matrix.MatrixError, "did not receive one correlated runtime shell-tool result",
+        ):
+            compatibility_matrix._gate_probe_action(mismatched)
+
+        with self.assertRaisesRegex(
+            compatibility_matrix.MatrixError, "without a compatible bash tool",
+        ):
+            compatibility_matrix._gate_probe_action({
+                "messages": [{"role": "system", "content": prompt}], "tools": [],
+            })
+
+    def test_runtime_catalog_model_is_discovered_and_served_by_the_loopback_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
+            with socket.socket() as reserve:
+                reserve.bind(("127.0.0.1", 0))
+                fixture.model_port = reserve.getsockname()[1]
+            fixture.model_requests = []
+            fixture.selected_release_id = 449379583
+            fixture.model_origin = {
+                "scheme": "http", "host": "127.0.0.1", "port": fixture.model_port, "basePath": "/v1",
+            }
+            fixture.active_turn_started_at = None
+            fixture.model_server = None
+            fixture.model_thread = None
+
+            with mock.patch.object(compatibility_matrix, "_require_loopback_listener"):
+                fixture._start_model_server()
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{fixture.model_port}/v1/models", timeout=5,
+                ) as response:
+                    models = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(response.status, 200)
+                self.assertIn("qwen3.5-35b", {item["id"] for item in models["data"]})
+
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{fixture.model_port}/v1/chat/completions",
+                    data=json.dumps({"model": "qwen3.5-35b", "stream": False}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    completion = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(response.status, 200)
+                self.assertEqual(completion["model"], "qwen3.5-35b")
+            finally:
+                fixture.model_server.shutdown()
+                fixture.model_server.server_close()
+                fixture.model_thread.join(timeout=5)
+
+        self.assertEqual(fixture.model_requests[1]["model"], "qwen3.5-35b")
+        observation = compatibility_matrix._model_request_observations(fixture.model_requests)
+        self.assertEqual(observation["requests"][1]["model"], "qwen3.5-35b")
+        self.assertNotIn("body", json.dumps(observation))
+
     def test_model_preflight_matches_valid_completion_recorded_by_fixture_server(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

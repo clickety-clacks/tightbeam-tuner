@@ -41,6 +41,18 @@ class MatrixError(RuntimeError):
         self.diagnostics = diagnostics
 
 
+# The packaged runtime's keyless local-openai path uses this catalog model in
+# both published releases. The separate Pi preflight model remains a fixture
+# model used only to validate the loopback endpoint before the runtime boots.
+RUNTIME_LOCAL_PROVIDER = "spark"
+RUNTIME_LOCAL_MODEL = "qwen3.5-35b"
+RUNTIME_LOCAL_MODEL_ROUTE = f"{RUNTIME_LOCAL_PROVIDER}/{RUNTIME_LOCAL_MODEL}"
+FIXTURE_MODEL_IDS = frozenset({"tuner-fixture", RUNTIME_LOCAL_MODEL})
+GATE_PROBE_COMMAND = "tightbeam-gate-probe"
+GATE_PROBE_MARKER = "[gate: tightbeam-probe]"
+GATE_PROBE_TOOL_CALL_ID = "call-tuner-gate-probe"
+
+
 class _WebSocket:
     """Small RFC 6455 text client for the published runtime's supported /ws API."""
 
@@ -474,15 +486,113 @@ def _model_request_observations(requests: list[dict[str, Any]]) -> dict[str, Any
                 "path": item.get("path"),
                 "origin": item.get("origin"),
                 "releaseId": item.get("releaseId"),
-                **({"model": "tuner-fixture"} if item.get("model") == "tuner-fixture" else {}),
+                **({"model": item["model"]} if item.get("model") in FIXTURE_MODEL_IDS else {}),
                 "stream": item.get("stream"),
                 "responseStatus": item.get("responseStatus"),
                 "responseCompleted": item.get("responseCompleted") is True,
                 "elapsedMsAfterHumanPost": item.get("elapsedMsAfterHumanPost"),
+                **({"fixtureInteraction": item["fixtureInteraction"]} if item.get("fixtureInteraction") in {
+                    "gate-probe-tool-call", "gate-probe-marker-returned", "gate-probe-result-without-marker",
+                    "gate-probe-tool-unavailable",
+                } else {}),
             }
             for item in requests
         ],
     }
+
+
+def _gate_probe_action(payload: dict[str, Any]) -> dict[str, Any] | None:
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return None
+
+    def message_text(message: dict[str, Any]) -> str:
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "\n".join(
+                str(part.get("text", ""))
+                for part in content if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
+        return ""
+
+    probe_prompt_index = next((
+        index for index in range(len(messages) - 1, -1, -1)
+        if isinstance(messages[index], dict)
+        and messages[index].get("role") in {"system", "developer", "user"}
+        and GATE_PROBE_COMMAND in message_text(messages[index])
+    ), None)
+    if probe_prompt_index is None:
+        return None
+
+    probe_messages = messages[probe_prompt_index + 1:]
+    tool_calls = [
+        (index, call)
+        for index, message in enumerate(probe_messages)
+        if isinstance(message, dict) and message.get("role") == "assistant"
+        and isinstance(message.get("tool_calls"), list)
+        for call in message["tool_calls"]
+    ]
+    tool_results = [
+        (index, message)
+        for index, message in enumerate(probe_messages)
+        if isinstance(message, dict) and message.get("role") == "tool"
+    ]
+
+    if tool_calls:
+        if len(tool_calls) != 1:
+            raise MatrixError("local model fixture received an ambiguous runtime shell-tool call")
+        call_index, call = tool_calls[0]
+        function = call.get("function") if isinstance(call, dict) else None
+        raw_arguments = function.get("arguments") if isinstance(function, dict) else None
+        try:
+            arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else None
+        except json.JSONDecodeError as error:
+            raise MatrixError("local model fixture received malformed runtime shell-tool arguments") from error
+        call_id = call.get("id") if isinstance(call, dict) else None
+        if (
+            call_id != GATE_PROBE_TOOL_CALL_ID
+            or not isinstance(function, dict) or function.get("name") != "bash"
+            or arguments != {"command": GATE_PROBE_COMMAND}
+        ):
+            raise MatrixError("local model fixture received an unsupported runtime shell-tool call")
+
+        matching_results = [
+            (index, message) for index, message in tool_results
+            if message.get("tool_call_id") == call_id
+        ]
+        if len(tool_results) != 1 or len(matching_results) != 1 or matching_results[0][0] <= call_index:
+            raise MatrixError("local model fixture did not receive one correlated runtime shell-tool result")
+        tool_result = message_text(matching_results[0][1])
+        has_marker = GATE_PROBE_MARKER in tool_result
+        return {
+            "kind": "tool-result",
+            "content": tool_result,
+            "observedMarker": has_marker,
+        }
+
+    if tool_results:
+        raise MatrixError("local model fixture received an uncorrelated runtime shell-tool result")
+
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(function, dict) or function.get("name") != "bash":
+                continue
+            parameters = function.get("parameters")
+            properties = parameters.get("properties") if isinstance(parameters, dict) else None
+            command_schema = properties.get("command") if isinstance(properties, dict) else None
+            if isinstance(command_schema, dict) and command_schema.get("type") == "string":
+                return {
+                    "kind": "tool-call",
+                    "name": "bash",
+                    "toolCallId": GATE_PROBE_TOOL_CALL_ID,
+                    "arguments": {"command": GATE_PROBE_COMMAND},
+                }
+
+    raise MatrixError("local model fixture received the runtime gate prompt without a compatible bash tool")
 
 
 def _safe_lifecycle_label(value: Any) -> str | None:
@@ -1281,7 +1391,10 @@ class LocalRuntimeFixture:
                     return
                 self._send(200, {
                     "object": "list",
-                    "data": [{"id": "tuner-fixture", "object": "model", "created": 1, "owned_by": "local"}],
+                    "data": [
+                        {"id": model_id, "object": "model", "created": 1, "owned_by": "local"}
+                        for model_id in sorted(FIXTURE_MODEL_IDS)
+                    ],
                 })
 
             def do_POST(self) -> None:
@@ -1291,25 +1404,83 @@ class LocalRuntimeFixture:
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     value = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(value, dict) or value.get("model") != "tuner-fixture":
+                    if not isinstance(value, dict) or value.get("model") not in FIXTURE_MODEL_IDS:
                         raise ValueError
                 except (ValueError, json.JSONDecodeError):
                     self._send(400, {"error": {"message": "invalid fixture request", "type": "invalid_request_error"}})
                     return
                 request_observation = self.request_observation
+                model_id = str(value["model"])
                 if request_observation is not None:
                     # Store only the validated fixture label, never the request body.
-                    request_observation["model"] = "tuner-fixture"
+                    request_observation["model"] = model_id
                     request_observation["stream"] = value.get("stream") is True
+                try:
+                    gate_action = _gate_probe_action(value)
+                except MatrixError:
+                    if request_observation is not None:
+                        request_observation["fixtureInteraction"] = "gate-probe-tool-unavailable"
+                    self._send(422, {
+                        "error": {
+                            "message": "local fixture cannot satisfy the runtime shell-tool probe",
+                            "type": "invalid_request_error",
+                        }
+                    })
+                    return
+
+                tool_call_id = (
+                    gate_action["toolCallId"] if gate_action is not None
+                    and gate_action["kind"] == "tool-call" else GATE_PROBE_TOOL_CALL_ID
+                )
+                if gate_action is not None and gate_action["kind"] == "tool-call":
+                    if request_observation is not None:
+                        request_observation["fixtureInteraction"] = "gate-probe-tool-call"
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": gate_action["name"],
+                                "arguments": json.dumps(gate_action["arguments"], separators=(",", ":")),
+                            },
+                        }],
+                    }
+                    finish_reason = "tool_calls"
+                elif gate_action is not None:
+                    has_marker = gate_action["observedMarker"] is True
+                    if request_observation is not None:
+                        request_observation["fixtureInteraction"] = (
+                            "gate-probe-marker-returned" if has_marker else "gate-probe-result-without-marker"
+                        )
+                    assistant_message = {"role": "assistant", "content": gate_action["content"]}
+                    finish_reason = "stop"
+                else:
+                    assistant_message = {"role": "assistant", "content": "Tightbeam compatibility fixture reply."}
+                    finish_reason = "stop"
                 completion_id = "chatcmpl-tuner-fixture"
                 if value.get("stream") is True:
+                    delta = (
+                        {"tool_calls": [{
+                            "index": 0,
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": gate_action["name"],
+                                "arguments": json.dumps(gate_action["arguments"], separators=(",", ":")),
+                            },
+                        }]}
+                        if gate_action is not None and gate_action["kind"] == "tool-call"
+                        else {"content": assistant_message["content"]}
+                    )
                     chunks = [
                         {"id": completion_id, "object": "chat.completion.chunk", "created": 1,
-                         "model": "tuner-fixture", "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]},
+                         "model": model_id, "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]},
                         {"id": completion_id, "object": "chat.completion.chunk", "created": 1,
-                         "model": "tuner-fixture", "choices": [{"index": 0, "delta": {"content": "Tightbeam compatibility fixture reply."}, "finish_reason": None}]},
+                         "model": model_id, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
                         {"id": completion_id, "object": "chat.completion.chunk", "created": 1,
-                         "model": "tuner-fixture", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                         "model": model_id, "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]},
                     ]
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
@@ -1328,8 +1499,8 @@ class LocalRuntimeFixture:
                     "id": completion_id,
                     "object": "chat.completion",
                     "created": 1,
-                    "model": "tuner-fixture",
-                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "Tightbeam compatibility fixture reply."}, "finish_reason": "stop"}],
+                    "model": model_id,
+                    "choices": [{"index": 0, "message": assistant_message, "finish_reason": finish_reason}],
                 })
 
         self.model_server = http.server.ThreadingHTTPServer(("127.0.0.1", self.model_port), Handler)
@@ -1433,6 +1604,28 @@ class LocalRuntimeFixture:
         lines.append(f"EXPECTED_COMMAND={_shell_quote(expected)}")
         self.current_runtime_env.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self.current_runtime_env.chmod(0o600)
+
+    def _model_endpoint(self) -> str:
+        return (
+            f"{self.model_origin['scheme']}://{self.model_origin['host']}:{self.model_origin['port']}"
+            f"{self.model_origin['basePath']}"
+        )
+
+    def _onboard_runtime_local_model(self, release_id: int, user_id: str) -> None:
+        # Use the published CLI's supported, keyless local-openai provider.
+        self._cli(
+            release_id, "onboard", "local-openai", "--name", RUNTIME_LOCAL_PROVIDER,
+            "--endpoint", self._model_endpoint(), "--as-user", user_id,
+            timeout=300,
+        )
+
+    def _spawn_runtime_pi_child(self, release_id: int, user_id: str) -> None:
+        self._cli(
+            release_id, "spawn", "--as-user", user_id,
+            "--display", "Tuner compatibility reply", "--harness", "pi",
+            "--model", RUNTIME_LOCAL_MODEL_ROUTE, "--key", "tuner-ci-" + secrets.token_hex(12),
+            timeout=300,
+        )
 
     def _start_sshd(self) -> None:
         if self.sshd_process is not None and self.sshd_process.poll() is None:
@@ -1810,15 +2003,8 @@ class LocalRuntimeFixture:
             self.runtime_identities[release_id] = context
             self._write_current_runtime_env(release_id, str(context["userId"]))
             self._connect_device(str(context["deviceToken"]), str(context["deviceId"]))
-            endpoint = (
-                f"{self.model_origin['scheme']}://{self.model_origin['host']}:{self.model_origin['port']}"
-                f"{self.model_origin['basePath']}"
-            )
-            self._cli(
-                release_id, "onboard", "local-openai", "--name", "tunerci",
-                "--endpoint", endpoint, "--as-user", str(context["userId"]),
-                timeout=300,
-            )
+            endpoint = self._model_endpoint()
+            self._onboard_runtime_local_model(release_id, str(context["userId"]))
             preflight = _preflight_pi_model(
                 self.pi_bin / "pi",
                 home=self.home_root,
@@ -1833,12 +2019,7 @@ class LocalRuntimeFixture:
                 "releaseId": release_id,
                 **preflight,
             })
-            self._cli(
-                release_id, "spawn", "--as-user", str(context["userId"]),
-                "--display", "Tuner compatibility reply", "--harness", "pi",
-                "--model", "tunerci/tuner-fixture", "--key", "tuner-ci-" + secrets.token_hex(12),
-                timeout=300,
-            )
+            self._spawn_runtime_pi_child(release_id, str(context["userId"]))
             work_item = self._parse_cli_json(self._cli(
                 release_id, "work-item-create", "--as-user", str(context["userId"]),
                 "--title", "Tuner compatibility topology", "--key", "tuner-ci-" + secrets.token_hex(12),
