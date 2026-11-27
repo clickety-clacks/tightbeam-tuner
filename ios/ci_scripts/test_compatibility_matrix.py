@@ -299,6 +299,37 @@ class SimulatorCleanupTests(unittest.TestCase):
 
 
 class SimulatorBootRetryTests(unittest.TestCase):
+    def test_simulator_create_failure_retains_xcrun_output(self):
+        create_error = "simctl create failed: selected iOS runtime is unavailable"
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(compatibility_matrix, "_require_command", return_value="xcrun"),
+            mock.patch.object(
+                compatibility_matrix.subprocess,
+                "run",
+                return_value=compatibility_matrix.subprocess.CompletedProcess([], 1, create_error),
+            ) as subprocess_run,
+            self.assertRaisesRegex(
+                compatibility_matrix.MatrixError,
+                "diagnostic retained as simulator-create.log",
+            ),
+        ):
+            diagnostic_directory = Path(temporary) / "simulator-diagnostics"
+            compatibility_matrix._create_simulator(
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                86,
+                diagnostic_directory=diagnostic_directory,
+            )
+            self.assertEqual(
+                subprocess_run.call_args.args[0][1:3],
+                ["simctl", "create"],
+            )
+            self.assertEqual(
+                (diagnostic_directory / "simulator-create.log").read_text(encoding="utf-8"),
+                create_error,
+            )
+
     def test_retries_boot_once_after_bounded_readiness_failure(self):
         udid = "12345678-1234-1234-1234-123456789012"
         responses = [

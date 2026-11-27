@@ -1761,9 +1761,25 @@ def _create_simulator(
 ) -> tuple[str, str]:
     simctl = _require_command("xcrun")
     name = f"TunerCompatibility-{build_number}"
-    udid = _checked([simctl, "simctl", "create", name, device_type, runtime_id], timeout=60).strip()
+    create_log = (
+        diagnostic_directory / "simulator-create.log"
+        if diagnostic_directory is not None else None
+    )
+    if create_log is not None:
+        create_log.parent.mkdir(parents=True, exist_ok=True)
+    create_output = _checked(
+        [simctl, "simctl", "create", name, device_type, runtime_id],
+        timeout=60,
+        diagnostic_path=create_log,
+    )
+    udid = create_output.strip()
     if not re.fullmatch(r"[0-9A-Fa-f-]{36}", udid):
         _safe_fail("Xcode did not return an exact owned simulator identifier")
+    if create_log is not None:
+        # A successful create returns the simulator UDID. Keep the success
+        # marker, not the identifier, in the CI artifact.
+        create_log.write_text("simulator create succeeded; identifier redacted\n", encoding="utf-8")
+        create_log.chmod(0o600)
     redactions = {udid}
     failures: list[str] = []
     for attempt in (1, 2):
