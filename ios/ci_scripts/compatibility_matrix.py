@@ -295,6 +295,18 @@ def _preflight_pi_harness(
     diagnostic_path: Path | None = None,
     diagnostic_redactions: set[str] | None = None,
 ) -> str:
+    version = _pi_locked_version(package_lock)
+    version_output = _checked(
+        [str(pi_cli), "--version"], env=env, cwd=cwd, timeout=120,
+        diagnostic_path=diagnostic_path,
+        diagnostic_redactions=diagnostic_redactions,
+    )
+    if not re.search(rf"(?<![0-9]){re.escape(version)}(?![0-9])", version_output):
+        _safe_fail("pinned Pi harness executable did not report its locked version")
+    return version
+
+
+def _pi_locked_version(package_lock: Path) -> str:
     try:
         lock = json.loads(package_lock.read_text(encoding="utf-8"))
         package = lock.get("packages", {}).get("node_modules/@mariozechner/pi-coding-agent", {})
@@ -303,13 +315,6 @@ def _preflight_pi_harness(
         raise MatrixError("pinned Pi harness package lock is unavailable") from error
     if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
         _safe_fail("pinned Pi harness package version is invalid")
-    version_output = _checked(
-        [str(pi_cli), "--version"], env=env, cwd=cwd, timeout=120,
-        diagnostic_path=diagnostic_path,
-        diagnostic_redactions=diagnostic_redactions,
-    )
-    if not re.search(rf"(?<![0-9]){re.escape(version)}(?![0-9])", version_output):
-        _safe_fail("pinned Pi harness executable did not report its locked version")
     return version
 
 
@@ -359,6 +364,7 @@ def _preflight_pi_model(
         for request in observed_requests
     )
     prompt = "Reply with a short greeting for the Tuner compatibility fixture."
+    started_at = time.monotonic_ns()
     try:
         result = _run(
             [
@@ -392,6 +398,7 @@ def _preflight_pi_model(
         "endpointScope": "loopback",
         "requestObserved": True,
         "diagnosticLog": diagnostic_path.name,
+        "elapsedMs": int((time.monotonic_ns() - started_at) / 1_000_000),
     }
 
 
@@ -611,6 +618,54 @@ def _safe_lifecycle_label(value: Any) -> str | None:
     return value
 
 
+def _first_pi_invocation_summary(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in records:
+        invocation_id = item.get("invocationId")
+        if not isinstance(invocation_id, str):
+            continue
+        group = grouped.setdefault(invocation_id, {})
+        if item.get("event") == "start":
+            group["start"] = item
+        elif item.get("event") == "finish":
+            group["finish"] = item
+    for group in grouped.values():
+        start = group.get("start")
+        if not isinstance(start, dict):
+            continue
+        finish = group.get("finish")
+        summary: dict[str, Any] = {
+            "argvShape": start.get("argvShape", []),
+            "argumentCount": start.get("argumentCount"),
+            "finished": isinstance(finish, dict),
+        }
+        if isinstance(finish, dict):
+            summary["elapsedMs"] = finish.get("elapsedMs")
+            summary["result"] = finish.get("result")
+            if isinstance(finish.get("exitCode"), int):
+                summary["exitCode"] = finish["exitCode"]
+        return summary
+    return None
+
+
+def _gateway_readiness_has_completed_pi(probe: dict[str, Any]) -> bool:
+    readiness = probe.get("gatewayReadiness")
+    if not isinstance(readiness, dict) or readiness.get("status") != "ready":
+        return False
+    invocation = readiness.get("piReadinessInvocation")
+    return (
+        isinstance(invocation, dict)
+        and invocation.get("finished") is True
+        and invocation.get("exitCode") == 0
+    )
+
+
+def _ensure_native_probe_succeeded(report: dict[str, Any]) -> None:
+    if report.get("status") != "completed":
+        failure = report.get("failure")
+        _safe_fail(failure if isinstance(failure, str) and failure else "focused native runtime probe failed")
+
+
 def _dispatch_frame_observation(frame: dict[str, Any], client_message_id: str) -> dict[str, Any]:
     """Keep only protocol labels and correlations; never persist frame payloads or identifiers."""
     result: dict[str, Any] = {"event": "websocket_frame"}
@@ -633,6 +688,10 @@ def _dispatch_frame_observation(frame: dict[str, Any], client_message_id: str) -
     for name in ("id", "clientMessageId", "replyToClientMessageId"):
         if name in frame:
             result[f"{name}Matches"] = frame.get(name) == client_message_id
+    terminal = frame.get("terminal_output")
+    if isinstance(terminal, dict) and isinstance(terminal.get("data"), str):
+        result["terminalOutputPresent"] = True
+        result["terminalOutputBytes"] = len(terminal["data"].encode("utf-8"))
     return result
 
 
@@ -669,14 +728,14 @@ def _append_turn_lifecycle(
         item["elapsedMsAfterHumanPost"] = elapsed_ms
     for name, value in fields.items():
         if name in {"sequence", "httpStatus", "frameType", "state", "status", "phase", "role"}:
-            if name in {"sequence", "httpStatus"}:
+            if name in {"sequence", "httpStatus", "terminalOutputBytes"}:
                 if isinstance(value, int) and not isinstance(value, bool):
                     item[name] = value
             else:
                 label = _safe_lifecycle_label(value)
                 if label is not None:
                     item[name] = label
-        elif name.endswith("Matches") or name == "turnIncludesHuman":
+        elif name.endswith("Matches") or name in {"turnIncludesHuman", "terminalOutputPresent"}:
             if isinstance(value, bool):
                 item[name] = value
     lifecycle.append(item)
@@ -1167,12 +1226,19 @@ class LocalRuntimeFixture:
         package_paths: dict[int, Path],
         *,
         capture_turn_diagnostics: bool = False,
+        native_probe: bool = False,
     ):
         self.root = root
         self.pair = pair
         self.by_id = {item.release_id: item for item in pair}
         self.package_paths = package_paths
         self.capture_turn_diagnostics = capture_turn_diagnostics
+        self.native_probe = native_probe
+        self.native_probe_phase: str | None = None
+        self.pi_command: Path | None = None
+        self.gateway_started_monotonic_ns: int | None = None
+        self.spawn_results: dict[int, dict[str, Any]] = {}
+        self.native_readiness: list[dict[str, Any]] = []
         self.gateway_port = _available_port()
         self.ssh_port = _available_port()
         while self.ssh_port == self.gateway_port:
@@ -1204,6 +1270,7 @@ class LocalRuntimeFixture:
             "basePath": "/v1",
         }
         self.active_turn_started_at: float | None = None
+        self.current_gateway_readiness: dict[str, Any] | None = None
         self.state_root = root / "runtime-state"
         self.state_root.mkdir(parents=True, exist_ok=True)
         self.runtime_base: dict[int, Path] = {}
@@ -1279,17 +1346,22 @@ class LocalRuntimeFixture:
         pi_cli = self.pi_bin / "pi"
         if not pi_cli.is_file():
             _safe_fail("pinned Pi harness package did not install its executable")
-        # Exercise the real executable before booting the simulator so a slow
-        # first launch cannot fail the runtime's readiness probe only under
-        # Xcode test load.
-        self.pi_harness_version = _preflight_pi_harness(
-            pi_cli,
-            self.pi_package / "package-lock.json",
-            env=self.base_environment,
-            cwd=self.root,
-            diagnostic_path=self.root / "command-logs" / "pi-version.log",
-            diagnostic_redactions={str(self.root), str(self.home_root)},
-        )
+        self.pi_harness_version = _pi_locked_version(self.pi_package / "package-lock.json")
+        if self.native_probe:
+            self.pi_command = self._install_pi_invocation_recorder(pi_cli)
+        else:
+            # Exercise the real executable before booting the simulator so a slow
+            # first launch cannot fail the runtime's readiness probe only under
+            # Xcode test load.
+            self.pi_harness_version = _preflight_pi_harness(
+                pi_cli,
+                self.pi_package / "package-lock.json",
+                env=self.base_environment,
+                cwd=self.root,
+                diagnostic_path=self.root / "command-logs" / "pi-version.log",
+                diagnostic_redactions={str(self.root), str(self.home_root)},
+            )
+            self.pi_command = pi_cli
         self.authorized_keys.write_text("", encoding="utf-8")
         self.authorized_keys.chmod(0o600)
         self.ssh_host_key_line = _checked([
@@ -1300,6 +1372,331 @@ class LocalRuntimeFixture:
         if not self.ssh_host_key_line.startswith("ssh-ed25519 "):
             _safe_fail("isolated SSH fixture did not create an Ed25519 host key")
         self._write_current_runtime_env(None)
+
+    def _install_pi_invocation_recorder(self, pi_cli: Path) -> Path:
+        """Wrap only this fixture's PATH lookup and record safe process timing."""
+        wrapper = self.root / "pi-invocation-recorder.py"
+        source = '''#!/usr/bin/env python3
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+REAL_PI = __REAL_PI__
+
+def safe_shape(arguments):
+    result = []
+    expect_value = False
+    value_optional = {"--version", "--help", "--print", "--no-session", "--no-tools", "--json"}
+    for argument in arguments:
+        if expect_value:
+            result.append("<value>")
+            expect_value = False
+            continue
+        if argument.startswith("--"):
+            name = argument.split("=", 1)[0][:64]
+            result.append(name)
+            if "=" not in argument and name not in value_optional:
+                expect_value = True
+        elif argument.startswith("-"):
+            result.append(argument[:16])
+        else:
+            result.append("<arg>")
+    return result
+
+log_path = os.environ.get("TUNER_NATIVE_PROBE_LOG")
+if not log_path:
+    os.execv(REAL_PI, [REAL_PI, *sys.argv[1:]])
+
+phase = os.environ.get("TUNER_NATIVE_PROBE_PHASE", "unspecified")
+invocation_id = str(time.monotonic_ns())
+started = time.monotonic_ns()
+
+def record(event, **fields):
+    entry = {"event": event, "invocationId": invocation_id, "phase": phase, **fields}
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    fd = os.open(log_path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as output:
+            output.write(json.dumps(entry, sort_keys=True) + "\\n")
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+record("start", startedMonotonicNs=started, argumentCount=len(sys.argv) - 1,
+       argvShape=safe_shape(sys.argv[1:]))
+try:
+    child = subprocess.Popen([REAL_PI, *sys.argv[1:]])
+except OSError as error:
+    record("finish", finishedMonotonicNs=time.monotonic_ns(), elapsedMs=int((time.monotonic_ns() - started) / 1_000_000),
+           result="launch_error", errorType=type(error).__name__)
+    raise SystemExit(127)
+
+def forward(signum, _frame):
+    if child.poll() is None:
+        try:
+            child.send_signal(signum)
+        except OSError:
+            pass
+
+for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(signum, forward)
+return_code = child.wait()
+finished = time.monotonic_ns()
+record("finish", finishedMonotonicNs=finished, elapsedMs=int((finished - started) / 1_000_000),
+       result="exited", exitCode=return_code)
+raise SystemExit(return_code if 0 <= return_code <= 255 else 1)
+'''.replace("__REAL_PI__", json.dumps(str(pi_cli)))
+        wrapper.write_text(source, encoding="utf-8")
+        wrapper.chmod(0o700)
+        command = self.shim_dir / "pi"
+        command.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(wrapper))} \"$@\"\n", encoding="utf-8")
+        command.chmod(0o700)
+        return command
+
+    def set_native_probe_phase(self, release_id: int, phase: str, *, fresh_base: bool) -> None:
+        if not self.native_probe:
+            raise MatrixError("native probe phase requested outside native diagnostic mode")
+        self._stop_gateway()
+        self.selected_release_id = None
+        self.native_probe_phase = phase
+        if fresh_base:
+            self.runtime_identities.pop(release_id, None)
+            base = self.state_root / str(release_id) / phase / "base"
+            base.mkdir(parents=True, exist_ok=True)
+            self.runtime_base[release_id] = base
+        self._write_current_runtime_env(release_id, "")
+
+    def pi_invocation_records(self, release_id: int, phase: str) -> list[dict[str, Any]]:
+        path = self.root / "command-logs" / f"pi-process-{release_id}-{phase}.log"
+        if not path.is_file():
+            return []
+        records: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                records.append(item)
+        return records
+
+    def pi_invocations_after(
+        self, release_id: int, phase: str, started_monotonic_ns: int | None
+    ) -> list[dict[str, Any]]:
+        if started_monotonic_ns is None:
+            return []
+        grouped: dict[str, dict[str, Any]] = {}
+        for item in self.pi_invocation_records(release_id, phase):
+            invocation_id = item.get("invocationId")
+            if not isinstance(invocation_id, str):
+                continue
+            group = grouped.setdefault(invocation_id, {})
+            if item.get("event") == "start":
+                group["start"] = item
+            elif item.get("event") == "finish":
+                group["finish"] = item
+        output: list[dict[str, Any]] = []
+        for group in grouped.values():
+            start = group.get("start")
+            if not isinstance(start, dict) or start.get("startedMonotonicNs", 0) < started_monotonic_ns:
+                continue
+            finish = group.get("finish")
+            result: dict[str, Any] = {
+                "argvShape": start.get("argvShape", []),
+                "argumentCount": start.get("argumentCount"),
+                "processFinished": isinstance(finish, dict),
+            }
+            if isinstance(finish, dict):
+                result["elapsedMs"] = finish.get("elapsedMs")
+                result["result"] = finish.get("result")
+                if isinstance(finish.get("exitCode"), int):
+                    result["exitCode"] = finish["exitCode"]
+            output.append(result)
+        return output
+
+    def adapter_log_observation(self, release_id: int) -> list[dict[str, Any]]:
+        base = self.runtime_base.get(release_id)
+        if base is None or not base.exists():
+            return []
+        observations: list[dict[str, Any]] = []
+        for path in sorted(base.rglob("*adapter-pi*.stderr.log")):
+            if not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            folded = content.casefold()
+            category = "shared" if "shared" in path.name else "session"
+            observations.append({
+                "category": category,
+                "byteCount": path.stat().st_size,
+                "lineCount": len(content.splitlines()),
+                "containsTimeout": "timeout" in folded or "timed out" in folded,
+                "containsFailure": "failed" in folded or "error" in folded,
+                "containsCompletion": "complete" in folded or "terminal" in folded,
+            })
+        return observations
+
+    def gateway_readiness_observation(self, release_id: int, *, wait_seconds: float = 15) -> dict[str, Any]:
+        phase = self.native_probe_phase or "default"
+        log_path = self.root / f"gateway-{release_id}-{phase}.log" if self.native_probe else self.root / f"gateway-{release_id}.log"
+        started = time.monotonic()
+        events: list[dict[str, Any]] = []
+        stable_since: float | None = None
+        readiness_observed_monotonic_ns: int | None = None
+        last_status: str | None = None
+        while time.monotonic() - started < wait_seconds:
+            try:
+                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                lines = []
+            events = []
+            for line in lines:
+                match = re.search(r"(?P<status>READY|NOT READY): (?P<text>.*)", line)
+                if not match:
+                    continue
+                status = match.group("status").casefold().replace(" ", "_")
+                text = match.group("text")
+                reason = None
+                if "timed out after 2000ms" in line:
+                    reason = "pi_cli_timeout_2000ms"
+                elif "READY: pi" in line:
+                    reason = "pi_ready"
+                elif "NOT READY" in line:
+                    reason = "no_harness_ready"
+                events.append({"status": status, "reason": reason})
+            if events and events[-1]["status"] != last_status:
+                last_status = events[-1]["status"]
+                if last_status == "ready":
+                    readiness_observed_monotonic_ns = time.monotonic_ns()
+            if events:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                if time.monotonic() - stable_since >= 1.0:
+                    break
+            else:
+                stable_since = None
+            time.sleep(0.1)
+        observed = {
+            "releaseId": release_id,
+            "phase": phase,
+            "status": events[-1]["status"] if events else "not_observed",
+            "reason": events[-1]["reason"] if events else None,
+            "readinessEvents": events,
+            "gatewayLaunchElapsedMs": (
+                int((time.monotonic_ns() - self.gateway_started_monotonic_ns) / 1_000_000)
+                if self.gateway_started_monotonic_ns is not None else None
+            ),
+            "gatewayReadyEventObservedElapsedMs": (
+                int((readiness_observed_monotonic_ns - self.gateway_started_monotonic_ns) / 1_000_000)
+                if readiness_observed_monotonic_ns is not None and self.gateway_started_monotonic_ns is not None
+                else None
+            ),
+            "piInvocations": [
+                {
+                    **item,
+                    **({
+                        "elapsedMsAfterGatewayLaunch": int(
+                            (item["startedMonotonicNs"] - self.gateway_started_monotonic_ns) / 1_000_000
+                        )
+                    } if item.get("event") == "start" and isinstance(item.get("startedMonotonicNs"), int)
+                        and self.gateway_started_monotonic_ns is not None else {}),
+                }
+                for item in self.pi_invocation_records(release_id, phase)
+            ],
+            "listenerBindings": sorted(self.gateway_listener_bindings.get(release_id, set())),
+        }
+        self.native_readiness.append(observed)
+        return observed
+
+    def run_native_readiness_probe(
+        self, release: release_hook.PublishedRelease, *, warm: bool
+    ) -> dict[str, Any]:
+        label = "4082-warm" if warm else "4082-cold"
+        self.set_native_probe_phase(release.release_id, f"{label}-gateway", fresh_base=True)
+        standalone: dict[str, Any] | None = None
+        if warm:
+            self.set_native_probe_phase(release.release_id, f"{label}-standalone-version", fresh_base=False)
+            version_started = time.monotonic_ns()
+            version_status = "passed"
+            try:
+                _preflight_pi_harness(
+                    self.pi_command or (self.pi_bin / "pi"),
+                    self.pi_package / "package-lock.json",
+                    env=self._runtime_env(release.release_id),
+                    cwd=self.root,
+                    diagnostic_path=self.root / "command-logs" / f"pi-standalone-version-{release.release_id}.log",
+                    diagnostic_redactions=self.diagnostic_redaction_values(),
+                )
+            except MatrixError:
+                version_status = "failed"
+            version_elapsed_ms = int((time.monotonic_ns() - version_started) / 1_000_000)
+            standalone = {
+                "versionPreflightStatus": version_status,
+                "versionPreflightElapsedMs": version_elapsed_ms,
+                "versionInvocations": self.pi_invocation_records(
+                    release.release_id, f"{label}-standalone-version"
+                ),
+            }
+            self.set_native_probe_phase(release.release_id, f"{label}-gateway", fresh_base=False)
+
+        launch_failure: str | None = None
+        try:
+            self._start_gateway(release.release_id)
+        except (MatrixError, OSError, release_hook.ReleaseHookError) as error:
+            launch_failure = _failure_message(error)
+        readiness = (
+            self.gateway_readiness_observation(release.release_id)
+            if self.gateway_process is not None and self.gateway_process.poll() is None
+            else {
+                "releaseId": release.release_id,
+                "phase": self.native_probe_phase,
+                "status": "gateway_start_failed",
+                "reason": launch_failure or "gateway_process_not_running",
+                "piInvocations": self.pi_invocation_records(
+                    release.release_id, self.native_probe_phase or "unspecified"
+                ),
+                "listenerBindings": sorted(self.gateway_listener_bindings.get(release.release_id, set())),
+            }
+        )
+        gateway_invocation = _first_pi_invocation_summary(readiness.get("piInvocations", []))
+        readiness["piReadinessInvocation"] = gateway_invocation
+        if standalone is not None:
+            standalone_invocation = _first_pi_invocation_summary(standalone.get("versionInvocations", []))
+            standalone["piVersionInvocation"] = standalone_invocation
+            same_invocation = bool(
+                standalone_invocation is not None
+                and gateway_invocation is not None
+                and standalone_invocation.get("argvShape") == gateway_invocation.get("argvShape")
+            )
+            standalone["sameInvocationShapeAsGatewayReadiness"] = same_invocation
+            standalone_elapsed = standalone_invocation.get("elapsedMs") if standalone_invocation else None
+            gateway_elapsed = gateway_invocation.get("elapsedMs") if gateway_invocation else None
+            standalone["timingComparison"] = {
+                "sameInvocationShape": same_invocation,
+                "standalonePiElapsedMs": standalone_elapsed,
+                "gatewayPiElapsedMs": gateway_elapsed,
+                "gatewayReadyEventObservedElapsedMs": readiness.get("gatewayReadyEventObservedElapsedMs"),
+                "readinessInvocationObserved": gateway_invocation is not None,
+            }
+        result = {
+            "releaseId": release.release_id,
+            "tag": release.tag,
+            "assetId": release.asset_id,
+            "assetDigest": release.asset_digest,
+            "mode": "warm" if warm else "cold",
+            "standalone": standalone,
+            "gatewayReadiness": readiness,
+        }
+        self._stop_gateway()
+        return result
 
     def _prepare_sshd(self) -> None:
         sshd = _require_command("sshd")
@@ -1591,6 +1988,12 @@ class LocalRuntimeFixture:
         env["TIGHTBEAM_PORT"] = str(actual_port)
         env["TIGHTBEAM_ADVERTISED_URL"] = f"http://127.0.0.1:{actual_port}"
         env["PATH"] = os.pathsep.join([str(self.shim_dir), str(self.pi_bin), str(cli.parent), env["PATH"]])
+        if self.native_probe:
+            phase = self.native_probe_phase or "unspecified"
+            env["TUNER_NATIVE_PROBE_PHASE"] = phase
+            env["TUNER_NATIVE_PROBE_LOG"] = str(
+                self.root / "command-logs" / f"pi-process-{release_id}-{phase}.log"
+            )
         return env
 
     def _write_current_runtime_env(self, release_id: int | None, user_id: str = "") -> None:
@@ -1631,12 +2034,25 @@ class LocalRuntimeFixture:
         )
 
     def _spawn_runtime_pi_child(self, release_id: int, user_id: str) -> None:
-        self._cli(
+        if not hasattr(self, "spawn_results"):
+            self.spawn_results = {}
+        output = self._cli(
             release_id, "spawn", "--as-user", user_id,
             "--display", "Tuner compatibility reply", "--harness", "pi",
             "--model", RUNTIME_LOCAL_MODEL_ROUTE, "--key", "tuner-ci-" + secrets.token_hex(12),
             timeout=300,
         )
+        try:
+            response = self._parse_cli_json(output, "Pi child spawn")
+        except MatrixError:
+            self.spawn_results[release_id] = {"spawnAccepted": True, "runningStatus": "unreported"}
+        else:
+            status = _safe_lifecycle_label(response.get("runningStatus"))
+            self.spawn_results[release_id] = {
+                "spawnAccepted": True,
+                "runningStatus": status or "unreported",
+                "sessionIdentityReturned": isinstance(response.get("sessionKey"), str),
+            }
 
     def _start_sshd(self) -> None:
         if self.sshd_process is not None and self.sshd_process.poll() is None:
@@ -1670,7 +2086,12 @@ class LocalRuntimeFixture:
         base_dir.parent.mkdir(parents=True, exist_ok=True)
         identity = self.runtime_identities.get(release_id, {})
         self._write_current_runtime_env(release_id, str(identity.get("userId", "")))
-        self.gateway_log = (self.root / f"gateway-{release_id}.log").open("ab")
+        log_name = (
+            f"gateway-{release_id}-{self.native_probe_phase or 'unspecified'}.log"
+            if self.native_probe else f"gateway-{release_id}.log"
+        )
+        self.gateway_log = (self.root / log_name).open("ab")
+        self.gateway_started_monotonic_ns = time.monotonic_ns()
         self.gateway_process = subprocess.Popen(
             [str(gateway_binary)],
             cwd=self.root,
@@ -1803,6 +2224,7 @@ class LocalRuntimeFixture:
         acknowledged = False
         model_request_start = len(self.model_requests)
         human_post_started_at: float | None = None
+        human_post_started_monotonic_ns: int | None = None
         observation: dict[str, Any] | None = None
         if self.capture_turn_diagnostics:
             observation = {
@@ -1836,7 +2258,10 @@ class LocalRuntimeFixture:
                 observation["postState"] = "authenticated"
                 _append_turn_lifecycle(observation, "websocket_authenticated")
             human_post_started_at = time.monotonic()
+            human_post_started_monotonic_ns = time.monotonic_ns()
             self.active_turn_started_at = human_post_started_at
+            if observation is not None:
+                observation["humanPostStartedMonotonicNs"] = human_post_started_monotonic_ns
             ws.send_json({
                 "type": "message",
                 "id": message_id,
@@ -1883,6 +2308,29 @@ class LocalRuntimeFixture:
                 )
             finally:
                 self.active_turn_started_at = None
+                if self.native_probe and observation is not None and self.selected_release_id is not None:
+                    phase = self.native_probe_phase or "unspecified"
+                    invocations = self.pi_invocations_after(
+                        self.selected_release_id, phase, human_post_started_monotonic_ns
+                    )
+                    lifecycle = observation.get("dispatchLifecycle", [])
+                    terminal_events = [
+                        item for item in lifecycle if isinstance(item, dict) and (
+                            item.get("frameType") in {"terminal_output", "turn_completed", "turn_failed"}
+                            or item.get("status") in {"completed", "failed", "error"}
+                        )
+                    ]
+                    observation["piProcessInvocationsAfterHumanPost"] = invocations
+                    observation["adapterOutcome"] = {
+                        "piProcessStartedAfterHumanPost": bool(invocations),
+                        "piProcessFinishedCount": sum(item.get("processFinished") is True for item in invocations),
+                        "piExitCodes": [item["exitCode"] for item in invocations if isinstance(item.get("exitCode"), int)],
+                        "terminalEventObserved": bool(terminal_events),
+                        "terminalEventCount": len(terminal_events),
+                        "correlatedReplyPersisted": bool(
+                            observation.get("replyCorrelation", {}).get("correlatedReplyFound")
+                        ),
+                    }
 
     def preflight_runtime_reply(self, release: release_hook.PublishedRelease) -> bool:
         """Exercise the real packaged runtime's seeded human turn before simulator load."""
@@ -1892,6 +2340,8 @@ class LocalRuntimeFixture:
             if self.selected_release_id != release.release_id or self.gateway_process is None:
                 self._stop_gateway()
                 self._start_gateway(release.release_id)
+            if self.native_probe:
+                self.current_gateway_readiness = self.gateway_readiness_observation(release.release_id)
             seed = self._seed_replies(release.release_id)
         except (MatrixError, release_hook.ReleaseHookError, release_notes.ReleaseNoteError, OSError) as error:
             self.runtime_turn_probes.append({
@@ -1910,6 +2360,11 @@ class LocalRuntimeFixture:
                 "modelRequests": _model_request_observations(self.model_requests[request_start:]),
                 "ordinaryTurn": self.active_turn_observation or {"postState": "not_reached"},
             })
+            if self.native_probe:
+                probe = self.runtime_turn_probes[-1]
+                probe["gatewayReadiness"] = self.current_gateway_readiness
+                probe["spawn"] = self.spawn_results.get(release.release_id)
+                probe["adapterLogs"] = self.adapter_log_observation(release.release_id)
             return False
 
         self.runtime_turn_probes.append({
@@ -1929,6 +2384,11 @@ class LocalRuntimeFixture:
             "assistantSequence": seed["assistantSequence"],
             "readMarker": seed["initialReadMarker"],
         })
+        if self.native_probe:
+            probe = self.runtime_turn_probes[-1]
+            probe["gatewayReadiness"] = self.current_gateway_readiness
+            probe["spawn"] = self.spawn_results.get(release.release_id)
+            probe["adapterLogs"] = self.adapter_log_observation(release.release_id)
         return True
 
     def _messages(self, gateway_url: str, session_key: str) -> list[dict[str, Any]]:
@@ -2017,7 +2477,7 @@ class LocalRuntimeFixture:
             endpoint = self._model_endpoint()
             self._onboard_runtime_local_model(release_id, str(context["userId"]))
             preflight = _preflight_pi_model(
-                self.pi_bin / "pi",
+                self.pi_command or (self.pi_bin / "pi"),
                 home=self.home_root,
                 endpoint=endpoint,
                 env=self._runtime_env(release_id),
@@ -2916,6 +3376,198 @@ def _probe_published_runtime_turns(
     return failures
 
 
+def run_native_probe(*, planned_build_number: int | None, diagnostic_output: Path | None) -> None:
+    """Run only the focused published-runtime probe; never create a simulator or archive."""
+    _validate_execution_mode(diagnostic=True)
+    if (
+        not isinstance(planned_build_number, int) or isinstance(planned_build_number, bool)
+        or planned_build_number <= 0 or diagnostic_output is None
+    ):
+        _safe_fail("native probe requires an explicit planned build number and report output path")
+    for tool in ("git", "ssh-keygen", "sshd", "lsof", "node", "npm"):
+        _require_command(tool)
+    run_id = os.environ.get("CI_BUILD_ID", "")
+    repo_value = os.environ.get("CI_PRIMARY_REPOSITORY_PATH")
+    scratch_value = os.environ.get("CI_DERIVED_DATA_PATH")
+    if not run_id or not repo_value or not scratch_value:
+        _safe_fail("native probe CI identity or scratch path is unavailable")
+    repo = Path(repo_value).resolve()
+    scratch = Path(scratch_value).resolve()
+    if not repo.is_dir() or not scratch.is_dir():
+        _safe_fail("native probe repository or scratch path is unavailable")
+    report_path = diagnostic_output.expanduser().resolve()
+    root = scratch / "TunerNativeProbeResults"
+    root.mkdir(parents=True, exist_ok=True)
+    repo_root = Path(tempfile.mkdtemp(prefix="tuner-native-probe-", dir=str(root))).resolve()
+    if os.path.commonpath([str(root), str(repo_root)]) != str(root):
+        _safe_fail("native probe scratch escaped the configured runner temporary directory")
+
+    report: dict[str, Any] = {
+        "schemaVersion": 1,
+        "runMode": "native-probe",
+        "status": "failed",
+        "failure": "focused native probe did not complete",
+        "nativeProbeOnly": True,
+        "simulatorCreated": False,
+        "archiveOrUpload": "not-run",
+    }
+    fixture: LocalRuntimeFixture | None = None
+    cleanup_failures: list[str] = []
+    try:
+        baseline_source = _baseline_input(SCRIPT_DIR / "ReleaseBaseline.json")
+        candidate = _prepare_candidate(repo, baseline_source, planned_build_number)
+        candidate["attempt"] = release_notes.XCODE_CLOUD_ATTEMPT_NUMBER
+        report["candidate"] = candidate
+        report["baselineReference"] = {
+            "buildNumber": baseline_source["buildNumber"],
+            "sourceCommit": baseline_source["sourceCommit"],
+            "sourceTree": baseline_source["sourceTree"],
+            "scheme": baseline_source["scheme"],
+            "configuration": baseline_source["configuration"],
+        }
+
+        pair = release_hook.resolve_published_pair("darwin-aarch64")
+        report["releases"] = [
+            {
+                "id": item.release_id,
+                "tag": item.tag,
+                "assetId": item.asset_id,
+                "assetName": item.asset_name,
+                "assetDigest": item.asset_digest,
+            }
+            for item in pair
+        ]
+        downloads = repo_root / "published-assets"
+        packages: dict[int, Path] = {}
+        for item in pair:
+            archive = release_hook.download_verified_release_asset(item, downloads / item.asset_name)
+            extracted = repo_root / "runtime-assets" / str(item.release_id)
+            release_hook.extract_release_package(archive, extracted)
+            packages[item.release_id] = extracted
+
+        fixture = LocalRuntimeFixture(
+            repo_root,
+            pair,
+            packages,
+            capture_turn_diagnostics=True,
+            native_probe=True,
+        )
+        report["fixture"] = {
+            "piHarnessVersion": fixture.pi_harness_version,
+            "modelOrigin": dict(fixture.model_origin),
+            "modelEndpointScope": "loopback-only",
+            "runtimeClientAddress": "loopback-advertised-url",
+            "runtimeStateScope": "fresh-disposable-per-package-base",
+        }
+
+        older_release = next((item for item in pair if item.tag.endswith("+4082")), None)
+        newer_release = next((item for item in pair if item.tag.endswith("+4304")), None)
+        if older_release is None or newer_release is None:
+            _safe_fail("native focused probe requires the verified 0.1.15+4082 and 0.1.16+4304 release pair")
+
+        readiness_probes: list[dict[str, Any]] = []
+        for warm in (False, True):
+            try:
+                readiness_probes.append(fixture.run_native_readiness_probe(older_release, warm=warm))
+            except (MatrixError, OSError, release_hook.ReleaseHookError) as error:
+                readiness_probes.append({
+                    "releaseId": older_release.release_id,
+                    "tag": older_release.tag,
+                    "mode": "warm" if warm else "cold",
+                    "status": "probe_failed",
+                    "failure": _failure_message(error),
+                })
+        if len(readiness_probes) == 2:
+            cold_timing = readiness_probes[0].get("gatewayReadiness", {}).get("piReadinessInvocation", {})
+            warm_standalone = readiness_probes[1].get("standalone", {}).get("piVersionInvocation", {})
+            warm_timing = readiness_probes[1].get("gatewayReadiness", {}).get("piReadinessInvocation", {})
+            cold_elapsed = cold_timing.get("elapsedMs") if isinstance(cold_timing, dict) else None
+            warm_elapsed = warm_timing.get("elapsedMs") if isinstance(warm_timing, dict) else None
+            readiness_probes[1]["controlledWarmComparison"] = {
+                "standaloneMatchesWarmGatewayInvocation": (
+                    readiness_probes[1].get("standalone", {}).get("sameInvocationShapeAsGatewayReadiness") is True
+                ),
+                "coldGatewayPiElapsedMs": cold_elapsed,
+                "warmStandalonePiElapsedMs": (
+                    warm_standalone.get("elapsedMs") if isinstance(warm_standalone, dict) else None
+                ),
+                "warmGatewayPiElapsedMs": warm_elapsed,
+                "gatewayPiElapsedDeltaMs": (
+                    warm_elapsed - cold_elapsed
+                    if isinstance(cold_elapsed, int) and isinstance(warm_elapsed, int) else None
+                ),
+                "coldReadyEventObservedElapsedMs": readiness_probes[0].get("gatewayReadiness", {}).get(
+                    "gatewayReadyEventObservedElapsedMs"
+                ),
+                "warmReadyEventObservedElapsedMs": readiness_probes[1].get("gatewayReadiness", {}).get(
+                    "gatewayReadyEventObservedElapsedMs"
+                ),
+            }
+        report["4082Readiness"] = readiness_probes
+        _write_json(report_path, report)
+
+        fixture.set_native_probe_phase(newer_release.release_id, "4304-ordinary-turn", fresh_base=True)
+        ordinary_passed = fixture.preflight_runtime_reply(newer_release)
+        report["4304OrdinaryTurn"] = fixture.runtime_turn_probes[-1] if fixture.runtime_turn_probes else {
+            "releaseId": newer_release.release_id,
+            "tag": newer_release.tag,
+            "status": "not_observed",
+        }
+        report["runtimeGatewayListeners"] = fixture.gateway_listener_report()
+        report["nativeProbePassed"] = (
+            all(_gateway_readiness_has_completed_pi(item) for item in readiness_probes)
+            and readiness_probes[1].get("standalone", {}).get("versionPreflightStatus") == "passed"
+            and readiness_probes[1].get("controlledWarmComparison", {}).get(
+                "standaloneMatchesWarmGatewayInvocation"
+            ) is True
+            and ordinary_passed
+        )
+        report["status"] = "completed" if report["nativeProbePassed"] else "failed"
+        report["failure"] = None if report["nativeProbePassed"] else (
+            "focused native probe observed unresolved 4082 readiness or 4304 ordinary-turn behavior"
+        )
+        _write_json(report_path, report)
+        if not report["nativeProbePassed"]:
+            _safe_fail(str(report["failure"]))
+    except (MatrixError, release_hook.ReleaseHookError, release_notes.ReleaseNoteError) as error:
+        if report.get("status") != "completed":
+            report["status"] = "failed"
+            report["failure"] = _failure_message(error)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+        report["status"] = "failed"
+        report["failure"] = _failure_message(error)
+    finally:
+        if fixture is not None:
+            try:
+                fixture.close()
+            except Exception:
+                cleanup_failures.append("local fixture")
+            if os.environ.get("CI_DIAGNOSTIC_ARTIFACTS_PATH"):
+                try:
+                    report.setdefault("diagnosticArtifacts", {})["runtimeLogs"] = _retain_runtime_diagnostics(fixture) or []
+                except Exception:
+                    cleanup_failures.append("runtime log retention")
+        elif os.environ.get("CI_DIAGNOSTIC_ARTIFACTS_PATH"):
+            try:
+                report.setdefault("diagnosticArtifacts", {})["fixtureStartupLogs"] = _retain_fixture_startup_diagnostics(repo_root)
+            except Exception:
+                cleanup_failures.append("fixture startup log retention")
+        try:
+            _remove_task_scratch(repo_root)
+        except OSError:
+            cleanup_failures.append("task scratch")
+        if cleanup_failures:
+            report["cleanupFailures"] = cleanup_failures
+            report["status"] = "failed"
+            report["failure"] = "native probe could not retain evidence or clean task scratch"
+        try:
+            _write_json(report_path, report)
+        except OSError as error:
+            raise MatrixError("native probe could not write its report") from error
+    _ensure_native_probe_succeeded(report)
+    print("Focused native runtime probe passed; no simulator was created")
+
+
 def run_matrix(
     *, diagnostic: bool = False,
     planned_build_number: int | None = None,
@@ -3380,6 +4032,11 @@ def run_matrix(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--native-probe",
+        action="store_true",
+        help="run focused published-runtime diagnostics without Xcode simulator or archive phases",
+    )
+    parser.add_argument(
         "--diagnostic",
         action="store_true",
         help="run the isolated matrix without archive tag or reviewer-status gates; archive actions are refused",
@@ -3395,16 +4052,26 @@ def main(argv: list[str] | None = None) -> int:
         help="path to the captured diagnostic report; required with --diagnostic",
     )
     args = parser.parse_args(argv)
+    if args.native_probe and args.diagnostic:
+        parser.error("--native-probe and --diagnostic are separate non-distributing modes")
+    if args.native_probe and (args.build_number is None or args.output is None):
+        parser.error("--native-probe requires --build-number and --output")
     if args.diagnostic and (args.build_number is None or args.output is None):
         parser.error("--diagnostic requires --build-number and --output")
-    if not args.diagnostic and (args.build_number is not None or args.output is not None):
+    if not args.diagnostic and not args.native_probe and (args.build_number is not None or args.output is not None):
         parser.error("--build-number and --output are diagnostic-only")
     try:
-        run_matrix(
-            diagnostic=args.diagnostic,
-            planned_build_number=args.build_number,
-            diagnostic_output=args.output,
-        )
+        if args.native_probe:
+            run_native_probe(
+                planned_build_number=args.build_number,
+                diagnostic_output=args.output,
+            )
+        else:
+            run_matrix(
+                diagnostic=args.diagnostic,
+                planned_build_number=args.build_number,
+                diagnostic_output=args.output,
+            )
     except (MatrixError, release_hook.ReleaseHookError, release_notes.ReleaseNoteError) as error:
         print(f"release compatibility matrix: {error}", file=sys.stderr)
         return 1

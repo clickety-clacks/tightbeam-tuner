@@ -69,10 +69,9 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Record toolchain and simulator runtimes
+      - name: Record CI toolchain
         run: |
           xcodebuild -version
-          xcrun simctl list runtimes
 
       - name: Read the planned release build number
         run: |
@@ -86,7 +85,7 @@ jobs:
           fi
           echo "PLANNED_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
 
-      - name: Run non-distributing compatibility and detector matrix
+      - name: Run focused published-runtime native probe
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -96,7 +95,7 @@ jobs:
           mkdir -p "$CI_DERIVED_DATA_PATH"
           mkdir -p "$CI_DIAGNOSTIC_ARTIFACTS_PATH"
           python3 ios/ci_scripts/compatibility_matrix.py \
-            --diagnostic \
+            --native-probe \
             --build-number "$PLANNED_BUILD_NUMBER" \
             --output "$REPORT_PATH"
 

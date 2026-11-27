@@ -1233,6 +1233,117 @@ class DiagnosticArgumentsTests(unittest.TestCase):
             compatibility_matrix.main(["--diagnostic"])
         self.assertEqual(error.exception.code, 2)
 
+    def test_native_probe_requires_build_number_and_captured_report_path(self):
+        with self.assertRaises(SystemExit) as error:
+            compatibility_matrix.main(["--native-probe"])
+        self.assertEqual(error.exception.code, 2)
+
+    def test_native_probe_passes_explicit_plan_and_output_to_native_runner(self):
+        output = Path("/tmp/native-report.json")
+        with mock.patch.object(compatibility_matrix, "run_native_probe") as run:
+            self.assertEqual(
+                compatibility_matrix.main(
+                    ["--native-probe", "--build-number", "86", "--output", str(output)]
+                ),
+                0,
+            )
+        run.assert_called_once_with(planned_build_number=86, diagnostic_output=output)
+
+    def test_native_probe_cannot_be_combined_with_full_diagnostic(self):
+        with self.assertRaises(SystemExit) as error:
+            compatibility_matrix.main([
+                "--native-probe", "--diagnostic", "--build-number", "86", "--output", "/tmp/report.json",
+            ])
+        self.assertEqual(error.exception.code, 2)
+
+    def test_pi_recorder_logs_timing_and_safe_argument_shape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shim_dir = root / "shim"
+            shim_dir.mkdir()
+            fake_pi = root / "pi"
+            fake_pi.write_text("#!/bin/sh\nprintf 'pi 0.73.1\\n'\n", encoding="utf-8")
+            fake_pi.chmod(0o700)
+            fixture = object.__new__(compatibility_matrix.LocalRuntimeFixture)
+            fixture.root = root
+            fixture.shim_dir = shim_dir
+            command = fixture._install_pi_invocation_recorder(fake_pi)
+            log = root / "pi-process.log"
+            env = {
+                **compatibility_matrix.os.environ,
+                "TUNER_NATIVE_PROBE_LOG": str(log),
+                "TUNER_NATIVE_PROBE_PHASE": "4082-standalone-version",
+            }
+            result = compatibility_matrix.subprocess.run(
+                [str(command), "--version"], env=env, text=True, capture_output=True, check=False
+            )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("0.73.1", result.stdout)
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([item["event"] for item in records], ["start", "finish"])
+            self.assertEqual(records[0]["argvShape"], ["--version"])
+            self.assertEqual(records[1]["exitCode"], 0)
+            self.assertGreaterEqual(records[1]["elapsedMs"], 0)
+
+    def test_native_probe_pairs_gateway_and_standalone_pi_timing_without_raw_args(self):
+        records = [
+            {
+                "event": "start", "invocationId": "one", "argvShape": ["--version"],
+                "argumentCount": 1, "startedMonotonicNs": 1,
+            },
+            {
+                "event": "finish", "invocationId": "one", "elapsedMs": 12,
+                "result": "exited", "exitCode": 0,
+            },
+        ]
+
+        summary = compatibility_matrix._first_pi_invocation_summary(records)
+
+        self.assertEqual(summary, {
+            "argvShape": ["--version"],
+            "argumentCount": 1,
+            "finished": True,
+            "elapsedMs": 12,
+            "result": "exited",
+            "exitCode": 0,
+        })
+        self.assertNotIn("startedMonotonicNs", summary)
+        self.assertNotIn("invocationId", summary)
+
+    def test_native_probe_requires_observed_successful_gateway_pi_process(self):
+        self.assertTrue(compatibility_matrix._gateway_readiness_has_completed_pi({
+            "gatewayReadiness": {
+                "status": "ready",
+                "piReadinessInvocation": {"finished": True, "exitCode": 0},
+            },
+        }))
+        self.assertFalse(compatibility_matrix._gateway_readiness_has_completed_pi({
+            "gatewayReadiness": {"status": "ready", "piReadinessInvocation": None},
+        }))
+        self.assertFalse(compatibility_matrix._gateway_readiness_has_completed_pi({
+            "gatewayReadiness": {
+                "status": "ready",
+                "piReadinessInvocation": {"finished": False, "exitCode": None},
+            },
+        }))
+
+    def test_native_probe_report_failure_sets_a_failing_ci_exit(self):
+        with self.assertRaises(compatibility_matrix.MatrixError):
+            compatibility_matrix._ensure_native_probe_succeeded({
+                "status": "failed",
+                "failure": "focused probe did not observe a correlated reply",
+            })
+        compatibility_matrix._ensure_native_probe_succeeded({"status": "completed"})
+
+    def test_native_probe_workflow_uses_hosted_route_without_simulator_command(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/release-note-gate.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("runs-on: xcode-27", workflow)
+        self.assertIn("--native-probe", workflow)
+        self.assertNotIn("simctl", workflow)
+
     def test_diagnostic_passes_explicit_plan_and_output_to_matrix(self):
         output = Path("/tmp/compatibility-report.json")
         with mock.patch.object(compatibility_matrix, "run_matrix") as run:
