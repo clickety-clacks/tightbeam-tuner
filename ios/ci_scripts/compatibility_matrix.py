@@ -777,9 +777,16 @@ def _device_and_runtime(minimum_os: str) -> tuple[str, str, str, str]:
     ]
     minimum = release_hook._os_version(minimum_os)
     eligible = [item for item in ios_runtimes if release_hook._os_version(item["version"]) >= minimum]
-    if not eligible or not types:
+    generic_runtimes = [
+        item for item in eligible
+        if re.fullmatch(r"iOS(?:-\d+)+", item["identifier"].rsplit(".", 1)[-1])
+    ]
+    if not generic_runtimes or not types:
         _safe_fail("Xcode has no available iPhone simulator runtime at the Tuner deployment target")
-    selected_runtime = max(eligible, key=lambda item: release_hook._os_version(item["version"]))
+    selected_runtime = max(
+        generic_runtimes,
+        key=lambda item: release_hook._os_version(item["version"]),
+    )
     compatible_types = [
         item for item in types
         if isinstance(item.get("minRuntimeVersionString"), str)
@@ -788,7 +795,13 @@ def _device_and_runtime(minimum_os: str) -> tuple[str, str, str, str]:
     ]
     if not compatible_types:
         _safe_fail("Xcode has no iPhone simulator type compatible with the selected runtime")
-    selected_type = sorted(compatible_types, key=lambda item: item["name"])[0]
+    selected_type = max(
+        compatible_types,
+        key=lambda item: (
+            release_hook._os_version(item["minRuntimeVersionString"]),
+            item["name"],
+        ),
+    )
     return (
         str(selected_type["identifier"]), str(selected_type["name"]),
         str(selected_runtime["identifier"]), "iOS " + str(selected_runtime["version"]),

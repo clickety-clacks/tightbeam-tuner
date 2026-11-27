@@ -10,9 +10,9 @@ import compatibility_matrix
 
 
 class SimulatorSelectionTests(unittest.TestCase):
-    def _selection(self, runtime_platform):
-        devicetypes = {
-            "devicetypes": [
+    def _selection(self, runtime_platform, runtimes=None, devicetypes=None):
+        device_payload = {
+            "devicetypes": devicetypes or [
                 {
                     "productFamily": "iPhone",
                     "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
@@ -22,8 +22,8 @@ class SimulatorSelectionTests(unittest.TestCase):
                 }
             ]
         }
-        runtimes = {
-            "runtimes": [
+        runtime_payload = {
+            "runtimes": runtimes or [
                 {
                     "isAvailable": True,
                     "platform": runtime_platform,
@@ -37,7 +37,7 @@ class SimulatorSelectionTests(unittest.TestCase):
             mock.patch.object(
                 compatibility_matrix,
                 "_checked",
-                side_effect=[json.dumps(devicetypes), json.dumps(runtimes)],
+                side_effect=[json.dumps(device_payload), json.dumps(runtime_payload)],
             ),
         ):
             return compatibility_matrix._device_and_runtime("26.0")
@@ -55,6 +55,86 @@ class SimulatorSelectionTests(unittest.TestCase):
 
     def test_keeps_compatibility_with_older_simulator_platform_label(self):
         self.assertEqual(self._selection("iOS Simulator")[1], "iPhone 17 Pro")
+
+    def test_prefers_generic_runtime_and_newest_compatible_device_type(self):
+        selected = self._selection(
+            "iOS",
+            runtimes=[
+                {
+                    "isAvailable": True,
+                    "platform": "iOS",
+                    "version": "27.2",
+                    "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4",
+                },
+                {
+                    "isAvailable": True,
+                    "platform": "iOS",
+                    "version": "27.2",
+                    "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+                },
+            ],
+            devicetypes=[
+                {
+                    "productFamily": "iPhone",
+                    "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-11",
+                    "name": "iPhone 11",
+                    "minRuntimeVersion": 1310720,
+                    "minRuntimeVersionString": "20.0.0",
+                },
+                {
+                    "productFamily": "iPhone",
+                    "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                    "name": "iPhone 17 Pro",
+                    "minRuntimeVersion": 1769472,
+                    "minRuntimeVersionString": "27.0.0",
+                },
+            ],
+        )
+        self.assertEqual(
+            selected,
+            (
+                "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                "iPhone 17 Pro",
+                "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+                "iOS 27.2",
+            ),
+        )
+
+    def test_rejects_only_device_specific_runtime_variants(self):
+        runtimes = {
+            "runtimes": [
+                {
+                    "isAvailable": True,
+                    "platform": "iOS",
+                    "version": "27.2",
+                    "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4",
+                }
+            ]
+        }
+        devicetypes = {
+            "devicetypes": [
+                {
+                    "productFamily": "iPhone",
+                    "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                    "name": "iPhone 17 Pro",
+                    "minRuntimeVersion": 1769472,
+                    "minRuntimeVersionString": "27.0.0",
+                }
+            ]
+        }
+        with (
+            mock.patch.object(compatibility_matrix, "_require_command", return_value="xcrun"),
+            mock.patch.object(
+                compatibility_matrix,
+                "_checked",
+                side_effect=[json.dumps(devicetypes), json.dumps(runtimes)],
+            ),
+            self.assertRaisesRegex(
+                compatibility_matrix.MatrixError,
+                "no available iPhone simulator runtime at the Tuner deployment target",
+            ),
+        ):
+            compatibility_matrix._device_and_runtime("26.0")
 
 
 class LoopbackListenerTests(unittest.TestCase):
