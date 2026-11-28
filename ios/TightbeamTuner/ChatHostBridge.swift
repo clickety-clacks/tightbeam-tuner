@@ -1,15 +1,17 @@
+import CoreFoundation
 import Foundation
 import Observation
 import WebKit
 
 /// Tuner's side of Chat's host composer seam (version 1).
 ///
-/// When `ready` advertises `capabilities.attachments`, a send may carry photos as
-/// `attachments: [{filename, mimeType, data}]` with base64 bytes; Chat prepares and uploads them
-/// as it does for its own composer. A retry resends the same text and the same attachments.
+/// When `ready` advertises `capabilities.attachments`, a send may carry JPEG/PNG photos as
+/// `attachments: [{filename, mimeType, data}]` with base64 bytes. Non-photo files additionally
+/// require `capabilities.fileAttachments == 1`. Chat prepares and uploads these bytes as it does
+/// for its own composer. A retry resends the same text and ordered attachments.
 ///
 /// Tuner also opts into Chat's optional `restore-requested` event. When the person taps Edit and
-/// resend on a prompt whose turn failed, Chat hands Tuner that prompt's words (and photos it still
+/// resend on a prompt whose turn failed, Chat hands Tuner that prompt's words (and attachments it still
 /// holds); Tuner puts them in the native composer for editing and sends them only when the person
 /// taps Send, as a new message.
 ///
@@ -41,7 +43,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         case interrupted
     }
 
-    /// A photo (later, any file) the user added to a message. Chat prepares and uploads the bytes
+    /// A photo or file the user added to a message. Chat prepares and uploads the bytes
     /// exactly as it does for a pick in its own composer.
     struct Attachment: Equatable, Identifiable {
         let id: UUID
@@ -88,6 +90,45 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         func accepts(_ mimeType: String) -> Bool {
             mediaTypes?.contains(mimeType) ?? true
         }
+
+        /// Validates the complete ordered manifest before send or restore. JPEG/PNG continue to use
+        /// Chat's existing photo capability; other types need the separately negotiated file
+        /// capability. Limits apply to photos and files together.
+        func validationFailure(for attachments: [Attachment], fileAttachmentsEnabled: Bool) -> String? {
+            if let maxAttachments, attachments.count > maxAttachments { return "attachment-count-limit" }
+
+            var totalBytes = 0
+            for attachment in attachments {
+                guard !attachment.filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      !attachment.data.isEmpty,
+                      Self.isValidMIMEType(attachment.mimeType) else { return "invalid-attachment" }
+
+                let isExistingPhoto = attachment.mimeType == "image/jpeg" || attachment.mimeType == "image/png"
+                if isExistingPhoto {
+                    guard accepts(attachment.mimeType) else { return "attachment-unavailable" }
+                } else {
+                    guard fileAttachmentsEnabled else { return "attachment-unavailable" }
+                }
+
+                if let maxAttachmentBytes, attachment.data.count > maxAttachmentBytes {
+                    return "attachment-byte-limit"
+                }
+                let (sum, overflow) = totalBytes.addingReportingOverflow(attachment.data.count)
+                guard !overflow else { return "attachment-byte-limit" }
+                totalBytes = sum
+            }
+            if let maxTotalBytes, totalBytes > maxTotalBytes { return "attachment-byte-limit" }
+            return nil
+        }
+
+        fileprivate static func isValidMIMEType(_ value: String) -> Bool {
+            let parts = value.split(separator: "/", omittingEmptySubsequences: false)
+            guard parts.count == 2 else { return false }
+            let tokenCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$&^_.+-")
+            return parts.allSatisfy { part in
+                !part.isEmpty && part.unicodeScalars.allSatisfy(tokenCharacters.contains)
+            }
+        }
     }
 
     /// The message the user last sent, or an earlier one that did not send. Kept until it is
@@ -113,7 +154,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         let messageId: String
         let content: String
         let attachments: [Attachment]
-        /// The prompt had photos that cannot come back.
+        /// The prompt had attachments that cannot come back as a complete manifest.
         let attachmentsUnavailable: Bool
     }
 
@@ -142,8 +183,10 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
     private(set) var unavailableReason: String?
     private(set) var overlayOpen = false
     private(set) var lastCommandJSON: String?
-    /// Set while the current lifetime accepts attachments; nil hides the attachment controls.
+    /// Set when `ready` advertises existing photo support and upload limits; nil keeps its action disabled.
     private(set) var attachmentCapabilities: AttachmentCapabilities?
+    /// File support is separately negotiated and scoped to the current Chat lifetime.
+    private(set) var fileAttachmentsEnabled = false
     private var reconnectSupported = false
     private var reportedConnection: Connection?
     /// True once Chat has reported `reconnecting` for `stalledReconnectDelay` without a change.
@@ -232,6 +275,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
           if (!handler) return;
           window.\(Self.declarationName) = Object.freeze({
             versions: [1],
+            capabilities: Object.freeze({ fileAttachments: Object.freeze([1]) }),
             events: Object.freeze({ 'restore-requested': Object.freeze([1]) }),
             onEvent: (event) => handler.postMessage(JSON.stringify(event))
           });
@@ -320,6 +364,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         unavailableReason = nil
         overlayOpen = false
         reconnectSupported = false
+        fileAttachmentsEnabled = false
         reportedConnection = nil
         attachmentCapabilities = nil
         clearReconnectStall()
@@ -376,42 +421,76 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
         return content + "\n\n" + draft
     }
 
-    /// Puts a failed-turn prompt into the draft for editing. Photos the current lifetime accepts go
-    /// ahead of those already in the draft, once each. Returns true when any of the prompt's photos
-    /// could not come back.
+    /// Puts a failed-turn prompt into the draft for editing. The complete manifest goes ahead of
+    /// items already in the draft, in order. Returns true when it could not be fully restored.
     static func apply(_ request: RestoreRequest, draft: inout String, attachments: inout [Attachment],
-                      accepts: (String) -> Bool) -> Bool {
+                      accepts: ([Attachment]) -> Bool) -> Bool {
         draft = Self.draft(draft, restoring: request.content)
-        var lost = request.attachmentsUnavailable
-        var restored: [Attachment] = []
-        for photo in request.attachments {
-            guard accepts(photo.mimeType) else { lost = true; continue }
-            if !(attachments + restored).contains(where: { $0.sameContent(as: photo) }) { restored.append(photo) }
+        guard !request.attachmentsUnavailable, !request.attachments.isEmpty else {
+            return request.attachmentsUnavailable
         }
-        if !restored.isEmpty { attachments = restored + attachments }
-        return lost
+
+        let manifest = request.attachments
+        let alreadyRestored = attachments.count >= manifest.count
+            && zip(attachments.prefix(manifest.count), manifest).allSatisfy { $0.sameContent(as: $1) }
+        guard !alreadyRestored else { return false }
+        guard accepts(manifest + attachments) else { return true }
+        attachments = manifest + attachments
+        return false
+    }
+
+    /// Whether Chat's current ready lifetime can accept this complete ordered manifest.
+    func acceptsAttachments(_ attachments: [Attachment]) -> Bool {
+        attachmentValidationFailure(for: attachments) == nil
+    }
+
+    private func attachmentValidationFailure(for attachments: [Attachment]) -> String? {
+        guard !attachments.isEmpty else { return nil }
+        guard let attachmentCapabilities else { return "attachment-unavailable" }
+        return attachmentCapabilities.validationFailure(for: attachments,
+                                                        fileAttachmentsEnabled: fileAttachmentsEnabled)
+    }
+
+    private static func supportsFileAttachments(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }
+        return number.doubleValue == 1
     }
 
     /// Sends `text` and any attachments as a user action. The same text and attachments after a
     /// failed, uncertain, or interrupted result is a retry of that message; any edit is a new message.
     func send(_ text: String, attachments: [Attachment] = []) {
         guard case let .ready(lifetimeId, sessionKey) = phase, !isSending,
-              attachments.isEmpty || attachmentCapabilities != nil,
               !attachments.isEmpty || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // Preserve the legacy photo-only no-op when Chat does not advertise its attachment limits.
+        // A non-photo item is a new capability request and must fail visibly instead of dropping.
+        if attachmentCapabilities == nil, !attachments.isEmpty,
+           attachments.allSatisfy({ $0.mimeType == "image/jpeg" || $0.mimeType == "image/png" }) {
+            return
+        }
+        let localFailure = attachmentValidationFailure(for: attachments)
         var retry = false
         var correlationId = "c_" + UUID().uuidString.lowercased()
         if let previous = outgoing, Self.isSameMessage(previous, content: text, attachments: attachments) {
             switch previous.status {
             case .failed, .uncertain, .interrupted:
-                correlationId = previous.correlationId
-                retry = previous.attempted
+                // A rejected, never-attempted local manifest is a new submission state. Give it a
+                // fresh correlation so SwiftUI observes the failure and returns the draft intact.
+                if localFailure == nil || previous.attempted {
+                    correlationId = previous.correlationId
+                    retry = previous.attempted
+                }
             default: break
             }
         }
         if let previous = outgoing, previous.status == .accepted { earlier.append(previous) }
         outgoing = Outgoing(correlationId: correlationId, sessionKey: sessionKey, content: text,
                             attachments: attachments, lifetimeId: lifetimeId,
-                            attempt: nil, status: .sending, attempted: retry)
+                            attempt: nil, status: localFailure.map(Status.failed) ?? .sending, attempted: retry)
+        if let localFailure {
+            if let outgoing { outgoingObserver?(outgoing) }
+            return
+        }
         var command: [String: Any] = [
             "type": "send",
             "lifetimeId": lifetimeId,
@@ -486,12 +565,14 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
             let capabilities = event["capabilities"] as? [String: Any]
             reconnectSupported = capabilities?["reconnect"] as? Bool ?? false
             attachmentCapabilities = AttachmentCapabilities(capabilities?["attachments"])
+            fileAttachmentsEnabled = Self.supportsFileAttachments(capabilities?["fileAttachments"])
             hostComposerActive = true
             recoveryStateObserver?()
         case "unavailable":
             if let lifetimeId, case let .ready(current, _) = phase, current == lifetimeId {
                 unavailableReason = event["reason"] as? String
                 phase = .unavailable(lifetimeId: lifetimeId)
+                fileAttachmentsEnabled = false
                 recoveryStateObserver?()
             }
         case "lifetime-ended":
@@ -499,6 +580,7 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
                 unavailableReason = "lifetime-ended"
                 phase = .unavailable(lifetimeId: lifetimeId)
                 reconnectSupported = false
+                fileAttachmentsEnabled = false
                 reportedConnection = nil
                 clearReconnectStall()
                 recoveryStateObserver?()
@@ -509,16 +591,27 @@ final class ChatHostBridge: NSObject, WKScriptMessageHandler {
                   lifetimeId == current, event["sessionKey"] as? String == sessionKey,
                   let messageId = event["messageId"] as? String,
                   let content = event["content"] as? String else { return }
-            let items = event["attachments"] as? [[String: Any]] ?? []
-            let photos = items.compactMap { item -> Attachment? in
+            let rawItems = event["attachments"]
+            let parsedItems = rawItems as? [[String: Any]]
+            let items = parsedItems ?? []
+            let manifest = items.compactMap { item -> Attachment? in
                 guard let filename = item["filename"] as? String, let mimeType = item["mimeType"] as? String,
                       let base64 = item["data"] as? String, let data = Data(base64Encoded: base64),
-                      !data.isEmpty else { return nil }
+                      data.base64EncodedString() == base64,
+                      !filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      !data.isEmpty,
+                      AttachmentCapabilities.isValidMIMEType(mimeType) else { return nil }
                 return Attachment(filename: filename, mimeType: mimeType, data: data)
             }
+            let explicitlyUnavailable = event["attachmentsUnavailable"] as? Bool == true
+            let malformedContainer = rawItems != nil && parsedItems == nil
+            let invalidManifest = malformedContainer || manifest.count != items.count
+                || (!items.isEmpty && attachmentValidationFailure(for: manifest) != nil)
+            let attachmentsUnavailable = explicitlyUnavailable || invalidManifest
             pendingRestore = RestoreRequest(
-                messageId: messageId, content: content, attachments: photos,
-                attachmentsUnavailable: event["attachmentsUnavailable"] as? Bool == true || photos.count < items.count)
+                messageId: messageId, content: content,
+                attachments: attachmentsUnavailable ? [] : manifest,
+                attachmentsUnavailable: attachmentsUnavailable)
             // Chat holds a canonical row for this prompt, so a copy Tuner still keeps for retry was
             // delivered. Retiring it makes the next Send a new message instead of a retry of the failed prompt.
             if let sent = event["correlationId"] as? String {
