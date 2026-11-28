@@ -30,6 +30,9 @@ FloatingWindow {
     property bool pickerOpen: false
     property int pickerIndex: 0
     property string rosterError: ""
+    property int rosterIncompleteCount: 0
+    property int rosterRequestGeneration: 0
+    property bool rosterRequestPending: false
     property bool configured: false
     property bool settingsOpen: true
     property bool settingsKnown: false
@@ -201,8 +204,33 @@ FloatingWindow {
         settingsPane.saving = true
         settingsPane.message = "Reading agents…"
         settingsPane.messageIsError = false
-        rosterProcess.running = false
-        Qt.callLater(() => rosterProcess.running = true)
+        requestRoster()
+    }
+
+    function requestRoster() {
+        rosterRequestGeneration += 1
+        rosterRequestPending = true
+        if (!rosterProcess.running)
+            Qt.callLater(() => win.launchPendingRoster())
+    }
+
+    function launchPendingRoster() {
+        if (!rosterRequestPending || rosterProcess.running)
+            return
+        rosterRequestPending = false
+        rosterProcess.requestGeneration = rosterRequestGeneration
+        rosterProcess.running = true
+    }
+
+    function refreshRoster() {
+        if (!configured || rosterProcess.running || rosterRequestPending)
+            return
+        requestRoster()
+    }
+
+    function rosterIncompleteMessage() {
+        return "Incomplete roster: " + rosterIncompleteCount +
+            (rosterIncompleteCount === 1 ? " unreadable entry." : " unreadable entries.")
     }
 
     function saveSettings() {
@@ -307,6 +335,7 @@ FloatingWindow {
                         if (changed) {
                             win.selectedAgent = null
                             win.agents = []
+                            win.rosterIncompleteCount = 0
                             win.startRoster()
                         } else {
                             settingsPane.saving = false
@@ -355,12 +384,23 @@ FloatingWindow {
 
     Process {
         id: rosterProcess
-        command: ["python3", Quickshell.shellDir + "/scripts/roster.py"]
+        property int requestGeneration: 0
+        command: ["python3", Quickshell.shellDir + "/scripts/roster.py", String(requestGeneration)]
         running: false
+        onExited: Qt.callLater(() => win.launchPendingRoster())
         stdout: StdioCollector {
             onStreamFinished: {
+                if (rosterProcess.requestGeneration !== win.rosterRequestGeneration)
+                    return
                 try {
                     const data = JSON.parse(this.text)
+                    if (!data || typeof data !== "object" || Array.isArray(data) ||
+                            typeof data.requestId !== "string")
+                        throw new Error("Invalid roster response")
+                    if (data.requestId !== String(rosterProcess.requestGeneration))
+                        return
+                    if (data.error !== undefined && typeof data.error !== "string")
+                        throw new Error("Invalid roster response")
                     if (data.error) {
                         win.rosterError = data.error
                         if (win.connecting) {
@@ -371,7 +411,11 @@ FloatingWindow {
                             settingsPane.messageIsError = true
                         }
                     } else {
+                        if (!Array.isArray(data.agents) ||
+                                !Number.isInteger(data.incompleteCount) || data.incompleteCount < 0)
+                            throw new Error("Invalid roster response")
                         win.agents = data.agents
+                        win.rosterIncompleteCount = data.incompleteCount
                         win.rosterError = ""
                         if (win.connecting) {
                             win.connecting = false
@@ -399,7 +443,7 @@ FloatingWindow {
         interval: 30000
         repeat: true
         running: true
-        onTriggered: if (win.configured && !rosterProcess.running) rosterProcess.running = true
+        onTriggered: win.refreshRoster()
     }
 
     Item {
@@ -472,6 +516,16 @@ FloatingWindow {
                     Text { text: "AGENTS"; color: colors.secondary; font.family: colors.fontFamily; font.pixelSize: Math.round(12 * win.textScale); font.bold: true; font.letterSpacing: 1.5 }
                     Item { Layout.fillWidth: true }
                     Text { text: String(win.visibleRows.length); color: colors.infoCount; font.family: colors.fontFamily; font.pixelSize: Math.round(12 * win.textScale) }
+                }
+
+                Text {
+                    visible: win.rosterIncompleteCount > 0
+                    Layout.fillWidth: true
+                    text: win.rosterIncompleteMessage()
+                    wrapMode: Text.WordWrap
+                    color: colors.caution
+                    font.family: colors.fontFamily
+                    font.pixelSize: Math.round(12 * win.textScale)
                 }
 
                 ListView {
@@ -840,6 +894,16 @@ FloatingWindow {
                                 event.accepted = true
                             }
                         }
+                    }
+
+                    Text {
+                        visible: win.rosterIncompleteCount > 0
+                        width: parent.width
+                        text: win.rosterIncompleteMessage()
+                        wrapMode: Text.WordWrap
+                        color: colors.caution
+                        font.family: colors.fontFamily
+                        font.pixelSize: Math.round(13 * win.textScale)
                     }
 
                     Repeater {
