@@ -1,17 +1,17 @@
 {
   "version": "1.0",
-  "build": 86,
-  "date": "November 27, 2026",
+  "build": 87,
+  "date": "November 28, 2026",
   "items": [
     {
-      "symbol": "arrow.clockwise",
-      "title": "Keep Replies catch-up retryable",
-      "detail": "If a later page fails while Tuner checks read positions or searches for replies, it keeps the results it can use. An unfinished reply search stays eligible for catch-up on the next reconnect."
+      "symbol": "iphone",
+      "title": "iOS feature changes",
+      "detail": "This build has no iOS feature changes."
     },
     {
       "symbol": "info.circle",
       "title": "Compatibility",
-      "detail": "Compatible with Tightbeam: none verified. This build was not verified against Tightbeam 0.1.16 (build 4304), Tightbeam 0.1.15 (build 4082), or Chat v0.1.104. No version-specific test evidence is tied to this build."
+      "detail": "No version-specific compatibility is verified for this build. It has not been verified with Tightbeam CLI 0.1.17 or Chat v0.1.104."
     },
     {
       "symbol": "exclamationmark.triangle",
