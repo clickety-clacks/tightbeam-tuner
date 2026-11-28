@@ -21,7 +21,7 @@ struct NativeChatComposer: View {
     @State private var libraryPicks: [PhotosPickerItem] = []
     @State private var loadingPhotos = 0
     @State private var attachmentProblem: String?
-    /// Set when Edit and resend could not bring back a failed prompt's photos; cleared on Send.
+    /// Set when Edit and resend could not bring back the full failed prompt attachment manifest; cleared on Send.
     @State private var restoreProblem: String?
     /// A comfortable line of body text, about 70 characters, plus the send button.
     /// Scales with Dynamic Type so the line length stays the same at any text size.
@@ -318,7 +318,14 @@ struct NativeChatComposer: View {
               outgoing.content.isEmpty || outgoing.content == draft || draft.hasPrefix(outgoing.content + "\n\n"),
               outgoing.attachments.allSatisfy({ sent in attachments.contains { $0.id == sent.id } }) else { return nil }
         switch outgoing.status {
-        case .failed: return "Not sent"
+        case let .failed(reason):
+            switch reason {
+            case "attachment-unavailable": return "This Chat session can't accept these attachments"
+            case "attachment-count-limit": return "Too many attachments for this Chat session"
+            case "attachment-byte-limit": return "These attachments exceed this Chat session's limits"
+            case "invalid-attachment": return "An attachment could not be prepared"
+            default: return "Not sent"
+            }
         default: return nil
         }
     }
@@ -336,9 +343,9 @@ struct NativeChatComposer: View {
     private func takeRestore(_ request: ChatHostBridge.RestoreRequest) {
         bridge.restoreTaken(request)
         let lost = ChatHostBridge.apply(request, draft: &draft, attachments: &attachments) {
-            bridge.attachmentCapabilities?.accepts($0) == true
+            bridge.acceptsAttachments($0)
         }
-        restoreProblem = lost ? "Photos from that message couldn't be restored" : nil
+        restoreProblem = lost ? "Attachments from that message couldn't be restored" : nil
         focused = true
     }
 

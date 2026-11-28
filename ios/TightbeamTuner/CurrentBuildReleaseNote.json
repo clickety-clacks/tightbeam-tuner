@@ -1,17 +1,17 @@
 {
   "version": "1.0",
-  "build": 87,
+  "build": 88,
   "date": "November 28, 2026",
   "items": [
     {
-      "symbol": "iphone",
-      "title": "iOS feature changes",
-      "detail": "This build has no iOS feature changes."
+      "symbol": "doc.on.clipboard",
+      "title": "File attachment bridge support",
+      "detail": "Tuner's native Chat bridge now negotiates file attachments, validates the complete ordered payload against the session's advertised limits, and restores the full list or reports when unavailable. This bridge capability does not add native prompt paste controls. Existing JPEG and PNG attachment support remains available."
     },
     {
       "symbol": "info.circle",
       "title": "Compatibility",
-      "detail": "No version-specific compatibility is verified for this build. It has not been verified with Tightbeam CLI 0.1.17 or Chat v0.1.104."
+      "detail": "Compatible with Tightbeam: none verified. This build was not tested with Tightbeam CLI 0.1.17 or 0.1.16, or Chat v0.1.127 or v0.1.126."
     },
     {
       "symbol": "exclamationmark.triangle",

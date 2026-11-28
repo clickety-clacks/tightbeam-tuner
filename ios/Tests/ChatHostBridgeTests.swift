@@ -466,6 +466,8 @@ final class ChatHostBridgeTests: XCTestCase {
 
     private let photo = ChatHostBridge.Attachment(filename: "photo-1.jpg", mimeType: "image/jpeg",
                                                   data: Data([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]))
+    private let file = ChatHostBridge.Attachment(filename: "notes.txt", mimeType: "text/plain",
+                                                 data: Data("meeting notes".utf8))
 
     func testAttachmentsNeedChatToAdvertiseThem() {
         let bridge = readyBridge(capabilities: ["text": true, "reconnect": true])
@@ -495,6 +497,32 @@ final class ChatHostBridgeTests: XCTestCase {
         XCTAssertNil(bridge.attachmentCapabilities)
     }
 
+    func testFileCapabilityIsNegotiatedOnlyForTheCurrentReadyLifetime() {
+        let bridge = readyBridge(capabilities: [
+            "attachments": [String: Any](), "fileAttachments": 1
+        ])
+        XCTAssertTrue(bridge.fileAttachmentsEnabled)
+        bridge.pageStarted()
+        XCTAssertFalse(bridge.fileAttachmentsEnabled, "page state cannot carry file permission forward")
+
+        // Older Chat peers omit the additive file capability and retain the photo path.
+        bridge.handle(type: "ready", event: [
+            "event": "ready", "version": 1, "lifetimeId": lifetime, "sessionKey": "agent:test",
+            "capabilities": ["attachments": [String: Any]()]
+        ])
+        XCTAssertFalse(bridge.fileAttachmentsEnabled)
+        XCTAssertNotNil(bridge.attachmentCapabilities)
+
+        bridge.handle(type: "ready", event: [
+            "event": "ready", "version": 1, "lifetimeId": lifetime, "sessionKey": "agent:test",
+            "capabilities": ["attachments": [String: Any](), "fileAttachments": 1]
+        ])
+        bridge.handle(type: "lifetime-ended", event: [
+            "event": "lifetime-ended", "version": 1, "lifetimeId": lifetime
+        ])
+        XCTAssertFalse(bridge.fileAttachmentsEnabled)
+    }
+
     func testPhotoOnlySendCarriesBase64Bytes() throws {
         let bridge = readyBridge(capabilities: ["text": true, "attachments": [String: Any]()])
         bridge.send("", attachments: [photo])
@@ -513,6 +541,138 @@ final class ChatHostBridgeTests: XCTestCase {
         XCTAssertEqual(bridge.outgoing?.status, .accepted)
         report(bridge, "delivered", bridge.outgoing!.correlationId)
         XCTAssertEqual(bridge.outgoing?.status, .delivered)
+    }
+
+    func testFileSendPreservesOrderedBytesAndDuplicateManifestEntries() throws {
+        let bridge = readyBridge(capabilities: [
+            "attachments": [
+                "mediaTypes": ["image/jpeg", "image/png"],
+                "maxAttachments": 4, "maxAttachmentBytes": 100, "maxTotalBytes": 200
+            ],
+            "fileAttachments": 1
+        ])
+        let repeatedFile = ChatHostBridge.Attachment(filename: file.filename, mimeType: file.mimeType, data: file.data)
+        let manifest = [file, photo, repeatedFile]
+
+        bridge.send("read both", attachments: manifest)
+
+        XCTAssertEqual(bridge.outgoing?.status, .sending)
+        XCTAssertEqual(bridge.outgoing?.attachments.map(\.data), manifest.map(\.data))
+        let encoded = try XCTUnwrap(try command(bridge)["attachments"] as? [[String: Any]])
+        XCTAssertEqual(encoded.compactMap { $0["filename"] as? String }, ["notes.txt", "photo-1.jpg", "notes.txt"])
+        let decoded = encoded.compactMap { item -> Data? in
+            guard let base64 = item["data"] as? String else { return nil }
+            return Data(base64Encoded: base64)
+        }
+        XCTAssertEqual(decoded, manifest.map(\.data))
+    }
+
+    func testFileRetryKeepsTheOrderedBytesAndCorrelation() throws {
+        let bridge = readyBridge(capabilities: [
+            "attachments": [
+                "mediaTypes": ["image/jpeg", "image/png"],
+                "maxAttachments": 4, "maxAttachmentBytes": 100, "maxTotalBytes": 200
+            ],
+            "fileAttachments": 1
+        ])
+        let manifest = [file, photo]
+        bridge.send("read both", attachments: manifest)
+        let correlationId = try XCTUnwrap(bridge.outgoing?.correlationId)
+        report(bridge, "failed", correlationId, reason: "upload-failed")
+
+        let readded = manifest.map {
+            ChatHostBridge.Attachment(filename: $0.filename, mimeType: $0.mimeType, data: $0.data)
+        }
+        bridge.send("read both", attachments: readded)
+
+        XCTAssertEqual(bridge.outgoing?.correlationId, correlationId)
+        let command = try command(bridge)
+        XCTAssertEqual(command["retry"] as? Bool, true)
+        let encoded = try XCTUnwrap(command["attachments"] as? [[String: Any]])
+        XCTAssertEqual(encoded.compactMap { $0["filename"] as? String }, ["notes.txt", "photo-1.jpg"])
+        XCTAssertEqual(encoded.compactMap { item -> Data? in
+            guard let base64 = item["data"] as? String else { return nil }
+            return Data(base64Encoded: base64)
+        }, manifest.map(\.data))
+    }
+
+    func testFileWithoutChatNegotiationFailsWithoutSendingTextAlone() {
+        let bridge = readyBridge(capabilities: ["attachments": [String: Any]()])
+
+        bridge.send("include the file", attachments: [file])
+
+        XCTAssertFalse(bridge.fileAttachmentsEnabled)
+        XCTAssertEqual(bridge.outgoing?.status, .failed("attachment-unavailable"))
+        XCTAssertEqual(bridge.outgoing?.content, "include the file")
+        XCTAssertEqual(bridge.outgoing?.attachments, [file])
+        let rejectedCorrelation = bridge.outgoing?.correlationId
+        XCTAssertNil(bridge.lastCommandJSON, "Chat must not receive a text-only command")
+
+        // A repeated local rejection must still publish changed state so the composer restores
+        // the text and attachment after its submit handler clears the visible draft.
+        bridge.send("include the file", attachments: [file])
+        XCTAssertNotEqual(bridge.outgoing?.correlationId, rejectedCorrelation)
+        XCTAssertEqual(bridge.outgoing?.attachments, [file])
+    }
+
+    func testFileCapabilityAloneDoesNotReplaceAttachmentRuntimeLimits() {
+        let bridge = readyBridge(capabilities: ["fileAttachments": 1])
+        bridge.send("include the file", attachments: [file])
+
+        XCTAssertTrue(bridge.fileAttachmentsEnabled)
+        XCTAssertNil(bridge.attachmentCapabilities)
+        XCTAssertEqual(bridge.outgoing?.status, .failed("attachment-unavailable"))
+        XCTAssertNil(bridge.lastCommandJSON)
+    }
+
+    func testFileCapabilityRequiresNumericVersionOne() {
+        let boolean = readyBridge(capabilities: ["attachments": [String: Any](), "fileAttachments": true])
+        XCTAssertFalse(boolean.fileAttachmentsEnabled)
+
+        let unsupportedVersion = readyBridge(capabilities: ["attachments": [String: Any](), "fileAttachments": 2])
+        XCTAssertFalse(unsupportedVersion.fileAttachmentsEnabled)
+    }
+
+    func testFileAndPhotoManifestHonorsCombinedAdvertisedLimits() {
+        let bridge = readyBridge(capabilities: [
+            "attachments": [
+                "mediaTypes": ["image/jpeg", "image/png"],
+                "maxAttachments": 2, "maxAttachmentBytes": 4, "maxTotalBytes": 5
+            ],
+            "fileAttachments": 1
+        ])
+        let threeByteFile = ChatHostBridge.Attachment(filename: "a.bin", mimeType: "application/octet-stream",
+                                                      data: Data([1, 2, 3]))
+        let anotherThreeByteFile = ChatHostBridge.Attachment(filename: "b.bin", mimeType: "application/octet-stream",
+                                                             data: Data([4, 5, 6]))
+        let oversizedFile = ChatHostBridge.Attachment(filename: "large.bin", mimeType: "application/octet-stream",
+                                                      data: Data([1, 2, 3, 4, 5]))
+
+        bridge.send("large", attachments: [oversizedFile])
+        XCTAssertEqual(bridge.outgoing?.status, .failed("attachment-byte-limit"))
+        bridge.send("combined", attachments: [threeByteFile, anotherThreeByteFile])
+        XCTAssertEqual(bridge.outgoing?.status, .failed("attachment-byte-limit"))
+        bridge.send("count", attachments: [threeByteFile, anotherThreeByteFile, file])
+        XCTAssertEqual(bridge.outgoing?.status, .failed("attachment-count-limit"))
+        XCTAssertNil(bridge.lastCommandJSON)
+    }
+
+    func testMalformedFileIsRejectedWithoutTransport() {
+        let bridge = readyBridge(capabilities: [
+            "attachments": ["mediaTypes": ["image/jpeg", "image/png"]], "fileAttachments": 1
+        ])
+        let malformed = [
+            ChatHostBridge.Attachment(filename: "  ", mimeType: "text/plain", data: Data([1])),
+            ChatHostBridge.Attachment(filename: "empty.txt", mimeType: "text/plain", data: Data()),
+            ChatHostBridge.Attachment(filename: "bad.txt", mimeType: "plain-text", data: Data([1]))
+        ]
+
+        for (index, attachment) in malformed.enumerated() {
+            bridge.send("invalid \(index)", attachments: [attachment])
+            XCTAssertEqual(bridge.outgoing?.status, .failed("invalid-attachment"))
+            XCTAssertEqual(bridge.outgoing?.attachments, [attachment])
+        }
+        XCTAssertNil(bridge.lastCommandJSON)
     }
 
     func testTextOnlySendHasNoAttachmentsField() throws {
@@ -630,6 +790,8 @@ final class ChatHostBridgeTests: XCTestCase {
         context.evaluateScript(bridge.declarationScript.source)
         let declaration = "window.__TIGHTBEAM_CHAT_HOST__"
         XCTAssertEqual(context.evaluateScript("JSON.stringify(\(declaration).versions)")?.toString(), "[1]")
+        XCTAssertEqual(context.evaluateScript("JSON.stringify(\(declaration).capabilities)")?.toString(),
+                       #"{"fileAttachments":[1]}"#)
         XCTAssertEqual(context.evaluateScript("JSON.stringify(\(declaration).events)")?.toString(),
                        #"{"restore-requested":[1]}"#)
         XCTAssertTrue(context.evaluateScript("typeof \(declaration).onEvent === 'function'")?.toBool() ?? false)
@@ -753,7 +915,65 @@ final class ChatHostBridgeTests: XCTestCase {
         XCTAssertEqual(sent.first?["data"] as? String, data)
     }
 
-    func testUnavailablePhotosRestoreTheTextAndAreReported() throws {
+    func testRestoreKeepsAnEntireOrderedFileAndPhotoManifestIncludingDuplicates() throws {
+        let bridge = readyBridge(capabilities: [
+            "attachments": [
+                "mediaTypes": ["image/jpeg", "image/png"],
+                "maxAttachments": 4, "maxAttachmentBytes": 100, "maxTotalBytes": 200
+            ],
+            "fileAttachments": 1
+        ])
+        let repeatedFile = ChatHostBridge.Attachment(filename: file.filename, mimeType: file.mimeType, data: file.data)
+        let manifest = [file, photo, repeatedFile]
+        let items: [[String: String]] = manifest.map {
+            ["filename": $0.filename, "mimeType": $0.mimeType, "data": $0.data.base64EncodedString()]
+        }
+        bridge.handle(type: "restore-requested", event: restoreEvent(extra: ["attachments": items]))
+
+        let request = try XCTUnwrap(bridge.pendingRestore)
+        XCTAssertFalse(request.attachmentsUnavailable)
+        XCTAssertEqual(request.attachments.map(\.data), manifest.map(\.data))
+
+        var draft = "new detail"
+        let existingDraftFile = ChatHostBridge.Attachment(filename: "draft.txt", mimeType: "text/plain",
+                                                          data: Data("draft".utf8))
+        var staged = [existingDraftFile]
+        XCTAssertFalse(ChatHostBridge.apply(request, draft: &draft, attachments: &staged) {
+            bridge.acceptsAttachments($0)
+        })
+        XCTAssertEqual(draft, "summarize the logs\n\nnew detail")
+        XCTAssertEqual(staged.map(\.data), manifest.map(\.data) + [existingDraftFile.data])
+
+        // A second Edit tap for the same complete manifest is idempotent; duplicates inside the
+        // manifest itself remain intact.
+        bridge.handle(type: "restore-requested", event: restoreEvent(extra: ["attachments": items]))
+        XCTAssertFalse(ChatHostBridge.apply(try XCTUnwrap(bridge.pendingRestore), draft: &draft,
+                                             attachments: &staged) { bridge.acceptsAttachments($0) })
+        XCTAssertEqual(staged.map(\.data), manifest.map(\.data) + [existingDraftFile.data])
+    }
+
+    func testRestoreOfMixedManifestWithoutFileCapabilityReportsUnavailableWithoutPartialPhotos() throws {
+        let bridge = readyBridge(capabilities: ["attachments": [String: Any]()])
+        let items: [[String: String]] = [photo, file].map {
+            ["filename": $0.filename, "mimeType": $0.mimeType, "data": $0.data.base64EncodedString()]
+        }
+        bridge.handle(type: "restore-requested", event: restoreEvent(extra: ["attachments": items]))
+
+        let request = try XCTUnwrap(bridge.pendingRestore)
+        XCTAssertTrue(request.attachmentsUnavailable)
+        XCTAssertTrue(request.attachments.isEmpty, "a partially available manifest must not be restored")
+        var draft = "keep my edits"
+        let existingDraftPhoto = ChatHostBridge.Attachment(filename: "existing.jpg", mimeType: "image/jpeg",
+                                                           data: Data([1, 2, 3]))
+        var staged = [existingDraftPhoto]
+        XCTAssertTrue(ChatHostBridge.apply(request, draft: &draft, attachments: &staged) {
+            bridge.acceptsAttachments($0)
+        })
+        XCTAssertEqual(draft, "summarize the logs\n\nkeep my edits")
+        XCTAssertEqual(staged, [existingDraftPhoto])
+    }
+
+    func testUnavailableAttachmentsRestoreTheTextAndAreReported() throws {
         let bridge = readyBridge(capabilities: ["attachments": [String: Any]()])
         bridge.handle(type: "restore-requested", event: restoreEvent(extra: ["attachmentsUnavailable": true]))
         let request = try XCTUnwrap(bridge.pendingRestore)
@@ -769,6 +989,9 @@ final class ChatHostBridgeTests: XCTestCase {
             "attachments": [["filename": "photo.jpg", "mimeType": "image/jpeg", "data": "not base64!"]]
         ]))
         XCTAssertEqual(bridge.pendingRestore?.attachmentsUnavailable, true)
+        bridge.handle(type: "restore-requested", event: restoreEvent(extra: ["attachments": "not a manifest"]))
+        XCTAssertEqual(bridge.pendingRestore?.attachmentsUnavailable, true)
+        XCTAssertEqual(bridge.pendingRestore?.attachments, [])
         bridge.handle(type: "restore-requested", event: restoreEvent(content: "", extra: [
             "attachments": [["filename": "photo.jpg", "mimeType": "image/jpeg", "data": photo.data.base64EncodedString()]]
         ]))
